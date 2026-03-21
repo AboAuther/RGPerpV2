@@ -56,10 +56,10 @@ login_and_get_token() {
   local private_key="$2"
   local nonce_payload nonce domain message signature login_payload
 
-  nonce_payload="$(request_json POST '/api/v1/auth/nonce' "{\"address\":\"${address}\",\"chain_id\":${LOCAL_CHAIN_ID}}" -H "X-Trace-Id: matrix_nonce_$(date +%s)")"
+  nonce_payload="$(request_json POST '/api/v1/auth/challenge' "{\"address\":\"${address}\",\"chain_id\":${LOCAL_CHAIN_ID}}" -H "X-Trace-Id: matrix_nonce_$(date +%s)")"
   nonce="$(printf '%s' "$nonce_payload" | jq -r '.data.nonce')"
   domain="$(printf '%s' "$nonce_payload" | jq -r '.data.domain')"
-  message="$(build_login_message "$domain" "$LOCAL_CHAIN_ID" "$nonce")"
+  message="$(printf '%s' "$nonce_payload" | jq -r '.data.message')"
   signature="$(cast wallet sign --private-key "$private_key" "$message")"
   login_payload="$(request_json POST '/api/v1/auth/login' "{\"address\":\"${address}\",\"chain_id\":${LOCAL_CHAIN_ID},\"nonce\":\"${nonce}\",\"signature\":\"${signature}\"}" -H "X-Trace-Id: matrix_login_$(date +%s)")"
   printf '%s' "$login_payload" | jq -r '.data.access_token'

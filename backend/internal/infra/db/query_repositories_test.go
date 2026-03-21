@@ -6,6 +6,20 @@ import (
 	"time"
 )
 
+type fakeDepositAddressAllocator struct {
+	address string
+	valid   bool
+	err     error
+}
+
+func (f fakeDepositAddressAllocator) Allocate(_ context.Context, _ uint64, _ int64, _ string) (string, error) {
+	return f.address, f.err
+}
+
+func (f fakeDepositAddressAllocator) Validate(_ context.Context, _ uint64, _ int64, _ string, _ string) (string, bool, error) {
+	return f.address, f.valid, f.err
+}
+
 func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewExplorerQueryRepository(db)
@@ -73,5 +87,33 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 	if len(adminItems) != 6 {
 		t.Fatalf("expected 6 admin-visible events, got %d", len(adminItems))
+	}
+}
+
+func TestWalletReadService_ListDepositAddressesFiltersInvalidRows(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewDepositAddressRepository(db, map[int64]int{31337: 1})
+	now := time.Now().UTC()
+	if err := db.Create(&DepositAddressModel{
+		UserID:    7,
+		ChainID:   31337,
+		Asset:     "USDC",
+		Address:   "0x00000000000000000000000000000000000000cd",
+		Status:    "ACTIVE",
+		CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed deposit address: %v", err)
+	}
+
+	readSvc := NewWalletReadService(repo, NewWalletQueryRepository(db), fakeDepositAddressAllocator{
+		address: "0x00000000000000000000000000000000000000ab",
+		valid:   false,
+	})
+	items, err := readSvc.ListDepositAddresses(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("list deposit addresses: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected invalid deposit address to be hidden, got %+v", items)
 	}
 }

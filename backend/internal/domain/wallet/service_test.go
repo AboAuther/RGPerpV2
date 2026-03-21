@@ -219,6 +219,7 @@ func (s stubDepositAddresses) Upsert(_ context.Context, _ DepositAddress) error 
 
 type stubAllocator struct {
 	address string
+	valid   bool
 	err     error
 }
 
@@ -227,6 +228,13 @@ func (s stubAllocator) Allocate(_ context.Context, _ uint64, _ int64, _ string) 
 		return "0x00000000000000000000000000000000000000ab", s.err
 	}
 	return s.address, s.err
+}
+
+func (s stubAllocator) Validate(_ context.Context, _ uint64, _ int64, _ string, _ string) (string, bool, error) {
+	if s.address == "" {
+		return "0x00000000000000000000000000000000000000ab", s.valid, s.err
+	}
+	return s.address, s.valid, s.err
 }
 
 func TestConfirmDeposit_Success(t *testing.T) {
@@ -637,6 +645,43 @@ func TestGenerateDepositAddress_Success(t *testing.T) {
 	}
 	if result.Address != "0x00000000000000000000000000000000000000ab" {
 		t.Fatalf("unexpected generated address: %+v", result)
+	}
+}
+
+func TestGenerateDepositAddress_ReplacesInvalidStoredAddress(t *testing.T) {
+	addresses := stubDepositAddresses{
+		item: DepositAddress{
+			UserID:  7,
+			ChainID: 31337,
+			Asset:   "USDC",
+			Address: "0x00000000000000000000000000000000000000cd",
+			Status:  "ACTIVE",
+		},
+	}
+	svc := NewService(
+		&stubDepositRepo{},
+		&stubWithdrawRepo{},
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"unused"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		addresses,
+		stubAllocator{address: "0x00000000000000000000000000000000000000ab", valid: false},
+	)
+
+	result, err := svc.GenerateDepositAddress(context.Background(), GenerateDepositAddressInput{
+		UserID:  7,
+		ChainID: 31337,
+		Asset:   "USDC",
+	})
+	if err != nil {
+		t.Fatalf("generate deposit address: %v", err)
+	}
+	if result.Address != "0x00000000000000000000000000000000000000ab" {
+		t.Fatalf("expected canonical address rewrite, got %+v", result)
 	}
 }
 

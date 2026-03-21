@@ -268,17 +268,42 @@ func NewWalletQueryRepository(db *gorm.DB) *WalletQueryRepository {
 type WalletReadService struct {
 	addresses *DepositAddressRepository
 	wallets   *WalletQueryRepository
+	allocator walletdomain.DepositAddressAllocator
 }
 
-func NewWalletReadService(addresses *DepositAddressRepository, wallets *WalletQueryRepository) *WalletReadService {
+func NewWalletReadService(addresses *DepositAddressRepository, wallets *WalletQueryRepository, allocator ...walletdomain.DepositAddressAllocator) *WalletReadService {
+	var optionalAllocator walletdomain.DepositAddressAllocator
+	if len(allocator) > 0 {
+		optionalAllocator = allocator[0]
+	}
 	return &WalletReadService{
 		addresses: addresses,
 		wallets:   wallets,
+		allocator: optionalAllocator,
 	}
 }
 
 func (s *WalletReadService) ListDepositAddresses(ctx context.Context, userID uint64) ([]walletdomain.DepositAddress, error) {
-	return s.addresses.ListByUser(ctx, userID)
+	items, err := s.addresses.ListByUser(ctx, userID)
+	if err != nil || s.allocator == nil {
+		return items, err
+	}
+
+	filtered := make([]walletdomain.DepositAddress, 0, len(items))
+	for _, item := range items {
+		canonical, valid, validateErr := s.allocator.Validate(ctx, item.UserID, item.ChainID, item.Asset, item.Address)
+		if validateErr != nil || !valid {
+			continue
+		}
+		if canonical != "" && canonical != item.Address {
+			item.Address = canonical
+			if err := s.addresses.Upsert(ctx, item); err != nil {
+				return nil, err
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered, nil
 }
 
 func (s *WalletReadService) ListDeposits(ctx context.Context, userID uint64) ([]readmodel.DepositItem, error) {

@@ -364,13 +364,27 @@ func (s *Service) GenerateDepositAddress(ctx context.Context, input GenerateDepo
 	if asset == "" {
 		asset = "USDC"
 	}
-	if existing, err := s.addresses.GetByUserChainAsset(ctx, input.UserID, input.ChainID, asset); err == nil {
-		return existing, nil
-	} else if err != errorsx.ErrNotFound {
-		return DepositAddress{}, err
-	}
 	if s.allocator == nil {
 		return DepositAddress{}, fmt.Errorf("%w: deposit address allocator not configured", errorsx.ErrForbidden)
+	}
+	if existing, err := s.addresses.GetByUserChainAsset(ctx, input.UserID, input.ChainID, asset); err == nil {
+		canonical, valid, err := s.allocator.Validate(ctx, input.UserID, input.ChainID, asset, existing.Address)
+		if err != nil {
+			return DepositAddress{}, err
+		}
+		if valid {
+			if canonical != "" && canonical != existing.Address {
+				existing.Address = canonical
+				if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+					return s.addresses.Upsert(txCtx, existing)
+				}); err != nil {
+					return DepositAddress{}, err
+				}
+			}
+			return existing, nil
+		}
+	} else if err != errorsx.ErrNotFound {
+		return DepositAddress{}, err
 	}
 	address, err := s.allocator.Allocate(ctx, input.UserID, input.ChainID, asset)
 	if err != nil {

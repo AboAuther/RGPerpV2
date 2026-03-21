@@ -4,7 +4,8 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 RPC_URL="${RPC_URL:-http://anvil:8545}"
 OUTPUT_FILE="${OUTPUT_FILE:-/shared/contracts.env}"
-OUTPUT_RPC_URL="${OUTPUT_RPC_URL:-$RPC_URL}"
+OUTPUT_HOST_RPC_URL="${OUTPUT_HOST_RPC_URL:-$RPC_URL}"
+OUTPUT_DOCKER_RPC_URL="${OUTPUT_DOCKER_RPC_URL:-$OUTPUT_HOST_RPC_URL}"
 PRIVATE_KEY="${ADMIN_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
 
 wait_for_rpc() {
@@ -45,7 +46,9 @@ cast send "$VAULT_ADDRESS" "setTokenAllowed(address,bool)" "$MOCK_USDC_ADDRESS" 
 cast send "$MOCK_USDC_ADDRESS" "mint(address,uint256)" "$VAULT_ADDRESS" "1000000000000" --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" >/dev/null
 
 cat > "${OUTPUT_FILE}.tmp" <<EOF
-export BASE_RPC_URL=$OUTPUT_RPC_URL
+export BASE_RPC_URL=$OUTPUT_HOST_RPC_URL
+export BASE_RPC_URL_HOST=$OUTPUT_HOST_RPC_URL
+export BASE_RPC_URL_DOCKER=$OUTPUT_DOCKER_RPC_URL
 export BASE_CONFIRMATIONS=1
 export BASE_USDC_ADDRESS=$MOCK_USDC_ADDRESS
 export BASE_VAULT_ADDRESS=$VAULT_ADDRESS

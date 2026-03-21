@@ -51,4 +51,5 @@ type DepositAddressRepository interface {
 
 type DepositAddressAllocator interface {
 	Allocate(ctx context.Context, userID uint64, chainID int64, asset string) (string, error)
+	Validate(ctx context.Context, userID uint64, chainID int64, asset string, address string) (string, bool, error)
 }

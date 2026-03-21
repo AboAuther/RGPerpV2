@@ -17,6 +17,8 @@ const mockUsdcAbi = [
   'function transfer(address to, uint256 amount) returns (bool)',
 ];
 
+const depositRouterAbi = ['function forward()', 'function token() view returns (address)'];
+
 interface DepositState {
   addresses: DepositAddressItem[];
   deposits: DepositItem[];
@@ -97,6 +99,11 @@ export function DepositPage() {
   }
 
   async function getUsdcContract(chainId: number) {
+    const signer = await getChainSigner(chainId);
+    return new Contract(appConfig.localUsdcAddress, mockUsdcAbi, signer);
+  }
+
+  async function getChainSigner(chainId: number) {
     if (!window.ethereum) {
       throw new Error('未检测到 MetaMask 或兼容钱包');
     }
@@ -110,7 +117,43 @@ export function DepositPage() {
     if (session && signer.address.toLowerCase() !== session.user.evm_address.toLowerCase()) {
       throw new Error('当前 MetaMask 地址与已登录地址不一致，请切回已登录钱包后重试');
     }
-    return new Contract(appConfig.localUsdcAddress, mockUsdcAbi, signer);
+    return signer;
+  }
+
+  async function getValidatedRouterContract(chainId: number, address: string) {
+    const signer = await getChainSigner(chainId);
+    const provider = signer.provider;
+    if (!provider) {
+      throw new Error('钱包 provider 不可用');
+    }
+    const code = await provider.getCode(address);
+    if (!code || code === '0x') {
+      throw new Error('当前充值地址不是有效 Router 合约，已阻止便捷充值');
+    }
+    const router = new Contract(address, depositRouterAbi, signer);
+    const routerToken = String(await router.token()).toLowerCase();
+    if (routerToken !== appConfig.localUsdcAddress.toLowerCase()) {
+      throw new Error('当前充值地址对应的 Router 资产与本地 USDC 配置不一致，已阻止便捷充值');
+    }
+    return router;
+  }
+
+  async function waitForDepositRecord(chainId: number, address: string, txHash: string) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const deposits = await api.wallet.getDeposits();
+      const matched = deposits.find(
+        (item) =>
+          item.chain_id === chainId &&
+          item.address.toLowerCase() === address.toLowerCase() &&
+          item.tx_hash.toLowerCase() === txHash.toLowerCase(),
+      );
+      if (matched) {
+        return matched;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    throw new Error('forward 交易已提交，但超时仍未看到新的充值记录，请检查 Indexer 与链上事件');
   }
 
   async function handleGenerateAddress(chainId: number) {
@@ -162,12 +205,23 @@ export function DepositPage() {
   async function handleQuickDeposit(chainId: number, address: string) {
     try {
       setQuickDepositingChain(chainId);
+      const router = await getValidatedRouterContract(chainId, address);
       const usdc = await getUsdcContract(chainId);
-      const tx = await usdc.transfer(address, parseUnits('1000', 6));
-      await tx.wait();
-      message.success('链上转账已提交，等待 Indexer 入账');
-      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      const transferTx = await usdc.transfer(address, parseUnits('1000', 6));
+      await transferTx.wait();
+      let forwardHash = '';
+      try {
+        const forwardTx = await router.forward();
+        forwardHash = forwardTx.hash;
+        await forwardTx.wait();
+      } catch (forwardError) {
+        throw new Error(
+          `USDC 已转入 Router，但 forward 失败，资金可能暂留在 Router 中，需要人工检查。原始错误: ${forwardError instanceof Error ? forwardError.message : String(forwardError)}`,
+        );
+      }
+      const deposit = await waitForDepositRecord(chainId, address, forwardHash);
       await loadData(true);
+      message.success(`充值记录已创建，当前状态 ${deposit.status}`);
     } catch (depositError) {
       setError(depositError);
     } finally {

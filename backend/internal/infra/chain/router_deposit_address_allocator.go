@@ -13,6 +13,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/authx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
 var depositRouterFactoryABI = mustParseContractABI(`[
@@ -30,13 +32,15 @@ type RouterDepositAddressAllocator struct {
 	privateKey *ecdsa.PrivateKey
 	chains     map[int64]RouterAllocatorChainConfig
 	clients    map[int64]*ethclient.Client
-	fallback   *DeterministicDepositAddressAllocator
 }
 
 func NewRouterDepositAddressAllocator(privateKeyHex string, chains []RouterAllocatorChainConfig) (*RouterDepositAddressAllocator, error) {
 	keyHex := strings.TrimSpace(strings.TrimPrefix(privateKeyHex, "0x"))
 	if keyHex == "" {
-		return &RouterDepositAddressAllocator{fallback: NewDeterministicDepositAddressAllocator()}, nil
+		return &RouterDepositAddressAllocator{
+			chains:  make(map[int64]RouterAllocatorChainConfig),
+			clients: make(map[int64]*ethclient.Client),
+		}, nil
 	}
 	privateKey, err := crypto.HexToECDSA(keyHex)
 	if err != nil {
@@ -47,7 +51,6 @@ func NewRouterDepositAddressAllocator(privateKeyHex string, chains []RouterAlloc
 		privateKey: privateKey,
 		chains:     make(map[int64]RouterAllocatorChainConfig, len(chains)),
 		clients:    make(map[int64]*ethclient.Client, len(chains)),
-		fallback:   NewDeterministicDepositAddressAllocator(),
 	}
 	for _, chain := range chains {
 		if chain.ChainID <= 0 || strings.TrimSpace(chain.RPCURL) == "" || strings.TrimSpace(chain.FactoryAddress) == "" {
@@ -70,20 +73,20 @@ func (a *RouterDepositAddressAllocator) Close() {
 }
 
 func (a *RouterDepositAddressAllocator) Allocate(ctx context.Context, userID uint64, chainID int64, asset string) (string, error) {
-	chainCfg, ok := a.chains[chainID]
-	if !ok || a.privateKey == nil {
-		return a.fallback.Allocate(ctx, userID, chainID, asset)
-	}
-	client := a.clients[chainID]
-	factoryAddress := common.HexToAddress(chainCfg.FactoryAddress)
-	contract := bind.NewBoundContract(factoryAddress, depositRouterFactoryABI, client, client, client)
-
-	router, err := readRouterOfUser(ctx, contract, userID)
+	client, contract, err := a.chainContract(chainID)
 	if err != nil {
 		return "", err
 	}
-	if router != (common.Address{}) {
+
+	router, ok, err := a.resolveRouter(ctx, client, contract, userID)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return router.Hex(), nil
+	}
+	if a.privateKey == nil {
+		return "", fmt.Errorf("%w: deposit address allocator signer not configured", errorsx.ErrForbidden)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(a.privateKey, big.NewInt(chainID))
@@ -104,14 +107,61 @@ func (a *RouterDepositAddressAllocator) Allocate(ctx context.Context, userID uin
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		return "", fmt.Errorf("create router reverted: %s", tx.Hash().Hex())
 	}
-	router, err = readRouterOfUser(ctx, contract, userID)
+	router, ok, err = a.resolveRouter(ctx, client, contract, userID)
 	if err != nil {
 		return "", err
 	}
-	if router == (common.Address{}) {
+	if !ok {
 		return "", fmt.Errorf("router not created for user %d", userID)
 	}
 	return router.Hex(), nil
+}
+
+func (a *RouterDepositAddressAllocator) Validate(ctx context.Context, userID uint64, chainID int64, _ string, address string) (string, bool, error) {
+	client, contract, err := a.chainContract(chainID)
+	if err != nil {
+		return "", false, err
+	}
+	router, ok, err := a.resolveRouter(ctx, client, contract, userID)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	normalized, err := authx.NormalizeEVMAddress(address)
+	if err != nil {
+		return "", false, nil
+	}
+	if !strings.EqualFold(router.Hex(), normalized) {
+		return router.Hex(), false, nil
+	}
+	return router.Hex(), true, nil
+}
+
+func (a *RouterDepositAddressAllocator) chainContract(chainID int64) (*ethclient.Client, *bind.BoundContract, error) {
+	chainCfg, ok := a.chains[chainID]
+	if !ok {
+		return nil, nil, fmt.Errorf("%w: chain %d deposit allocator not configured", errorsx.ErrForbidden, chainID)
+	}
+	client := a.clients[chainID]
+	factoryAddress := common.HexToAddress(chainCfg.FactoryAddress)
+	return client, bind.NewBoundContract(factoryAddress, depositRouterFactoryABI, client, client, client), nil
+}
+
+func (a *RouterDepositAddressAllocator) resolveRouter(ctx context.Context, client *ethclient.Client, contract *bind.BoundContract, userID uint64) (common.Address, bool, error) {
+	router, err := readRouterOfUser(ctx, contract, userID)
+	if err != nil {
+		return common.Address{}, false, err
+	}
+	if router == (common.Address{}) {
+		return common.Address{}, false, nil
+	}
+	code, err := client.CodeAt(ctx, router, nil)
+	if err != nil {
+		return common.Address{}, false, err
+	}
+	if len(code) == 0 {
+		return common.Address{}, false, fmt.Errorf("%w: router %s has no code", errorsx.ErrConflict, router.Hex())
+	}
+	return router, true, nil
 }
 
 func readRouterOfUser(ctx context.Context, contract *bind.BoundContract, userID uint64) (common.Address, error) {

@@ -9,6 +9,7 @@ mkdir -p "$(dirname "$OUTPUT_FILE")"
 
 export RPC_URL
 export OUTPUT_FILE
-export OUTPUT_RPC_URL="${OUTPUT_RPC_URL:-http://host.docker.internal:8545}"
+export OUTPUT_HOST_RPC_URL="${OUTPUT_HOST_RPC_URL:-$RPC_URL}"
+export OUTPUT_DOCKER_RPC_URL="${OUTPUT_DOCKER_RPC_URL:-http://host.docker.internal:8545}"
 
 exec sh "$ROOT_DIR/deploy/scripts/deploy-local-contracts.sh"

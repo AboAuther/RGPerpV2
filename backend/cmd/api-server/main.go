@@ -120,7 +120,7 @@ func main() {
 	marketHandler := httptransport.NewMarketHandler(reviewReadRepo)
 	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepository(gormDB), walletService, userRepo)
 	walletHandler := httptransport.NewWalletHandler(
-		db.NewWalletReadService(depositAddressRepo, walletQueryRepo),
+		db.NewWalletReadService(depositAddressRepo, walletQueryRepo, allocator),
 		walletService,
 		localNativeFaucet,
 	)

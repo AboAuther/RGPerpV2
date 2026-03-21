@@ -21,6 +21,9 @@ if [ -n "${CHAIN_ENV_FILE:-}" ]; then
   # shellcheck disable=SC1090
   . "${CHAIN_ENV_FILE}"
   set +a
+  if [ -n "${BASE_RPC_URL_DOCKER:-}" ]; then
+    export BASE_RPC_URL="${BASE_RPC_URL_DOCKER}"
+  fi
 fi
 
 exec "/usr/local/bin/${SERVICE_BIN}"

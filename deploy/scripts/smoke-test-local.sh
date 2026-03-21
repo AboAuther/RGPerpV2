@@ -15,7 +15,8 @@ if [[ -f "$CHAIN_ENV_FILE" ]]; then
   set +a
 fi
 
-if [[ "${BASE_RPC_URL:-}" == "http://anvil:8545" ]]; then
+BASE_RPC_URL="${BASE_RPC_URL_HOST:-${BASE_RPC_URL:-http://127.0.0.1:8545}}"
+if [[ "${BASE_RPC_URL}" == "http://host.docker.internal:8545" ]]; then
   BASE_RPC_URL="http://127.0.0.1:8545"
 fi
 
@@ -95,34 +96,6 @@ wait_for_api() {
   return 1
 }
 
-wait_for_router_address() {
-  local token="$1"
-  local expected="$2"
-  local payload=""
-  local current=""
-  for _ in $(seq 1 60); do
-    payload="$(request_authed_json GET '/api/v1/wallet/deposit-addresses' "$token")"
-    current="$(printf '%s' "$payload" | python3 -c '
-import json
-import sys
-
-expected = sys.argv[1].lower()
-data = json.load(sys.stdin).get("data", [])
-for item in data:
-    address = str(item.get("address", ""))
-    if address.lower() == expected:
-        print(address)
-        break
-' "$expected")"
-    if [[ "${current,,}" == "${expected,,}" ]]; then
-      echo "$current"
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
 wait_for_balance() {
   local token="$1"
   for _ in $(seq 1 60); do
@@ -141,10 +114,9 @@ wait_for_balance() {
 
 wait_for_api
 
-NONCE_PAYLOAD="$(request_json POST '/api/v1/auth/nonce' "{\"address\":\"${USER_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID}}")"
+NONCE_PAYLOAD="$(request_json POST '/api/v1/auth/challenge' "{\"address\":\"${USER_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID}}")"
 NONCE="$(printf '%s' "$NONCE_PAYLOAD" | extract_json 'data.nonce')"
-DOMAIN="$(printf '%s' "$NONCE_PAYLOAD" | extract_json 'data.domain')"
-MESSAGE="$(build_message "$DOMAIN" "${LOCAL_CHAIN_ID}" "$NONCE")"
+MESSAGE="$(printf '%s' "$NONCE_PAYLOAD" | extract_json 'data.message')"
 SIGNATURE="$(cast wallet sign --private-key "$USER_PRIVATE_KEY" "$MESSAGE")"
 
 LOGIN_PAYLOAD="$(request_json POST '/api/v1/auth/login' "{\"address\":\"${USER_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID},\"nonce\":\"${NONCE}\",\"signature\":\"${SIGNATURE}\",\"device_fingerprint\":\"smoke-test\"}")"
@@ -156,8 +128,12 @@ if [[ "${EXPECTED_ROUTER_ADDRESS,,}" == "0x0000000000000000000000000000000000000
   cast send "$BASE_FACTORY_ADDRESS" "createRouter(uint256,bytes32)" "$USER_ID" "$(cast keccak "rgperp:user:${USER_ID}")" --rpc-url "$BASE_RPC_URL" --private-key "$ADMIN_PRIVATE_KEY" >/dev/null
   EXPECTED_ROUTER_ADDRESS="$(cast call "$BASE_FACTORY_ADDRESS" "routerOfUser(uint256)(address)" "$USER_ID" --rpc-url "$BASE_RPC_URL")"
 fi
-sleep 3
-ROUTER_ADDRESS="$(wait_for_router_address "$ACCESS_TOKEN" "$EXPECTED_ROUTER_ADDRESS")"
+GENERATE_PAYLOAD="$(request_authed_json POST "/api/v1/wallet/deposit-addresses/${LOCAL_CHAIN_ID}/generate" "$ACCESS_TOKEN")"
+ROUTER_ADDRESS="$(printf '%s' "$GENERATE_PAYLOAD" | extract_json 'data.address')"
+if [[ "${ROUTER_ADDRESS,,}" != "${EXPECTED_ROUTER_ADDRESS,,}" ]]; then
+  echo "generated deposit address does not match routerOfUser: api=${ROUTER_ADDRESS} chain=${EXPECTED_ROUTER_ADDRESS}" >&2
+  exit 1
+fi
 
 cast send "$BASE_USDC_ADDRESS" "mint(address,uint256)" "$ROUTER_ADDRESS" "250000000" --rpc-url "$BASE_RPC_URL" --private-key "$ADMIN_PRIVATE_KEY" >/dev/null
 cast send "$ROUTER_ADDRESS" "forward()" --rpc-url "$BASE_RPC_URL" --private-key "$ADMIN_PRIVATE_KEY" >/dev/null
@@ -172,10 +148,9 @@ WITHDRAW_RESPONSE="$(curl -fsS -X POST "${API_BASE_URL}/api/v1/wallet/withdrawal
   -d "{\"chain_id\":${LOCAL_CHAIN_ID},\"asset\":\"USDC\",\"amount\":\"10\",\"to_address\":\"${RECIPIENT_ADDRESS}\"}")"
 WITHDRAW_ID="$(printf '%s' "$WITHDRAW_RESPONSE" | extract_json 'data.withdraw_id')"
 
-ADMIN_NONCE_PAYLOAD="$(request_json POST '/api/v1/auth/nonce' "{\"address\":\"${LOCAL_ANVIL_ADMIN_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID}}")"
+ADMIN_NONCE_PAYLOAD="$(request_json POST '/api/v1/auth/challenge' "{\"address\":\"${LOCAL_ANVIL_ADMIN_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID}}")"
 ADMIN_NONCE="$(printf '%s' "$ADMIN_NONCE_PAYLOAD" | extract_json 'data.nonce')"
-ADMIN_DOMAIN="$(printf '%s' "$ADMIN_NONCE_PAYLOAD" | extract_json 'data.domain')"
-ADMIN_MESSAGE="$(build_message "$ADMIN_DOMAIN" "${LOCAL_CHAIN_ID}" "$ADMIN_NONCE")"
+ADMIN_MESSAGE="$(printf '%s' "$ADMIN_NONCE_PAYLOAD" | extract_json 'data.message')"
 ADMIN_SIGNATURE="$(cast wallet sign --private-key "$ADMIN_PRIVATE_KEY" "$ADMIN_MESSAGE")"
 ADMIN_LOGIN_PAYLOAD="$(request_json POST '/api/v1/auth/login' "{\"address\":\"${LOCAL_ANVIL_ADMIN_ADDRESS}\",\"chain_id\":${LOCAL_CHAIN_ID},\"nonce\":\"${ADMIN_NONCE}\",\"signature\":\"${ADMIN_SIGNATURE}\",\"device_fingerprint\":\"smoke-admin\"}")"
 ADMIN_ACCESS_TOKEN="$(printf '%s' "$ADMIN_LOGIN_PAYLOAD" | extract_json 'data.access_token')"
