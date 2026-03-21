@@ -1,9 +1,10 @@
-import { Alert, Card, Col, Row, Space, Spin, Table, Typography } from 'antd';
+import { Alert, Button, Card, Col, Row, Space, Spin, Table, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, MetricCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
 import type { AccountSummary, BalanceItem, PositionItem, RiskSnapshot } from '../../shared/domain';
 import { formatAddress, formatDecimal, formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
+import { useWindowRefetch } from '../../shared/refetch';
 
 const { Paragraph, Text } = Typography;
 
@@ -17,42 +18,44 @@ interface PortfolioState {
 export function PortfolioPage() {
   const [state, setState] = useState<PortfolioState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
-  useEffect(() => {
-    let active = true;
-
-    async function load() {
+  async function loadData(background = false) {
+    if (background && state) {
+      setRefreshing(true);
+    } else {
       setLoading(true);
-      setError(null);
-
-      try {
-        const [summary, balances, positions, risk] = await Promise.all([
-          api.account.getSummary(),
-          api.account.getBalances(),
-          api.positions.getPositions(),
-          api.account.getRisk(),
-        ]);
-
-        if (active) {
-          setState({ summary, balances, positions, risk });
-        }
-      } catch (loadError) {
-        if (active) {
-          setError(loadError);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
     }
+    setError(null);
 
-    void load();
-    return () => {
-      active = false;
-    };
+    try {
+      const [summary, balances, positions, risk] = await Promise.all([
+        api.account.getSummary(),
+        api.account.getBalances(),
+        api.positions.getPositions(),
+        api.account.getRisk(),
+      ]);
+      setState({ summary, balances, positions, risk });
+    } catch (loadError) {
+      setError(loadError);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
   }, []);
+
+  function refreshInBackground() {
+    void (async () => {
+      await loadData(true);
+    })();
+  }
+
+  useWindowRefetch(refreshInBackground, !!state);
 
   return (
     <div className="rg-app-page rg-app-page--portfolio">
@@ -60,7 +63,12 @@ export function PortfolioPage() {
         <PageIntro
           eyebrow="Account"
           title="Portfolio Overview"
-          description="权益、可用余额、保证金和风险提示都以后端或 review mock 返回值为准。前端不自行推导已完成的资金状态。"
+          description="权益、可用余额、保证金和风险提示以后端返回为准。页面在手动刷新、窗口重新聚焦和网络恢复后会重新拉取关键账户数据。"
+          extra={
+            <Button onClick={refreshInBackground} loading={refreshing}>
+              刷新数据
+            </Button>
+          }
         />
 
       {loading ? <Spin size="large" /> : null}

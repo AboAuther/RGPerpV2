@@ -49,6 +49,7 @@ export function LoginPage() {
   const [error, setError] = useState<unknown>(null);
 
   const walletAvailable = typeof window !== 'undefined' && !!window.ethereum;
+  const reviewMockLoginEnabled = appConfig.reviewFeaturesEnabled && appConfig.apiProvider === 'mock';
   const redirectTo = (location.state as { from?: string } | null)?.from || '/portfolio';
 
   const loginMessage = useMemo(() => {
@@ -99,7 +100,7 @@ export function LoginPage() {
 
   async function handleWalletSignature(address: string): Promise<string> {
     if (!window.ethereum) {
-      throw new Error('未检测到钱包扩展，请手动粘贴签名或切换到 mock provider。');
+      throw new Error('未检测到钱包扩展，请手动粘贴离线签名结果。');
     }
 
     const signature = (await window.ethereum.request({
@@ -128,11 +129,6 @@ export function LoginPage() {
         signature = await handleWalletSignature(values.address);
       }
 
-      if (!signature && appConfig.apiProvider !== 'http') {
-        signature = `0xmock${noncePayload.nonce.replace(/_/g, '')}`;
-        form.setFieldValue('signature', signature);
-      }
-
       if (!signature) {
         throw new Error('缺少签名。请使用钱包签名，或粘贴离线签名结果。');
       }
@@ -155,6 +151,43 @@ export function LoginPage() {
 
       setPhase('success');
       message.success('登录成功');
+      navigate(redirectTo, { replace: true });
+    } catch (loginError) {
+      setPhase('error');
+      setError(loginError);
+    }
+  }
+
+  async function handleReviewMockLogin() {
+    if (!reviewMockLoginEnabled) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const values = await form.validateFields(['address', 'chainId']);
+      setPhase('requesting_nonce');
+      const challenge = noncePayload || (await api.auth.issueNonce(values.address, values.chainId));
+      setNoncePayload(challenge);
+      setPhase('verifying');
+
+      const response = await api.auth.login({
+        address: values.address,
+        chainId: values.chainId,
+        nonce: challenge.nonce,
+        signature: '0xreview_mock_login',
+      });
+
+      signIn({
+        accessToken: response.access_token,
+        refreshToken: response.refresh_token,
+        expiresAt: response.expires_at,
+        user: response.user,
+        provider: response.provider,
+      });
+
+      setPhase('success');
+      message.success('Review mock 登录成功');
       navigate(redirectTo, { replace: true });
     } catch (loginError) {
       setPhase('error');
@@ -198,7 +231,7 @@ export function LoginPage() {
           </Title>
           <Paragraph style={{ fontSize: 17, maxWidth: 760 }}>
             这个实现遵循当前规范：前端不持有资金真相，不把 nonce 复用，不把 access token 持久化到不安全存储。
-            当前后端未覆盖的钱包/账户接口会由 review mock 数据兜底，但状态机名称与验收口径保持一致。
+            关键登录、账户和钱包路径默认直连真实接口；只有显式 `review/dev + mock provider` 才允许进入隔离的演示流。
           </Paragraph>
 
           <div className="hero-highlight">
@@ -223,7 +256,7 @@ export function LoginPage() {
             <div>
               <Text strong>当前 Provider</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                `VITE_API_PROVIDER={appConfig.apiProvider}`，支持 `mock`、`http`、`auto`。
+                `VITE_API_PROVIDER={appConfig.apiProvider}`。登录与资金关键路径不会在 `auto` 下静默回退 mock。
               </Paragraph>
             </div>
           </div>
@@ -266,7 +299,7 @@ export function LoginPage() {
                   placeholder={
                     walletAvailable
                       ? '如不想用浏览器钱包，可粘贴离线签名结果'
-                      : '未检测到浏览器钱包，请粘贴签名或使用 mock provider'
+                      : '未检测到浏览器钱包，请粘贴离线签名结果'
                   }
                 />
               </Form.Item>
@@ -279,6 +312,11 @@ export function LoginPage() {
                 <Button type="primary" onClick={handleLogin} loading={phase === 'verifying'}>
                   签名并登录
                 </Button>
+                {reviewMockLoginEnabled ? (
+                  <Button onClick={handleReviewMockLogin} loading={phase === 'requesting_nonce' || phase === 'verifying'}>
+                    Review Mock 登录
+                  </Button>
+                ) : null}
               </Space>
             </Form>
 
@@ -302,7 +340,11 @@ export function LoginPage() {
                 showIcon
                 type="info"
                 message="登录提示"
-                description="真实后端模式建议配合浏览器钱包使用；若当前仅做 review 演示，可将 provider 设置为 mock 或 auto。"
+                description={
+                  reviewMockLoginEnabled
+                    ? '当前是显式 review mock 环境。真实签名登录与 review 演示登录已分离，避免假签名混入真实登录流。'
+                    : '真实登录必须使用有效签名。若未检测到浏览器钱包，请手动粘贴离线签名结果。'
+                }
               />
             )}
 

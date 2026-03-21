@@ -6,11 +6,19 @@ const fallbackChains: ChainOption[] = [
   { id: 8453, key: 'base', name: 'Base', confirmations: 20 },
 ];
 
-function parseProvider(value: string | undefined): ApiProvider {
+function requireEnv(name: string): string {
+  const value = import.meta.env[name];
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  throw new Error(`缺少必填前端环境变量 ${name}`);
+}
+
+function parseProvider(value: string): ApiProvider {
   if (value === 'http' || value === 'auto' || value === 'mock') {
     return value;
   }
-  return 'mock';
+  throw new Error(`不支持的 VITE_API_PROVIDER=${value}`);
 }
 
 function parseBool(value: string | undefined, fallback = false): boolean {
@@ -20,11 +28,11 @@ function parseBool(value: string | undefined, fallback = false): boolean {
   return value === 'true';
 }
 
-function parseEnv(value: string | undefined): AppEnv {
+function parseEnv(value: string): AppEnv {
   if (value === 'dev' || value === 'staging' || value === 'prod' || value === 'review') {
     return value;
   }
-  return 'review';
+  throw new Error(`不支持的 VITE_APP_ENV=${value}`);
 }
 
 function parseChains(value: string | undefined): ChainOption[] {
@@ -43,13 +51,34 @@ function parseChains(value: string | undefined): ChainOption[] {
   return selected.length > 0 ? selected : fallbackChains;
 }
 
+function isReviewLikeEnv(env: AppEnv): boolean {
+  return env === 'dev' || env === 'review';
+}
+
+const appEnv = parseEnv(requireEnv('VITE_APP_ENV'));
+const apiProvider = parseProvider(requireEnv('VITE_API_PROVIDER'));
+const reviewFeaturesEnabled = isReviewLikeEnv(appEnv);
+
+if (apiProvider === 'mock' && !reviewFeaturesEnabled) {
+  throw new Error('VITE_API_PROVIDER=mock 仅允许在 dev/review 环境启用');
+}
+
+const disableRouteGuard = parseBool(import.meta.env.VITE_DISABLE_ROUTE_GUARD, false);
+if (disableRouteGuard && !reviewFeaturesEnabled) {
+  throw new Error('VITE_DISABLE_ROUTE_GUARD=true 仅允许在 dev/review 环境启用');
+}
+
+const reviewFaucetEnabled = reviewFeaturesEnabled && parseBool(import.meta.env.VITE_REVIEW_FAUCET_ENABLED, false);
+
 export const appConfig = {
-  appEnv: parseEnv(import.meta.env.VITE_APP_ENV),
+  appEnv,
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080',
   wsBaseUrl: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8080/ws',
-  apiProvider: parseProvider(import.meta.env.VITE_API_PROVIDER),
-  disableRouteGuard: parseBool(import.meta.env.VITE_DISABLE_ROUTE_GUARD, false),
-  reviewFaucetEnabled: parseBool(import.meta.env.VITE_REVIEW_FAUCET_ENABLED, true),
+  apiProvider,
+  disableRouteGuard,
+  reviewFaucetEnabled,
+  reviewFeaturesEnabled,
+  mockSessionPersistenceEnabled: reviewFeaturesEnabled && apiProvider === 'mock',
   supportedChains: parseChains(import.meta.env.VITE_SUPPORTED_CHAINS),
 };
 

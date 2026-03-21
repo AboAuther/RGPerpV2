@@ -87,11 +87,21 @@ export function setApiAccessToken(token?: string) {
   accessToken = token;
 }
 
+interface ProviderPolicy {
+  featureName: string;
+  allowExplicitMock: boolean;
+  allowAutoMockFallback: boolean;
+}
+
 async function resolveProvider<T>(
   httpCall: () => Promise<T>,
   mockCall: () => Promise<T>,
+  policy: ProviderPolicy,
 ): Promise<{ data: T; provider: RuntimeProvider }> {
   if (appConfig.apiProvider === 'mock') {
+    if (!policy.allowExplicitMock || !appConfig.reviewFeaturesEnabled) {
+      throw new ApiError(`${policy.featureName} 不允许使用 mock provider`);
+    }
     return { data: await mockCall(), provider: 'mock' };
   }
 
@@ -101,10 +111,31 @@ async function resolveProvider<T>(
 
   try {
     return { data: await httpCall(), provider: 'http' };
-  } catch {
+  } catch (error) {
+    if (!policy.allowAutoMockFallback || !policy.allowExplicitMock || !appConfig.reviewFeaturesEnabled) {
+      throw error;
+    }
     return { data: await mockCall(), provider: 'mock' };
   }
 }
+
+const criticalPolicy: ProviderPolicy = {
+  featureName: '关键接口',
+  allowExplicitMock: true,
+  allowAutoMockFallback: false,
+};
+
+const reviewOnlyPolicy: ProviderPolicy = {
+  featureName: 'Review 功能',
+  allowExplicitMock: true,
+  allowAutoMockFallback: false,
+};
+
+const marketReadPolicy: ProviderPolicy = {
+  featureName: '市场数据',
+  allowExplicitMock: true,
+  allowAutoMockFallback: appConfig.reviewFeaturesEnabled,
+};
 
 const mockUser: User = {
   id: 10001,
@@ -524,6 +555,7 @@ export const api = {
             headers: { 'X-Trace-Id': buildTraceId() },
           }),
         () => mockApi.issueNonce(address, chainId),
+        { ...criticalPolicy, featureName: '登录挑战' },
       );
       return { ...result.data, provider: result.provider };
     },
@@ -547,6 +579,7 @@ export const api = {
             headers: { 'X-Trace-Id': buildTraceId() },
           }),
         () => mockApi.login(),
+        { ...criticalPolicy, featureName: '登录验签' },
       );
       return { ...result.data, provider: result.provider };
     },
@@ -557,6 +590,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<AccountSummary>('/api/v1/account/summary'),
         () => mockApi.getSummary(),
+        { ...criticalPolicy, featureName: '账户总览' },
       );
       return result.data;
     },
@@ -565,6 +599,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<BalanceItem[]>('/api/v1/account/balances'),
         () => mockApi.getBalances(),
+        { ...criticalPolicy, featureName: '账户余额' },
       );
       return result.data;
     },
@@ -573,6 +608,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<RiskSnapshot>('/api/v1/account/risk'),
         () => mockApi.getRisk(),
+        { ...criticalPolicy, featureName: '风险快照' },
       );
       return result.data;
     },
@@ -583,6 +619,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<DepositAddressItem[]>('/api/v1/wallet/deposit-addresses'),
         () => mockApi.getDepositAddresses(),
+        { ...criticalPolicy, featureName: '充值地址' },
       );
       return result.data;
     },
@@ -591,6 +628,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<DepositItem[]>('/api/v1/wallet/deposits'),
         () => mockApi.getDeposits(),
+        { ...criticalPolicy, featureName: '充值记录' },
       );
       return result.data;
     },
@@ -599,6 +637,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<WithdrawItem[]>('/api/v1/wallet/withdrawals'),
         () => mockApi.getWithdrawals(),
+        { ...criticalPolicy, featureName: '提现记录' },
       );
       return result.data;
     },
@@ -618,11 +657,16 @@ export const api = {
             },
           }),
         () => mockApi.createWithdrawal(input),
+        { ...criticalPolicy, featureName: '提现申请' },
       );
       return result.data;
     },
 
     async requestFaucet(input: { address: string; chainId: number }): Promise<void> {
+      if (!appConfig.reviewFaucetEnabled) {
+        throw new ApiError('当前环境未启用 review faucet');
+      }
+
       const result = await resolveProvider(
         () =>
           requestJson<void>('/api/v1/review/faucet', {
@@ -634,6 +678,7 @@ export const api = {
             headers: { 'X-Trace-Id': buildTraceId() },
           }),
         () => mockApi.requestFaucet(input.address, input.chainId),
+        { ...reviewOnlyPolicy, featureName: 'Review Faucet' },
       );
       return result.data;
     },
@@ -644,6 +689,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<SymbolItem[]>('/api/v1/markets/symbols'),
         () => mockApi.getSymbols(),
+        marketReadPolicy,
       );
       return result.data;
     },
@@ -652,6 +698,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<TickerItem[]>('/api/v1/markets/tickers'),
         () => mockApi.getTickers(),
+        marketReadPolicy,
       );
       return result.data;
     },
@@ -662,6 +709,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<OrderItem[]>('/api/v1/orders'),
         () => mockApi.getOrders(),
+        { ...criticalPolicy, featureName: '订单历史' },
       );
       return result.data;
     },
@@ -672,6 +720,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<FillItem[]>('/api/v1/fills'),
         () => mockApi.getFills(),
+        { ...criticalPolicy, featureName: '成交历史' },
       );
       return result.data;
     },
@@ -682,6 +731,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<PositionItem[]>('/api/v1/positions'),
         () => mockApi.getPositions(),
+        { ...criticalPolicy, featureName: '持仓数据' },
       );
       return result.data;
     },
@@ -692,6 +742,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<ExplorerEvent[]>('/api/v1/explorer/events'),
         () => mockApi.getExplorerEvents(),
+        { ...criticalPolicy, featureName: 'Explorer 事件流' },
       );
       return result.data;
     },
@@ -702,6 +753,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<FundingItem[]>('/api/v1/account/funding'),
         () => mockApi.getFundingHistory(),
+        { ...criticalPolicy, featureName: '资金费历史' },
       );
       return result.data;
     },
@@ -712,6 +764,7 @@ export const api = {
       const result = await resolveProvider(
         () => requestJson<TransferItem[]>('/api/v1/account/transfers'),
         () => mockApi.getTransfers(),
+        { ...criticalPolicy, featureName: '划转历史' },
       );
       return result.data;
     },

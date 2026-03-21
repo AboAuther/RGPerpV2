@@ -17,6 +17,7 @@ import { ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
 import type { DepositAddressItem, DepositItem } from '../../shared/domain';
 import { appConfig } from '../../shared/env';
 import { formatAddress, formatChainName, formatDateTime, formatUsd } from '../../shared/format';
+import { useWindowRefetch } from '../../shared/refetch';
 
 const { Paragraph, Text } = Typography;
 
@@ -30,37 +31,36 @@ export function DepositPage() {
   const { session } = useAuth();
   const [state, setState] = useState<DepositState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [faucetChain, setFaucetChain] = useState<number | null>(null);
 
-  useEffect(() => {
-    let active = true;
-
-    async function load() {
+  async function loadData(background = false) {
+    if (background && state) {
+      setRefreshing(true);
+    } else {
       setLoading(true);
-      setError(null);
-
-      try {
-        const [addresses, deposits] = await Promise.all([api.wallet.getDepositAddresses(), api.wallet.getDeposits()]);
-        if (active) {
-          setState({ addresses, deposits });
-        }
-      } catch (loadError) {
-        if (active) {
-          setError(loadError);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
     }
+    setError(null);
 
-    void load();
-    return () => {
-      active = false;
-    };
+    try {
+      const [addresses, deposits] = await Promise.all([api.wallet.getDepositAddresses(), api.wallet.getDeposits()]);
+      setState({ addresses, deposits });
+    } catch (loadError) {
+      setError(loadError);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
   }, []);
+
+  useWindowRefetch(() => {
+    void loadData(true);
+  }, !!state);
 
   async function handleCopyAddress(address: string) {
     try {
@@ -82,8 +82,7 @@ export function DepositPage() {
         address: session.user.evm_address,
         chainId,
       });
-      const [addresses, deposits] = await Promise.all([api.wallet.getDepositAddresses(), api.wallet.getDeposits()]);
-      setState({ addresses, deposits });
+      await loadData(true);
       message.success('已发起 review faucet');
     } catch (faucetError) {
       setError(faucetError);
@@ -99,6 +98,11 @@ export function DepositPage() {
           eyebrow="Wallet"
           title="Deposit"
           description="每条链独立地址、确认数和到账状态必须显式展示。前端不会把检测到视为已到账，只有 CREDITED 才表示链下入账完成。"
+          extra={
+            <Button onClick={() => void loadData(true)} loading={refreshing}>
+              刷新状态
+            </Button>
+          }
         />
 
       <Alert
@@ -129,7 +133,7 @@ export function DepositPage() {
                     <Text type="secondary">确认数要求: {item.confirmations}</Text>
                     <Space wrap>
                       <Button onClick={() => handleCopyAddress(item.address)}>复制地址</Button>
-                      {appConfig.appEnv === 'review' && appConfig.reviewFaucetEnabled ? (
+                      {appConfig.reviewFaucetEnabled ? (
                         <Button
                           type="primary"
                           ghost

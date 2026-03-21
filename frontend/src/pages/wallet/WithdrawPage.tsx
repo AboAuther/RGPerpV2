@@ -17,8 +17,13 @@ import { ErrorAlert, PageIntro, StatusTag, TwoColumnRow } from '../../shared/com
 import type { BalanceItem, WithdrawItem, WithdrawRequest } from '../../shared/domain';
 import { appConfig } from '../../shared/env';
 import { formatAddress, formatChainName, formatDateTime, formatUsd } from '../../shared/format';
+import { useWindowRefetch } from '../../shared/refetch';
 
 const { Paragraph, Text } = Typography;
+const evmAddressPattern = /^0x[a-fA-F0-9]{40}$/;
+const assetPrecisionMap: Record<string, number> = {
+  USDC: 6,
+};
 
 interface WithdrawState {
   balances: BalanceItem[];
@@ -30,11 +35,17 @@ export function WithdrawPage() {
   const { message } = AntdApp.useApp();
   const [state, setState] = useState<WithdrawState | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const selectedAsset = Form.useWatch('asset', form) || 'USDC';
 
-  async function loadData() {
-    setLoading(true);
+  async function loadData(background = false) {
+    if (background && state) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setError(null);
 
     try {
@@ -44,6 +55,7 @@ export function WithdrawPage() {
       setError(loadError);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }
 
@@ -51,10 +63,22 @@ export function WithdrawPage() {
     void loadData();
   }, []);
 
-  const availableBalance = useMemo(() => {
-    const balance = state?.balances.find((item) => item.account_code === 'USER_WALLET' && item.asset === 'USDC');
-    return balance?.balance || '0';
+  useWindowRefetch(() => {
+    void loadData(true);
+  }, !!state);
+
+  const withdrawableAssets = useMemo(() => {
+    const assetSet = new Set(['USDC']);
+    (state?.balances || [])
+      .filter((item) => item.account_code === 'USER_WALLET')
+      .forEach((item) => assetSet.add(item.asset));
+    return Array.from(assetSet.values());
   }, [state]);
+
+  const availableBalance = useMemo(() => {
+    const balance = state?.balances.find((item) => item.account_code === 'USER_WALLET' && item.asset === selectedAsset);
+    return balance?.balance || '0';
+  }, [selectedAsset, state]);
 
   async function handleSubmit(values: WithdrawRequest) {
     setSubmitting(true);
@@ -62,7 +86,7 @@ export function WithdrawPage() {
 
     try {
       await api.wallet.createWithdrawal(values);
-      await loadData();
+      await loadData(true);
       form.resetFields(['amount', 'to_address']);
       message.success('提现已申请，请等待审核与链上状态推进');
     } catch (submitError) {
@@ -79,6 +103,11 @@ export function WithdrawPage() {
           eyebrow="Wallet"
           title="Withdraw"
           description="提交成功仅代表已申请，不代表提现完成。冻结、审核、待签名、链上确认和失败退款必须逐态展示。"
+          extra={
+            <Button onClick={() => void loadData(true)} loading={refreshing}>
+              刷新状态
+            </Button>
+          }
         />
 
       <Alert
@@ -96,7 +125,9 @@ export function WithdrawPage() {
           left={
             <Card className="surface-card" title="Create Withdrawal">
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                <Text strong>可提现余额: {formatUsd(availableBalance)}</Text>
+                <Text strong>
+                  {selectedAsset} 可提现余额: {formatUsd(availableBalance)}
+                </Text>
                 <Form
                   form={form}
                   layout="vertical"
@@ -112,8 +143,25 @@ export function WithdrawPage() {
                     />
                   </Form.Item>
 
-                  <Form.Item label="资产" name="asset" rules={[{ required: true, message: '请输入资产' }]}>
-                    <Input placeholder="USDC" />
+                  <Form.Item
+                    label="资产"
+                    name="asset"
+                    rules={[
+                      { required: true, message: '请选择资产' },
+                      {
+                        validator: (_, value) =>
+                          withdrawableAssets.includes(value)
+                            ? Promise.resolve()
+                            : Promise.reject(new Error('当前资产不可提现')),
+                      },
+                    ]}
+                  >
+                    <Select
+                      options={withdrawableAssets.map((asset) => ({
+                        label: asset,
+                        value: asset,
+                      }))}
+                    />
                   </Form.Item>
 
                   <Form.Item
@@ -122,10 +170,29 @@ export function WithdrawPage() {
                     rules={[
                       { required: true, message: '请输入提现数量' },
                       {
-                        validator: (_, value) =>
-                          /^\d+(\.\d+)?$/.test(value || '')
-                            ? Promise.resolve()
-                            : Promise.reject(new Error('请输入合法数量')),
+                        validator: (_, value) => {
+                          const amount = String(value || '').trim();
+                          if (!/^\d+(\.\d+)?$/.test(amount)) {
+                            return Promise.reject(new Error('请输入合法数量'));
+                          }
+
+                          const decimals = amount.split('.')[1]?.length || 0;
+                          const precision = assetPrecisionMap[selectedAsset] ?? 18;
+                          if (decimals > precision) {
+                            return Promise.reject(new Error(`最多支持 ${precision} 位小数`));
+                          }
+
+                          const numericAmount = Number(amount);
+                          if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+                            return Promise.reject(new Error('提现数量必须大于 0'));
+                          }
+
+                          if (numericAmount > Number(availableBalance)) {
+                            return Promise.reject(new Error('提现数量不能超过可提现余额'));
+                          }
+
+                          return Promise.resolve();
+                        },
                       },
                     ]}
                   >
@@ -135,7 +202,15 @@ export function WithdrawPage() {
                   <Form.Item
                     label="目标地址"
                     name="to_address"
-                    rules={[{ required: true, message: '请输入目标地址' }]}
+                    rules={[
+                      { required: true, message: '请输入目标地址' },
+                      {
+                        validator: (_, value) =>
+                          evmAddressPattern.test(String(value || '').trim())
+                            ? Promise.resolve()
+                            : Promise.reject(new Error('请输入合法的 EVM 地址')),
+                      },
+                    ]}
                   >
                     <Input placeholder="0x..." />
                   </Form.Item>
@@ -151,10 +226,10 @@ export function WithdrawPage() {
             <Card className="surface-card" title="Rules">
               <Space direction="vertical" size={12}>
                 <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  默认提现手续费: {formatUsd('1')} / 大额审核阈值: {formatUsd('10000')}
+                  提现手续费、单笔限额、日限额和人工审核阈值以后端配置与服务端校验为准，前端不再写死展示数字。
                 </Paragraph>
                 <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                  review 环境仅做状态演示；真实是否可提、是否通过审核、是否已广播，全以后端和链上索引结果为准。
+                  当前表单只做 UX 校验：资产白名单、余额上限、精度和地址格式会先在前端拦截，但最终可提现性仍以后端为准。
                 </Paragraph>
                 <Paragraph type="secondary" style={{ marginBottom: 0 }}>
                   若提现失败，最终状态应回到 `REFUNDED`，而不是停留在模糊的“处理中”。

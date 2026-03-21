@@ -1,4 +1,4 @@
-import { Card, Input, Space, Spin, Table, Typography } from 'antd';
+import { Button, Card, Input, Space, Spin, Table, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
@@ -10,36 +10,31 @@ const { Paragraph, Text } = Typography;
 export function ExplorerPage() {
   const [events, setEvents] = useState<ExplorerEvent[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [query, setQuery] = useState('');
 
-  useEffect(() => {
-    let active = true;
-
-    async function load() {
+  async function loadData(background = false) {
+    if (background && events.length > 0) {
+      setRefreshing(true);
+    } else {
       setLoading(true);
-      setError(null);
-
-      try {
-        const response = await api.explorer.getEvents();
-        if (active) {
-          setEvents(response);
-        }
-      } catch (loadError) {
-        if (active) {
-          setError(loadError);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
-      }
     }
+    setError(null);
 
-    void load();
-    return () => {
-      active = false;
-    };
+    try {
+      const response = await api.explorer.getEvents();
+      setEvents(response);
+    } catch (loadError) {
+      setError(loadError);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
   }, []);
 
   const filtered = useMemo(() => {
@@ -62,6 +57,11 @@ export function ExplorerPage() {
           eyebrow="Explorer"
           title="Event Explorer"
           description="Explorer 是读模型，不反向修改账本或订单源表。当前支持按事件 ID、链上 hash、ledger_tx_id 和地址检索。"
+          extra={
+            <Button onClick={() => void loadData(true)} loading={refreshing}>
+              刷新事件
+            </Button>
+          }
         />
 
       <Card className="surface-card">
@@ -72,7 +72,7 @@ export function ExplorerPage() {
             placeholder="搜索 event_id / ledger_tx_id / chain_tx_hash / address"
           />
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            若后端缺失某些查询能力，当前页面会回退到 review mock 读模型，便于继续联调 UI。
+            Explorer 事件流只展示后端返回的读模型结果；查询失败会直接报错，不会自动伪造审计事件。
           </Paragraph>
         </Space>
       </Card>

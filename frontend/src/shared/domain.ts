@@ -20,6 +20,9 @@ export interface User {
   id: number;
   evm_address: string;
   status: string;
+  role?: string;
+  is_admin?: boolean;
+  capabilities?: string[];
 }
 
 export interface NonceResponse {

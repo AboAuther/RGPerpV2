@@ -1,6 +1,6 @@
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { AppShell } from '../shared/components';
-import { ProtectedOutlet } from '../shared/auth';
+import { AdminOutlet, ProtectedOutlet } from '../shared/auth';
 import { AdminConfigsPage, AdminDashboardPage, AdminLiquidationsPage, AdminWithdrawalsPage } from '../pages/admin/AdminPages';
 import { ExplorerPage } from '../pages/explorer/ExplorerPage';
 import { FillsHistoryPage, FundingHistoryPage, OrdersHistoryPage, TransfersHistoryPage } from '../pages/history/HistoryPages';
@@ -35,10 +35,15 @@ export const router = createBrowserRouter([
           { path: '/history/funding', element: <FundingHistoryPage /> },
           { path: '/history/transfers', element: <TransfersHistoryPage /> },
           { path: '/explorer', element: <ExplorerPage /> },
-          { path: '/admin/dashboard', element: <AdminDashboardPage /> },
-          { path: '/admin/withdrawals', element: <AdminWithdrawalsPage /> },
-          { path: '/admin/configs', element: <AdminConfigsPage /> },
-          { path: '/admin/liquidations', element: <AdminLiquidationsPage /> },
+          {
+            element: <AdminOutlet />,
+            children: [
+              { path: '/admin/dashboard', element: <AdminDashboardPage /> },
+              { path: '/admin/withdrawals', element: <AdminWithdrawalsPage /> },
+              { path: '/admin/configs', element: <AdminConfigsPage /> },
+              { path: '/admin/liquidations', element: <AdminLiquidationsPage /> },
+            ],
+          },
           { path: '*', element: <Navigate replace to="/portfolio" /> },
         ],
       },

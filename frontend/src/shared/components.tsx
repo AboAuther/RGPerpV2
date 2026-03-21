@@ -8,22 +8,21 @@ import {
   LockOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
-  SwapOutlined,
   WalletOutlined,
 } from '@ant-design/icons';
 import { Alert, Button, Card, Col, Layout, Menu, Row, Space, Tag, Typography } from 'antd';
 import type { MenuProps } from 'antd';
 import type { PropsWithChildren, ReactNode } from 'react';
 import { useMemo } from 'react';
-import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
-import { useAuth } from './auth';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { hasAdminAccess, useAuth } from './auth';
 import { appConfig } from './env';
 import { formatAddress } from './format';
 
 const { Header, Content, Footer } = Layout;
 const { Title, Paragraph, Text } = Typography;
 
-const navMenuItems: MenuProps['items'] = [
+const baseNavMenuItems: NonNullable<MenuProps['items']> = [
   { key: '/portfolio', icon: <DashboardOutlined />, label: 'Portfolio' },
   { key: '/trade', icon: <FundOutlined />, label: 'Trade' },
   {
@@ -47,18 +46,19 @@ const navMenuItems: MenuProps['items'] = [
     ],
   },
   { key: '/explorer', icon: <RadarChartOutlined />, label: 'Explorer' },
-  {
-    key: '/admin',
-    icon: <SafetyCertificateOutlined />,
-    label: 'Admin',
-    children: [
-      { key: '/admin/dashboard', icon: <AppstoreOutlined />, label: 'Dashboard' },
-      { key: '/admin/withdrawals', icon: <DollarOutlined />, label: 'Withdrawals' },
-      { key: '/admin/configs', icon: <LockOutlined />, label: 'Configs' },
-      { key: '/admin/liquidations', icon: <AuditOutlined />, label: 'Liquidations' },
-    ],
-  },
 ];
+
+const adminNavItem: NonNullable<MenuProps['items']>[number] = {
+  key: '/admin',
+  icon: <SafetyCertificateOutlined />,
+  label: 'Admin',
+  children: [
+    { key: '/admin/dashboard', icon: <AppstoreOutlined />, label: 'Dashboard' },
+    { key: '/admin/withdrawals', icon: <DollarOutlined />, label: 'Withdrawals' },
+    { key: '/admin/configs', icon: <LockOutlined />, label: 'Configs' },
+    { key: '/admin/liquidations', icon: <AuditOutlined />, label: 'Liquidations' },
+  ],
+};
 
 const statusColorMap: Record<string, string> = {
   ACTIVE: 'success',
@@ -173,6 +173,7 @@ export function AppShell() {
   const { session, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const canAccessAdmin = hasAdminAccess(session?.user);
 
   const selectedKeys = useMemo(() => {
     const path = location.pathname;
@@ -187,6 +188,10 @@ export function AppShell() {
     }
     return [path];
   }, [location.pathname]);
+
+  const navMenuItems = useMemo<NonNullable<MenuProps['items']>>(() => {
+    return canAccessAdmin ? [...baseNavMenuItems, adminNavItem] : baseNavMenuItems;
+  }, [canAccessAdmin]);
 
   return (
     <Layout className="app-shell">
