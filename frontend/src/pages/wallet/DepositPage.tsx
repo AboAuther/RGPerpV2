@@ -98,6 +98,8 @@ export function DepositPage() {
           eyebrow="Wallet"
           title="Deposit"
           description="每条链独立地址、确认数和到账状态必须显式展示。前端不会把检测到视为已到账，只有 CREDITED 才表示链下入账完成。"
+          titleEffect="shiny"
+          descriptionEffect="proximity"
           extra={
             <Button onClick={() => void loadData(true)} loading={refreshing}>
               刷新状态

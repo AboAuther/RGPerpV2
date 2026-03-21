@@ -64,6 +64,8 @@ export function PortfolioPage() {
           eyebrow="Account"
           title="Portfolio Overview"
           description="权益、可用余额、保证金和风险提示以后端返回为准。页面在手动刷新、窗口重新聚焦和网络恢复后会重新拉取关键账户数据。"
+          titleEffect="shiny"
+          descriptionEffect="proximity"
           extra={
             <Button onClick={refreshInBackground} loading={refreshing}>
               刷新数据

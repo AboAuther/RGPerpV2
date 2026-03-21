@@ -138,10 +138,71 @@ a {
   text-transform: uppercase;
 }
 
+.page-intro-chip,
+.page-intro-title-text,
+.page-intro-description-text {
+  display: inline-block;
+}
+
+.page-intro-chip[data-shiny-text],
+.page-intro-title-text[data-shiny-text] {
+  color: rgba(238, 247, 255, 0.26);
+  background: linear-gradient(112deg, rgba(255, 255, 255, 0.14) 28%, rgba(255, 255, 255, 0.95) 46%, rgba(79, 232, 209, 0.95) 52%, rgba(255, 255, 255, 0.24) 62%);
+  background-size: 220% 100%;
+  background-position: 140% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: landingShine 5s linear infinite;
+}
+
+.page-intro-title {
+  margin-bottom: 8px !important;
+}
+
+.page-intro-title--glitch .page-intro-title-text {
+  position: relative;
+  color: #fbfdff;
+  text-shadow: 0 0 18px rgba(120, 84, 255, 0.14);
+}
+
+.page-intro-title--glitch .page-intro-title-text::before,
+.page-intro-title--glitch .page-intro-title-text::after {
+  content: attr(data-glitch-text);
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.page-intro-title--glitch .page-intro-title-text::before {
+  color: rgba(78, 231, 255, 0.72);
+  transform: translate(2px, -1px);
+  clip-path: inset(0 0 52% 0);
+  animation: landingGlitchTop 3.4s steps(2, end) infinite;
+}
+
+.page-intro-title--glitch .page-intro-title-text::after {
+  color: rgba(255, 84, 247, 0.48);
+  transform: translate(-2px, 1px);
+  clip-path: inset(56% 0 0 0);
+  animation: landingGlitchBottom 3s steps(2, end) infinite;
+}
+
 .page-intro-description {
   max-width: 720px;
   margin-bottom: 0;
   color: #8ca3b8;
+}
+
+.page-intro-description--proximity .page-intro-description-text {
+  display: inline-flex;
+  flex-wrap: wrap;
+  row-gap: 0.15em;
+}
+
+.page-intro-description--proximity .landing-variable-char {
+  display: inline-block;
+  transition: transform 140ms ease, opacity 140ms ease, color 140ms ease, text-shadow 140ms ease;
+  will-change: transform, opacity;
 }
 
 .metric-card {
@@ -339,6 +400,66 @@ a {
 
 .table-card .ant-card-head {
   border-bottom: none;
+}
+
+@keyframes landingShine {
+  0% {
+    background-position: 140% 0;
+  }
+  100% {
+    background-position: -40% 0;
+  }
+}
+
+@keyframes landingGlitchTop {
+  0%,
+  84%,
+  100% {
+    transform: translate(2px, -1px);
+    opacity: 0;
+  }
+  85%,
+  89% {
+    transform: translate(5px, -2px);
+    opacity: 1;
+  }
+  90%,
+  94% {
+    transform: translate(-2px, 1px);
+    opacity: 0.8;
+  }
+}
+
+@keyframes landingGlitchBottom {
+  0%,
+  80%,
+  100% {
+    transform: translate(-2px, 1px);
+    opacity: 0;
+  }
+  81%,
+  86% {
+    transform: translate(-5px, 2px);
+    opacity: 0.9;
+  }
+  87%,
+  92% {
+    transform: translate(3px, -1px);
+    opacity: 0.65;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-intro-chip[data-shiny-text],
+  .page-intro-title-text[data-shiny-text],
+  .page-intro-title--glitch .page-intro-title-text::before,
+  .page-intro-title--glitch .page-intro-title-text::after {
+    animation: none !important;
+  }
+
+  .page-intro-description--proximity .landing-variable-char {
+    transition: none;
+  }
 }
 
 @media (max-width: 1100px) {

@@ -13,7 +13,7 @@ function AdminPageTemplate({
   return (
     <div className="rg-app-page rg-app-page--admin">
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
-        <PageIntro eyebrow="Admin" title={title} description={description} />
+        <PageIntro eyebrow="Admin" title={title} description={description} titleEffect="glitch" descriptionEffect="proximity" />
         <Alert
           showIcon
           type="warning"

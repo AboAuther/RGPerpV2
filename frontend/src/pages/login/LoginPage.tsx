@@ -14,6 +14,8 @@ import {
 } from 'antd';
 import { useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import ShinyText from '../../components/landing/ShinyText';
+import VariableProximityText from '../../components/landing/VariableProximityText';
 import { api, buildLoginMessage } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { BrandLogo, ErrorAlert } from '../../shared/components';
@@ -217,7 +219,7 @@ export function LoginPage() {
           <BrandLogo size={42} />
           <div>
             <Title level={3} style={{ margin: 0 }}>
-              RGPerp
+              <ShinyText text="RGPerp" className="page-intro-title-text" />
             </Title>
             <Text type="secondary">Production-grade perp console</Text>
           </div>
@@ -229,9 +231,11 @@ export function LoginPage() {
           <Title level={1} style={{ maxWidth: 680, marginTop: 0 }}>
             钱包登录先绑定域名、链 ID 和一次性 nonce，再进入资金与账户视图。
           </Title>
-          <Paragraph style={{ fontSize: 17, maxWidth: 760 }}>
-            这个实现遵循当前规范：前端不持有资金真相，不把 nonce 复用，不把 access token 持久化到不安全存储。
-            关键登录、账户和钱包路径默认直连真实接口；只有显式 `review/dev + mock provider` 才允许进入隔离的演示流。
+          <Paragraph className="page-intro-description page-intro-description--proximity" style={{ fontSize: 17, maxWidth: 760 }}>
+            <VariableProximityText
+              text="这个实现遵循当前规范：前端不持有资金真相，不把 nonce 复用，不把 access token 持久化到不安全存储。关键登录、账户和钱包路径默认直连真实接口；只有显式 review/dev + mock provider 才允许进入隔离的演示流。"
+              className="page-intro-description-text"
+            />
           </Paragraph>
 
           <div className="hero-highlight">
@@ -266,7 +270,7 @@ export function LoginPage() {
           <Space direction="vertical" size={20} style={{ width: '100%' }}>
             <div>
               <Title level={3} style={{ marginTop: 0, marginBottom: 8 }}>
-                Sign-In Console
+                <ShinyText text="Sign-In Console" className="page-intro-title-text" />
               </Title>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
                 先请求一次性 nonce，再签名登录。`ACCEPTED` 不等于已授权所有操作，后续仍要以后端权限校验为准。

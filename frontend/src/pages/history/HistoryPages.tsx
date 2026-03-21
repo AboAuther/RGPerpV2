@@ -176,7 +176,7 @@ function HistoryPageScaffold({
   return (
     <div className={`rg-app-page rg-app-page--history rg-app-page--${title.toLowerCase()}`}>
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
-        <PageIntro eyebrow={eyebrow} title={title} description={description} />
+        <PageIntro eyebrow={eyebrow} title={title} description={description} titleEffect="shiny" descriptionEffect="proximity" />
         {loading ? <Spin size="large" /> : null}
         <ErrorAlert error={error} />
         <Card className="table-card">{children}</Card>

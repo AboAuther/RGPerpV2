@@ -15,12 +15,17 @@ import type { MenuProps } from 'antd';
 import type { PropsWithChildren, ReactNode } from 'react';
 import { useMemo } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import GlitchText from '../components/landing/GlitchText';
+import ShinyText from '../components/landing/ShinyText';
+import VariableProximityText from '../components/landing/VariableProximityText';
 import { hasAdminAccess, useAuth } from './auth';
 import { appConfig } from './env';
 import { formatAddress } from './format';
 
 const { Header, Content, Footer } = Layout;
 const { Title, Paragraph, Text } = Typography;
+
+type IntroTextEffect = 'none' | 'shiny' | 'glitch' | 'proximity';
 
 const baseNavMenuItems: NonNullable<MenuProps['items']> = [
   { key: '/portfolio', icon: <DashboardOutlined />, label: 'Portfolio' },
@@ -102,24 +107,56 @@ export function PageIntro({
   title,
   description,
   extra,
+  eyebrowEffect = 'shiny',
+  titleEffect = 'none',
+  descriptionEffect = 'none',
 }: {
   eyebrow?: string;
   title: string;
   description: string;
   extra?: ReactNode;
+  eyebrowEffect?: IntroTextEffect;
+  titleEffect?: IntroTextEffect;
+  descriptionEffect?: IntroTextEffect;
 }) {
+  const eyebrowNode = renderAnimatedCopy(eyebrow, eyebrowEffect, 'page-intro-chip');
+  const titleNode = renderAnimatedCopy(title, titleEffect, 'page-intro-title-text');
+  const descriptionNode = renderAnimatedCopy(description, descriptionEffect, 'page-intro-description-text');
+
   return (
     <div className="page-intro">
       <div>
-        {eyebrow ? <Text className="page-intro-eyebrow">{eyebrow}</Text> : null}
-        <Title level={2} style={{ marginBottom: 8 }}>
-          {title}
+        {eyebrow ? <Text className="page-intro-eyebrow">{eyebrowNode}</Text> : null}
+        <Title level={2} className={`page-intro-title ${titleEffect !== 'none' ? `page-intro-title--${titleEffect}` : ''}`}>
+          {titleNode}
         </Title>
-        <Paragraph className="page-intro-description">{description}</Paragraph>
+        <Paragraph className={`page-intro-description ${descriptionEffect !== 'none' ? `page-intro-description--${descriptionEffect}` : ''}`}>
+          {descriptionNode}
+        </Paragraph>
       </div>
       {extra ? <div>{extra}</div> : null}
     </div>
   );
+}
+
+function renderAnimatedCopy(text: string | undefined, effect: IntroTextEffect, className: string) {
+  if (!text) {
+    return null;
+  }
+
+  if (effect === 'shiny') {
+    return <ShinyText text={text} className={className} />;
+  }
+
+  if (effect === 'glitch') {
+    return <GlitchText text={text} className={className} />;
+  }
+
+  if (effect === 'proximity') {
+    return <VariableProximityText text={text} className={className} />;
+  }
+
+  return <span className={className}>{text}</span>;
 }
 
 export function MetricCard({

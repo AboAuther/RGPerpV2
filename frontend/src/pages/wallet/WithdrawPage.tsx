@@ -103,6 +103,8 @@ export function WithdrawPage() {
           eyebrow="Wallet"
           title="Withdraw"
           description="提交成功仅代表已申请，不代表提现完成。冻结、审核、待签名、链上确认和失败退款必须逐态展示。"
+          titleEffect="shiny"
+          descriptionEffect="proximity"
           extra={
             <Button onClick={() => void loadData(true)} loading={refreshing}>
               刷新状态

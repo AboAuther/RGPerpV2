@@ -57,6 +57,8 @@ export function ExplorerPage() {
           eyebrow="Explorer"
           title="Event Explorer"
           description="Explorer 是读模型，不反向修改账本或订单源表。当前支持按事件 ID、链上 hash、ledger_tx_id 和地址检索。"
+          titleEffect="shiny"
+          descriptionEffect="proximity"
           extra={
             <Button onClick={() => void loadData(true)} loading={refreshing}>
               刷新事件

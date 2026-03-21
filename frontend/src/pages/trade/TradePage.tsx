@@ -72,6 +72,8 @@ export function TradePage() {
           eyebrow="Trading"
           title="Trade Shell"
           description="交易页基础壳已连通行情、订单、仓位读模型。正式下单流属于 Milestone 3，当前先把状态展示与页面骨架按规范落地。"
+          titleEffect="glitch"
+          descriptionEffect="proximity"
         />
 
       <Alert
