@@ -1,0 +1,759 @@
+openapi: 3.1.0
+info:
+  title: RGPerp API
+  version: 0.1.0
+  description: |
+    链上托管、链下交易、链下风控、链下清算、外部对冲永续合约系统 API 规范。
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Auth
+  - name: Account
+  - name: Wallet
+  - name: Market
+  - name: Order
+  - name: Position
+  - name: Explorer
+  - name: Admin
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+    TraceId:
+      name: X-Trace-Id
+      in: header
+      required: false
+      schema:
+        type: string
+  schemas:
+    ApiResponse:
+      type: object
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        trace_id:
+          type: string
+        data: {}
+      required: [code, message, trace_id]
+    ErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            error_detail:
+              type: object
+    NonceRequest:
+      type: object
+      properties:
+        address:
+          type: string
+        chain_id:
+          type: integer
+      required: [address, chain_id]
+    NonceResponse:
+      type: object
+      properties:
+        nonce:
+          type: string
+        domain:
+          type: string
+        chain_id:
+          type: integer
+        expires_at:
+          type: string
+          format: date-time
+    LoginRequest:
+      type: object
+      properties:
+        address:
+          type: string
+        chain_id:
+          type: integer
+        nonce:
+          type: string
+        signature:
+          type: string
+      required: [address, chain_id, nonce, signature]
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        evm_address:
+          type: string
+        status:
+          type: string
+      required: [id, evm_address, status]
+    AccountSummary:
+      type: object
+      properties:
+        equity:
+          type: string
+        available_balance:
+          type: string
+        total_initial_margin:
+          type: string
+        total_maintenance_margin:
+          type: string
+        unrealized_pnl:
+          type: string
+        margin_ratio:
+          type: string
+    BalanceItem:
+      type: object
+      properties:
+        account_code:
+          type: string
+        asset:
+          type: string
+        balance:
+          type: string
+    DepositAddressItem:
+      type: object
+      properties:
+        chain_id:
+          type: integer
+        asset:
+          type: string
+        address:
+          type: string
+        confirmations:
+          type: integer
+    WithdrawRequest:
+      type: object
+      properties:
+        chain_id:
+          type: integer
+        asset:
+          type: string
+        amount:
+          type: string
+        to_address:
+          type: string
+      required: [chain_id, asset, amount, to_address]
+    WithdrawItem:
+      type: object
+      properties:
+        withdraw_id:
+          type: string
+        chain_id:
+          type: integer
+        asset:
+          type: string
+        amount:
+          type: string
+        fee_amount:
+          type: string
+        to_address:
+          type: string
+        status:
+          type: string
+        tx_hash:
+          type: string
+          nullable: true
+    TransferRequest:
+      type: object
+      properties:
+        to_address:
+          type: string
+        amount:
+          type: string
+        asset:
+          type: string
+      required: [to_address, amount, asset]
+    SymbolItem:
+      type: object
+      properties:
+        symbol:
+          type: string
+        asset_class:
+          type: string
+        tick_size:
+          type: string
+        step_size:
+          type: string
+        min_notional:
+          type: string
+        status:
+          type: string
+    TickerItem:
+      type: object
+      properties:
+        symbol:
+          type: string
+        index_price:
+          type: string
+        mark_price:
+          type: string
+        best_bid:
+          type: string
+        best_ask:
+          type: string
+        ts:
+          type: string
+          format: date-time
+    OrderCreateRequest:
+      type: object
+      properties:
+        client_order_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+          enum: [BUY, SELL]
+        position_effect:
+          type: string
+          enum: [OPEN, REDUCE, CLOSE]
+        type:
+          type: string
+          enum: [MARKET, LIMIT, STOP_MARKET, STOP_LIMIT, TAKE_PROFIT_MARKET, TAKE_PROFIT_LIMIT]
+        qty:
+          type: string
+        price:
+          type: string
+          nullable: true
+        trigger_price:
+          type: string
+          nullable: true
+        reduce_only:
+          type: boolean
+        time_in_force:
+          type: string
+          enum: [GTC, GTD]
+        max_slippage_bps:
+          type: integer
+      required: [client_order_id, symbol, side, position_effect, type, qty]
+    OrderItem:
+      type: object
+      properties:
+        order_id:
+          type: string
+        client_order_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+        position_effect:
+          type: string
+        type:
+          type: string
+        qty:
+          type: string
+        filled_qty:
+          type: string
+        avg_fill_price:
+          type: string
+        price:
+          type: string
+          nullable: true
+        trigger_price:
+          type: string
+          nullable: true
+        reduce_only:
+          type: boolean
+        status:
+          type: string
+        reject_reason:
+          type: string
+          nullable: true
+    FillItem:
+      type: object
+      properties:
+        fill_id:
+          type: string
+        order_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+        qty:
+          type: string
+        price:
+          type: string
+        fee_amount:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    PositionItem:
+      type: object
+      properties:
+        position_id:
+          type: string
+        symbol:
+          type: string
+        side:
+          type: string
+        qty:
+          type: string
+        avg_entry_price:
+          type: string
+        mark_price:
+          type: string
+        initial_margin:
+          type: string
+        maintenance_margin:
+          type: string
+        realized_pnl:
+          type: string
+        unrealized_pnl:
+          type: string
+        funding_accrual:
+          type: string
+        liquidation_price:
+          type: string
+        status:
+          type: string
+    ExplorerEvent:
+      type: object
+      properties:
+        event_id:
+          type: string
+        event_type:
+          type: string
+        ledger_tx_id:
+          type: string
+          nullable: true
+        chain_tx_hash:
+          type: string
+          nullable: true
+        order_id:
+          type: string
+          nullable: true
+        fill_id:
+          type: string
+          nullable: true
+        position_id:
+          type: string
+          nullable: true
+        address:
+          type: string
+          nullable: true
+        payload:
+          type: object
+    ConfigUpdateRequest:
+      type: object
+      properties:
+        config_key:
+          type: string
+        scope_type:
+          type: string
+        scope_value:
+          type: string
+        value:
+          type: object
+        reason:
+          type: string
+        effective_at:
+          type: string
+          format: date-time
+      required: [config_key, scope_type, scope_value, value, reason, effective_at]
+paths:
+  /api/v1/auth/nonce:
+    post:
+      tags: [Auth]
+      summary: 获取登录 nonce
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NonceRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NonceResponse'
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 钱包签名登录
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LoginResponse'
+  /api/v1/account/summary:
+    get:
+      tags: [Account]
+      security: [{ bearerAuth: [] }]
+      summary: 获取账户汇总
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AccountSummary'
+  /api/v1/account/balances:
+    get:
+      tags: [Account]
+      security: [{ bearerAuth: [] }]
+      summary: 获取账户子账户余额
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/BalanceItem'
+  /api/v1/account/transfer:
+    post:
+      tags: [Account]
+      security: [{ bearerAuth: [] }]
+      summary: 发起内部转账
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+  /api/v1/wallet/deposit-addresses:
+    get:
+      tags: [Wallet]
+      security: [{ bearerAuth: [] }]
+      summary: 获取充值地址
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DepositAddressItem'
+  /api/v1/wallet/withdrawals:
+    post:
+      tags: [Wallet]
+      security: [{ bearerAuth: [] }]
+      summary: 发起提现
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WithdrawRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+    get:
+      tags: [Wallet]
+      security: [{ bearerAuth: [] }]
+      summary: 查询提现记录
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/WithdrawItem'
+  /api/v1/markets/symbols:
+    get:
+      tags: [Market]
+      summary: 获取交易对配置
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SymbolItem'
+  /api/v1/markets/tickers:
+    get:
+      tags: [Market]
+      summary: 获取行情
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/TickerItem'
+  /api/v1/orders:
+    post:
+      tags: [Order]
+      security: [{ bearerAuth: [] }]
+      summary: 提交订单
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderCreateRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OrderItem'
+    get:
+      tags: [Order]
+      security: [{ bearerAuth: [] }]
+      summary: 查询订单
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderItem'
+  /api/v1/orders/{orderId}/cancel:
+    post:
+      tags: [Order]
+      security: [{ bearerAuth: [] }]
+      summary: 撤单
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+  /api/v1/fills:
+    get:
+      tags: [Order]
+      security: [{ bearerAuth: [] }]
+      summary: 查询成交
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/FillItem'
+  /api/v1/positions:
+    get:
+      tags: [Position]
+      security: [{ bearerAuth: [] }]
+      summary: 查询仓位
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PositionItem'
+  /api/v1/explorer/events:
+    get:
+      tags: [Explorer]
+      security: [{ bearerAuth: [] }]
+      summary: Explorer 查询事件
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ExplorerEvent'
+  /api/v1/admin/configs:
+    post:
+      tags: [Admin]
+      security: [{ bearerAuth: [] }]
+      summary: 提交配置变更
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigUpdateRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+  /api/v1/admin/withdrawals/{withdrawId}/approve:
+    post:
+      tags: [Admin]
+      security: [{ bearerAuth: [] }]
+      summary: 审批提现
+      parameters:
+        - name: withdrawId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TraceId'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'
+  /api/v1/review/faucet:
+    post:
+      tags: [Wallet]
+      security: []
+      summary: Review 环境发放测试资金
+      parameters:
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                address:
+                  type: string
+                chain_id:
+                  type: integer
+              required: [address, chain_id]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiResponse'

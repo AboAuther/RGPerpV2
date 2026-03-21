@@ -1,0 +1,122 @@
+package httptransport
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
+)
+
+type AuthUseCase interface {
+	IssueNonce(ctx context.Context, input authdomain.IssueNonceInput) (authdomain.IssueNonceOutput, error)
+	Login(ctx context.Context, input authdomain.LoginInput) (authdomain.LoginResult, error)
+}
+
+type AuthHandler struct {
+	authUC AuthUseCase
+}
+
+func NewAuthHandler(authUC AuthUseCase) *AuthHandler {
+	return &AuthHandler{authUC: authUC}
+}
+
+type issueNonceRequest struct {
+	Address string `json:"address"`
+	ChainID int64  `json:"chain_id"`
+}
+
+type loginRequest struct {
+	Address           string `json:"address"`
+	ChainID           int64  `json:"chain_id"`
+	Nonce             string `json:"nonce"`
+	Signature         string `json:"signature"`
+	DeviceFingerprint string `json:"device_fingerprint"`
+	IP                string `json:"ip"`
+	UserAgent         string `json:"user_agent"`
+}
+
+func (h *AuthHandler) Register(r gin.IRoutes) {
+	r.POST("/auth/nonce", h.issueNonce)
+	r.POST("/auth/login", h.login)
+}
+
+func (h *AuthHandler) issueNonce(c *gin.Context) {
+	var req issueNonceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, err)
+		return
+	}
+
+	resp, err := h.authUC.IssueNonce(c.Request.Context(), authdomain.IssueNonceInput{
+		Address: req.Address,
+		ChainID: req.ChainID,
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+
+	writeOK(c, gin.H{
+		"nonce":      resp.Nonce,
+		"domain":     resp.Domain,
+		"chain_id":   resp.ChainID,
+		"expires_at": resp.ExpiresAt,
+	})
+}
+
+func (h *AuthHandler) login(c *gin.Context) {
+	var req loginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, err)
+		return
+	}
+
+	// Prefer request metadata when explicit fields are absent.
+	if req.IP == "" {
+		req.IP = c.ClientIP()
+	}
+	if req.UserAgent == "" {
+		req.UserAgent = c.Request.UserAgent()
+	}
+
+	resp, err := h.authUC.Login(c.Request.Context(), authdomain.LoginInput{
+		Address:           req.Address,
+		ChainID:           req.ChainID,
+		Nonce:             req.Nonce,
+		Signature:         req.Signature,
+		DeviceFingerprint: req.DeviceFingerprint,
+		IP:                req.IP,
+		UserAgent:         req.UserAgent,
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+
+	writeOK(c, gin.H{
+		"access_token":  resp.AccessToken,
+		"refresh_token": resp.RefreshToken,
+		"expires_at":    resp.ExpiresAt,
+		"user": gin.H{
+			"id":          resp.User.ID,
+			"evm_address": resp.User.EVMAddress,
+			"status":      resp.User.Status,
+		},
+	})
+}
+
+func NewEngine(authHandler *AuthHandler) *gin.Engine {
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+
+	engine.GET("/healthz", func(c *gin.Context) {
+		writeOK(c, gin.H{"status": http.StatusText(http.StatusOK)})
+	})
+
+	v1 := engine.Group("/api/v1")
+	if authHandler != nil {
+		authHandler.Register(v1)
+	}
+	return engine
+}
