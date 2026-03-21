@@ -4,6 +4,7 @@ import { ProtectedOutlet } from '../shared/auth';
 import { AdminConfigsPage, AdminDashboardPage, AdminLiquidationsPage, AdminWithdrawalsPage } from '../pages/admin/AdminPages';
 import { ExplorerPage } from '../pages/explorer/ExplorerPage';
 import { FillsHistoryPage, FundingHistoryPage, OrdersHistoryPage, TransfersHistoryPage } from '../pages/history/HistoryPages';
+import { LandingPage } from '../pages/landing/LandingPage';
 import { LoginPage } from '../pages/login/LoginPage';
 import { PortfolioPage } from '../pages/portfolio/PortfolioPage';
 import { TradePage } from '../pages/trade/TradePage';
@@ -11,6 +12,10 @@ import { DepositPage } from '../pages/wallet/DepositPage';
 import { WithdrawPage } from '../pages/wallet/WithdrawPage';
 
 export const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <LandingPage />,
+  },
   {
     path: '/login',
     element: <LoginPage />,
@@ -21,7 +26,6 @@ export const router = createBrowserRouter([
       {
         element: <AppShell />,
         children: [
-          { path: '/', element: <Navigate replace to="/portfolio" /> },
           { path: '/portfolio', element: <PortfolioPage /> },
           { path: '/trade', element: <TradePage /> },
           { path: '/wallet/deposit', element: <DepositPage /> },
@@ -42,6 +46,6 @@ export const router = createBrowserRouter([
   },
   {
     path: '*',
-    element: <Navigate replace to="/login" />,
+    element: <Navigate replace to="/" />,
   },
 ]);

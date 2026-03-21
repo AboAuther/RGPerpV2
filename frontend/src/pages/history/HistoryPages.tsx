@@ -174,11 +174,13 @@ function HistoryPageScaffold({
   children: ReactNode;
 }) {
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro eyebrow={eyebrow} title={title} description={description} />
-      {loading ? <Spin size="large" /> : null}
-      <ErrorAlert error={error} />
-      <Card className="table-card">{children}</Card>
-    </Space>
+    <div className={`rg-app-page rg-app-page--history rg-app-page--${title.toLowerCase()}`}>
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro eyebrow={eyebrow} title={title} description={description} />
+        {loading ? <Spin size="large" /> : null}
+        <ErrorAlert error={error} />
+        <Card className="table-card">{children}</Card>
+      </Space>
+    </div>
   );
 }

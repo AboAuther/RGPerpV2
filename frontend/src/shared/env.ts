@@ -48,6 +48,7 @@ export const appConfig = {
   apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080',
   wsBaseUrl: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8080/ws',
   apiProvider: parseProvider(import.meta.env.VITE_API_PROVIDER),
+  disableRouteGuard: parseBool(import.meta.env.VITE_DISABLE_ROUTE_GUARD, false),
   reviewFaucetEnabled: parseBool(import.meta.env.VITE_REVIEW_FAUCET_ENABLED, true),
   supportedChains: parseChains(import.meta.env.VITE_SUPPORTED_CHAINS),
 };

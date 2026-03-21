@@ -3,6 +3,7 @@ import type { PropsWithChildren } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import type { AuthenticatedSession } from './domain';
 import { setApiAccessToken } from './api';
+import { appConfig } from './env';
 
 interface AuthContextValue {
   session: AuthenticatedSession | null;
@@ -80,6 +81,10 @@ export function useAuth(): AuthContextValue {
 export function ProtectedOutlet() {
   const { isAuthenticated } = useAuth();
   const location = useLocation();
+
+  if (appConfig.disableRouteGuard) {
+    return <Outlet />;
+  }
 
   if (!isAuthenticated) {
     return <Navigate replace to="/login" state={{ from: location.pathname }} />;

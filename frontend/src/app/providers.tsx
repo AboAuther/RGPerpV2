@@ -6,17 +6,44 @@ export function AppProviders({ children }: PropsWithChildren) {
   return (
     <ConfigProvider
       theme={{
-        algorithm: theme.defaultAlgorithm,
+        algorithm: theme.darkAlgorithm,
         token: {
-          colorPrimary: '#d55f28',
-          colorInfo: '#19636d',
-          colorSuccess: '#2f8f62',
-          colorWarning: '#bb7b16',
-          colorError: '#bf3f36',
-          colorBgBase: '#f5eee2',
-          colorBorderSecondary: '#dccfb8',
-          borderRadius: 18,
-          fontFamily: '"Space Grotesk", "IBM Plex Sans", "Avenir Next", "PingFang SC", sans-serif',
+          colorPrimary: '#20c9b5',
+          colorInfo: '#5eb2ff',
+          colorSuccess: '#2ec9b0',
+          colorWarning: '#fbbf24',
+          colorError: '#ff6b6b',
+          colorBgBase: '#08131b',
+          colorBgContainer: '#0d1b24',
+          colorText: '#edf6ff',
+          colorTextSecondary: '#8ca3b8',
+          colorBorderSecondary: '#17303d',
+          borderRadius: 16,
+          fontFamily: '"IBM Plex Sans", "PingFang SC", "Noto Sans SC", sans-serif',
+          fontFamilyCode: '"IBM Plex Mono", monospace',
+        },
+        components: {
+          Layout: {
+            headerBg: 'rgba(10, 24, 33, 0.88)',
+            bodyBg: 'transparent',
+            footerBg: 'transparent',
+          },
+          Card: {
+            colorBgContainer: 'rgba(12, 27, 36, 0.88)',
+            boxShadowTertiary: '0 16px 40px rgba(0,0,0,0.28)',
+          },
+          Table: {
+            headerBg: '#102431',
+            rowHoverBg: '#102634',
+          },
+          Menu: {
+            darkItemBg: 'transparent',
+            darkSubMenuItemBg: 'rgba(8, 19, 31, 0.92)',
+            darkItemSelectedBg: 'rgba(32, 201, 181, 0.12)',
+          },
+          Alert: {
+            withDescriptionIconSize: 18,
+          },
         },
       }}
     >

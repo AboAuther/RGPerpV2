@@ -11,25 +11,27 @@ function AdminPageTemplate({
   items: string[];
 }) {
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro eyebrow="Admin" title={title} description={description} />
-      <Alert
-        showIcon
-        type="warning"
-        message="后台页仅做前端壳"
-        description="管理操作的最终 RBAC、审计、审批链必须由后端控制。当前页面只提供信息架构和后续联调占位。"
-      />
-      <Card className="surface-card">
-        <List
-          dataSource={items}
-          renderItem={(item) => <List.Item>{item}</List.Item>}
+    <div className="rg-app-page rg-app-page--admin">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro eyebrow="Admin" title={title} description={description} />
+        <Alert
+          showIcon
+          type="warning"
+          message="后台页仅做前端壳"
+          description="管理操作的最终 RBAC、审计、审批链必须由后端控制。当前页面只提供信息架构和后续联调占位。"
         />
-      </Card>
-      <EmptyStateCard
-        title="待后端联调"
-        description="当前后台只保留路由、结构和约束说明，避免在配置、风控、提现审核尚未具备服务端权限闭环时做危险假实现。"
-      />
-    </Space>
+        <Card className="surface-card">
+          <List
+            dataSource={items}
+            renderItem={(item) => <List.Item>{item}</List.Item>}
+          />
+        </Card>
+        <EmptyStateCard
+          title="待后端联调"
+          description="当前后台只保留路由、结构和约束说明，避免在配置、风控、提现审核尚未具备服务端权限闭环时做危险假实现。"
+        />
+      </Space>
+    </div>
   );
 }
 

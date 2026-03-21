@@ -1,4 +1,5 @@
 import {
+  AppstoreOutlined,
   AuditOutlined,
   DashboardOutlined,
   DollarOutlined,
@@ -11,39 +12,62 @@ import {
   WalletOutlined,
 } from '@ant-design/icons';
 import { Alert, Button, Card, Col, Layout, Menu, Row, Space, Tag, Typography } from 'antd';
-import Grid from 'antd/es/grid';
 import type { MenuProps } from 'antd';
 import type { PropsWithChildren, ReactNode } from 'react';
 import { useMemo } from 'react';
-import { Link, Outlet, useLocation } from 'react-router-dom';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './auth';
 import { appConfig } from './env';
 import { formatAddress } from './format';
 
-const { Header, Sider, Content } = Layout;
+const { Header, Content, Footer } = Layout;
 const { Title, Paragraph, Text } = Typography;
 
-const userMenuItems: MenuProps['items'] = [
-  { key: '/portfolio', icon: <DashboardOutlined />, label: <Link to="/portfolio">Portfolio</Link> },
-  { key: '/trade', icon: <FundOutlined />, label: <Link to="/trade">Trade</Link> },
-  { key: '/wallet/deposit', icon: <WalletOutlined />, label: <Link to="/wallet/deposit">Deposit</Link> },
-  { key: '/wallet/withdraw', icon: <DollarOutlined />, label: <Link to="/wallet/withdraw">Withdraw</Link> },
-  { key: '/history/orders', icon: <HistoryOutlined />, label: <Link to="/history/orders">Orders</Link> },
-  { key: '/history/fills', icon: <HistoryOutlined />, label: <Link to="/history/fills">Fills</Link> },
-  { key: '/history/funding', icon: <SwapOutlined />, label: <Link to="/history/funding">Funding</Link> },
-  { key: '/history/transfers', icon: <SwapOutlined />, label: <Link to="/history/transfers">Transfers</Link> },
-  { key: '/explorer', icon: <RadarChartOutlined />, label: <Link to="/explorer">Explorer</Link> },
-];
-
-const adminMenuItems: MenuProps['items'] = [
-  { key: '/admin/dashboard', icon: <SafetyCertificateOutlined />, label: <Link to="/admin/dashboard">Admin Dashboard</Link> },
-  { key: '/admin/withdrawals', icon: <DollarOutlined />, label: <Link to="/admin/withdrawals">Withdraw Reviews</Link> },
-  { key: '/admin/configs', icon: <LockOutlined />, label: <Link to="/admin/configs">Configs</Link> },
-  { key: '/admin/liquidations', icon: <AuditOutlined />, label: <Link to="/admin/liquidations">Liquidations</Link> },
+const navMenuItems: MenuProps['items'] = [
+  { key: '/portfolio', icon: <DashboardOutlined />, label: 'Portfolio' },
+  { key: '/trade', icon: <FundOutlined />, label: 'Trade' },
+  {
+    key: '/wallet',
+    icon: <WalletOutlined />,
+    label: 'Wallet',
+    children: [
+      { key: '/wallet/deposit', icon: <WalletOutlined />, label: 'Deposit' },
+      { key: '/wallet/withdraw', icon: <DollarOutlined />, label: 'Withdraw' },
+    ],
+  },
+  {
+    key: '/history',
+    icon: <HistoryOutlined />,
+    label: 'History',
+    children: [
+      { key: '/history/orders', label: 'Orders' },
+      { key: '/history/fills', label: 'Fills' },
+      { key: '/history/funding', label: 'Funding' },
+      { key: '/history/transfers', label: 'Transfers' },
+    ],
+  },
+  { key: '/explorer', icon: <RadarChartOutlined />, label: 'Explorer' },
+  {
+    key: '/admin',
+    icon: <SafetyCertificateOutlined />,
+    label: 'Admin',
+    children: [
+      { key: '/admin/dashboard', icon: <AppstoreOutlined />, label: 'Dashboard' },
+      { key: '/admin/withdrawals', icon: <DollarOutlined />, label: 'Withdrawals' },
+      { key: '/admin/configs', icon: <LockOutlined />, label: 'Configs' },
+      { key: '/admin/liquidations', icon: <AuditOutlined />, label: 'Liquidations' },
+    ],
+  },
 ];
 
 const statusColorMap: Record<string, string> = {
   ACTIVE: 'success',
+  BUY: 'cyan',
+  SELL: 'volcano',
+  LONG: 'cyan',
+  SHORT: 'volcano',
+  PAY: 'gold',
+  RECEIVE: 'success',
   SAFE: 'success',
   WATCH: 'warning',
   NO_NEW_RISK: 'gold',
@@ -148,60 +172,62 @@ export function ErrorAlert({ error }: { error: unknown }) {
 export function AppShell() {
   const { session, signOut } = useAuth();
   const location = useLocation();
-  const screens = Grid.useBreakpoint();
+  const navigate = useNavigate();
 
   const selectedKeys = useMemo(() => {
     const path = location.pathname;
-    const allKeys = [
-      ...(userMenuItems ?? []).map((item) => String(item?.key ?? '')),
-      ...(adminMenuItems ?? []).map((item) => String(item?.key ?? '')),
-    ];
-    return [allKeys.find((key) => path.startsWith(key)) || path];
+    if (path.startsWith('/wallet/')) {
+      return [path];
+    }
+    if (path.startsWith('/history/')) {
+      return [path];
+    }
+    if (path.startsWith('/admin/')) {
+      return [path];
+    }
+    return [path];
   }, [location.pathname]);
 
   return (
     <Layout className="app-shell">
-      <Sider
-        breakpoint="lg"
-        collapsedWidth={0}
-        width={272}
-        theme="light"
-        className="app-shell-sider"
-      >
-        <div className="brand-block">
-          <Text className="brand-badge">RGPerp</Text>
-          <Title level={4} style={{ margin: 0 }}>
-            Trading Console
-          </Title>
-          <Paragraph type="secondary" style={{ margin: 0 }}>
-            钱包、账户、交易与审计视图统一入口。
-          </Paragraph>
-        </div>
-        <Menu selectedKeys={selectedKeys} mode="inline" items={userMenuItems} />
-        <div className="menu-section-title">Admin</div>
-        <Menu selectedKeys={selectedKeys} mode="inline" items={adminMenuItems} />
-      </Sider>
-      <Layout>
-        <Header className="app-shell-header">
-          <Space wrap size={[12, 12]}>
+      <Header className="app-shell-header rg-glass-card">
+        <button type="button" className="brand-block" onClick={() => navigate('/portfolio')} aria-label="前往首页">
+          <BrandLogo size={34} />
+          <div>
+            <Title level={4} style={{ margin: 0 }}>
+              RGPerp
+            </Title>
+            <Paragraph type="secondary" style={{ margin: 0 }}>
+              Production console
+            </Paragraph>
+          </div>
+        </button>
+        <Menu
+          mode="horizontal"
+          selectedKeys={selectedKeys}
+          items={navMenuItems}
+          className="app-shell-nav"
+          onClick={({ key }) => navigate(key)}
+        />
+        <Space size={12} className="app-shell-actions">
+          <Space wrap size={[8, 8]}>
             <Tag color="geekblue">{appConfig.appEnv.toUpperCase()}</Tag>
             <Tag color={appConfig.apiProvider === 'http' ? 'success' : appConfig.apiProvider === 'auto' ? 'gold' : 'cyan'}>
               API {appConfig.apiProvider.toUpperCase()}
             </Tag>
             {session ? <Tag color="default">{session.provider.toUpperCase()} session</Tag> : null}
           </Space>
-          <Space size={16}>
-            {!screens.md ? null : (
-              <Text type="secondary">
-                {session ? `${formatAddress(session.user.evm_address)} / ${session.user.status}` : '未登录'}
-              </Text>
-            )}
-            <Button onClick={signOut}>退出</Button>
-          </Space>
-        </Header>
+          <Text type="secondary" className="app-shell-identity">
+            {session ? `${formatAddress(session.user.evm_address)} / ${session.user.status}` : '未登录'}
+          </Text>
+          <Button onClick={signOut}>退出</Button>
+        </Space>
+      </Header>
+      <Layout>
         <Content className="app-shell-content">
           <Outlet />
         </Content>
+        <Footer className="app-shell-footer">RGPerp console</Footer>
       </Layout>
     </Layout>
   );
@@ -226,10 +252,37 @@ export function EmptyStateCard({
   action,
 }: PropsWithChildren<{ title: string; description: string; action?: ReactNode }>) {
   return (
-    <Card>
+    <Card className="surface-card">
       <Title level={4}>{title}</Title>
       <Paragraph type="secondary">{description}</Paragraph>
       {action}
     </Card>
+  );
+}
+
+export function BrandLogo({ size = 24 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <rect x="1.5" y="1.5" width="21" height="21" rx="7" fill="url(#rgperp-bg)" />
+      <path
+        d="M7 17V7H11.8C14.15 7 15.6 8.22 15.6 10.28C15.6 11.84 14.7 12.88 13.21 13.18L16.5 17H13.84L10.84 13.45H9.3V17H7ZM9.3 11.48H11.57C12.84 11.48 13.45 11.08 13.45 10.23C13.45 9.39 12.84 8.98 11.57 8.98H9.3V11.48Z"
+        fill="white"
+      />
+      <path d="M17.4 7.4L19.9 9.9L15.25 14.55L13.95 13.25L17.4 9.8L16.1 8.5L17.4 7.4Z" fill="#7CFFF1" />
+      <defs>
+        <linearGradient id="rgperp-bg" x1="3" y1="3" x2="21" y2="21" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#20C9B5" />
+          <stop offset="0.52" stopColor="#1A7F89" />
+          <stop offset="1" stopColor="#103548" />
+        </linearGradient>
+      </defs>
+    </svg>
   );
 }

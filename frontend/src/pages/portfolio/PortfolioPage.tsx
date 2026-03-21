@@ -55,12 +55,13 @@ export function PortfolioPage() {
   }, []);
 
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro
-        eyebrow="Account"
-        title="Portfolio Overview"
-        description="权益、可用余额、保证金和风险提示都以后端或 review mock 返回值为准。前端不自行推导已完成的资金状态。"
-      />
+    <div className="rg-app-page rg-app-page--portfolio">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro
+          eyebrow="Account"
+          title="Portfolio Overview"
+          description="权益、可用余额、保证金和风险提示都以后端或 review mock 返回值为准。前端不自行推导已完成的资金状态。"
+        />
 
       {loading ? <Spin size="large" /> : null}
       <ErrorAlert error={error} />
@@ -195,6 +196,7 @@ export function PortfolioPage() {
           </Card>
         </>
       ) : null}
-    </Space>
+      </Space>
+    </div>
   );
 }

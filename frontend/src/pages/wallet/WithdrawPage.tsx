@@ -16,7 +16,7 @@ import { api } from '../../shared/api';
 import { ErrorAlert, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
 import type { BalanceItem, WithdrawItem, WithdrawRequest } from '../../shared/domain';
 import { appConfig } from '../../shared/env';
-import { formatAddress, formatChainName, formatDateTime, formatUsd, parseAmount } from '../../shared/format';
+import { formatAddress, formatChainName, formatDateTime, formatUsd } from '../../shared/format';
 
 const { Paragraph, Text } = Typography;
 
@@ -73,12 +73,13 @@ export function WithdrawPage() {
   }
 
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro
-        eyebrow="Wallet"
-        title="Withdraw"
-        description="提交成功仅代表已申请，不代表提现完成。冻结、审核、待签名、链上确认和失败退款必须逐态展示。"
-      />
+    <div className="rg-app-page rg-app-page--withdraw">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro
+          eyebrow="Wallet"
+          title="Withdraw"
+          description="提交成功仅代表已申请，不代表提现完成。冻结、审核、待签名、链上确认和失败退款必须逐态展示。"
+        />
 
       <Alert
         showIcon
@@ -192,6 +193,7 @@ export function WithdrawPage() {
           />
         </Card>
       ) : null}
-    </Space>
+      </Space>
+    </div>
   );
 }

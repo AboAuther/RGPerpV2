@@ -56,12 +56,13 @@ export function ExplorerPage() {
   }, [events, query]);
 
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro
-        eyebrow="Explorer"
-        title="Event Explorer"
-        description="Explorer 是读模型，不反向修改账本或订单源表。当前支持按事件 ID、链上 hash、ledger_tx_id 和地址检索。"
-      />
+    <div className="rg-app-page rg-app-page--explorer">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro
+          eyebrow="Explorer"
+          title="Event Explorer"
+          description="Explorer 是读模型，不反向修改账本或订单源表。当前支持按事件 ID、链上 hash、ledger_tx_id 和地址检索。"
+        />
 
       <Card className="surface-card">
         <Space direction="vertical" style={{ width: '100%' }}>
@@ -102,6 +103,7 @@ export function ExplorerPage() {
           ]}
         />
       </Card>
-    </Space>
+      </Space>
+    </div>
   );
 }

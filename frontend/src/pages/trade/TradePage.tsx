@@ -66,12 +66,13 @@ export function TradePage() {
   }, [state]);
 
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro
-        eyebrow="Trading"
-        title="Trade Shell"
-        description="交易页基础壳已连通行情、订单、仓位读模型。正式下单流属于 Milestone 3，当前先把状态展示与页面骨架按规范落地。"
-      />
+    <div className="rg-app-page rg-app-page--trade">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro
+          eyebrow="Trading"
+          title="Trade Shell"
+          description="交易页基础壳已连通行情、订单、仓位读模型。正式下单流属于 Milestone 3，当前先把状态展示与页面骨架按规范落地。"
+        />
 
       <Alert
         showIcon
@@ -153,6 +154,7 @@ export function TradePage() {
           </Card>
         </>
       ) : null}
-    </Space>
+      </Space>
+    </div>
   );
 }

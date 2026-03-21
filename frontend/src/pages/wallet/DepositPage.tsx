@@ -93,12 +93,13 @@ export function DepositPage() {
   }
 
   return (
-    <Space direction="vertical" size={20} style={{ width: '100%' }}>
-      <PageIntro
-        eyebrow="Wallet"
-        title="Deposit"
-        description="每条链独立地址、确认数和到账状态必须显式展示。前端不会把检测到视为已到账，只有 CREDITED 才表示链下入账完成。"
-      />
+    <div className="rg-app-page rg-app-page--deposit">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro
+          eyebrow="Wallet"
+          title="Deposit"
+          description="每条链独立地址、确认数和到账状态必须显式展示。前端不会把检测到视为已到账，只有 CREDITED 才表示链下入账完成。"
+        />
 
       <Alert
         showIcon
@@ -180,6 +181,7 @@ export function DepositPage() {
           </Card>
         </>
       ) : null}
-    </Space>
+      </Space>
+    </div>
   );
 }
