@@ -8,8 +8,14 @@ type DepositChainTx struct {
 	ChainID            int64
 	TxHash             string
 	LogIndex           int64
+	FromAddress        string
+	ToAddress          string
+	TokenAddress       string
 	Amount             string
 	Asset              string
+	BlockNumber        int64
+	Confirmations      int
+	RequiredConfs      int
 	Status             string
 	CreditedLedgerTxID string
 	CreatedAt          time.Time
@@ -31,6 +37,16 @@ type WithdrawRequest struct {
 	UpdatedAt       time.Time
 }
 
+type DepositAddress struct {
+	UserID        uint64
+	ChainID       int64
+	Asset         string
+	Address       string
+	Status        string
+	Confirmations int
+	CreatedAt     time.Time
+}
+
 type TransferRequest struct {
 	TransferID string
 	FromUserID uint64
@@ -38,6 +54,31 @@ type TransferRequest struct {
 	Asset      string
 	Amount     string
 	TraceID    string
+}
+
+type DetectDepositInput struct {
+	UserID         uint64
+	ChainID        int64
+	TxHash         string
+	LogIndex       int64
+	FromAddress    string
+	ToAddress      string
+	TokenAddress   string
+	Amount         string
+	Asset          string
+	BlockNumber    int64
+	Confirmations  int
+	RequiredConfs  int
+	IdempotencyKey string
+	TraceID        string
+}
+
+type AdvanceDepositInput struct {
+	DepositID      string
+	Confirmations  int
+	RequiredConfs  int
+	IdempotencyKey string
+	TraceID        string
 }
 
 type RequestWithdrawInput struct {
@@ -64,8 +105,32 @@ type BroadcastWithdrawInput struct {
 	TraceID        string
 }
 
+type ApproveWithdrawInput struct {
+	WithdrawID     string
+	OperatorID     string
+	IdempotencyKey string
+	TraceID        string
+}
+
+type CompleteWithdrawInput struct {
+	WithdrawID     string
+	TxHash         string
+	IdempotencyKey string
+	TraceID        string
+}
+
 type RefundWithdrawInput struct {
 	WithdrawID     string
+	IdempotencyKey string
+	TraceID        string
+}
+
+type GrantReviewFaucetInput struct {
+	UserID         uint64
+	ChainID        int64
+	Asset          string
+	Amount         string
+	ToAddress      string
 	IdempotencyKey string
 	TraceID        string
 }

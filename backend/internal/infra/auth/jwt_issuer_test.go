@@ -15,10 +15,11 @@ func TestJWTIssuer_IssueAccessToken(t *testing.T) {
 		ID:         42,
 		EVMAddress: "0x0000000000000000000000000000000000000001",
 	}, authdomain.Session{
-		ID:         "session_1",
-		AccessJTI:  "access_1",
-		RefreshJTI: "refresh_1",
-		ExpiresAt:  time.Now().UTC().Add(time.Hour),
+		ID:               "session_1",
+		AccessJTI:        "access_1",
+		RefreshJTI:       "refresh_1",
+		AccessExpiresAt:  time.Now().UTC().Add(time.Hour),
+		RefreshExpiresAt: time.Now().UTC().Add(24 * time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("issue access token: %v", err)

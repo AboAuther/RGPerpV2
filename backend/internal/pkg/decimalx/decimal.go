@@ -48,6 +48,18 @@ func (d Decimal) IsZero() bool {
 	return d.value.IsZero()
 }
 
+func (d Decimal) LessThan(other Decimal) bool {
+	return d.value.LessThan(other.value)
+}
+
+func (d Decimal) GreaterThan(other Decimal) bool {
+	return d.value.GreaterThan(other.value)
+}
+
+func (d Decimal) GreaterThanOrEqual(other Decimal) bool {
+	return d.value.GreaterThanOrEqual(other.value)
+}
+
 type LedgerDecimalFactory struct{}
 
 func (LedgerDecimalFactory) FromString(raw string) (ledger.Decimal, error) {

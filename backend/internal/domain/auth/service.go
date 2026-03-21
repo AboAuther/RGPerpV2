@@ -14,7 +14,8 @@ import (
 type ServiceConfig struct {
 	Domain           string
 	NonceTTL         time.Duration
-	SessionTTL       time.Duration
+	AccessTTL        time.Duration
+	RefreshTTL       time.Duration
 	DefaultUserState string
 }
 
@@ -28,6 +29,7 @@ type Service struct {
 	verifier  SignatureVerifier
 	tokens    TokenIssuer
 	txManager TxManager
+	bootstrap UserBootstrapper
 }
 
 func NewService(
@@ -40,6 +42,7 @@ func NewService(
 	verifier SignatureVerifier,
 	tokenIssuer TokenIssuer,
 	txManager TxManager,
+	bootstrap UserBootstrapper,
 ) *Service {
 	return &Service{
 		cfg:       cfg,
@@ -51,6 +54,7 @@ func NewService(
 		verifier:  verifier,
 		tokens:    tokenIssuer,
 		txManager: txManager,
+		bootstrap: bootstrap,
 	}
 }
 
@@ -122,7 +126,8 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		DeviceFingerprint: input.DeviceFingerprint,
 		IP:                input.IP,
 		UserAgent:         input.UserAgent,
-		ExpiresAt:         now.Add(s.cfg.SessionTTL),
+		AccessExpiresAt:   now.Add(s.cfg.AccessTTL),
+		RefreshExpiresAt:  now.Add(s.cfg.RefreshTTL),
 		CreatedAt:         now,
 	}
 
@@ -144,6 +149,12 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 			user = createdUser
 		default:
 			return getErr
+		}
+
+		if s.bootstrap != nil {
+			if err := s.bootstrap.EnsureUserBootstrap(txCtx, user); err != nil {
+				return err
+			}
 		}
 
 		if err := s.nonces.MarkUsed(txCtx, nonce.ID); err != nil {
@@ -169,6 +180,6 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		User:         user,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
-		ExpiresAt:    session.ExpiresAt,
+		ExpiresAt:    session.AccessExpiresAt,
 	}, nil
 }

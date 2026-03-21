@@ -56,24 +56,24 @@
 
 ### 交付物
 
-- [ ] 实现 Vault 合约及 Foundry 测试
-- [ ] 实现 DepositRouter / Factory 合约
-- [ ] 实现 EVM 签名登录与会话管理
-- [ ] 实现账本交易与余额快照模型
-- [ ] 实现 Outbox 与消费去重模型
-- [ ] 实现充值索引与确认流程
-- [ ] 实现提现请求、冻结、审核、广播、确认、退还路径
-- [ ] 实现内部划转流程
-- [ ] 实现资金类 Explorer 基础查询
+- [x] 实现 Vault 合约及 Foundry 测试
+- [x] 实现 DepositRouter / Factory 合约
+- [x] 实现 EVM 签名登录与会话管理
+- [x] 实现账本交易与余额快照模型
+- [x] 实现 Outbox 与消费去重模型
+- [x] 实现充值索引与确认流程
+- [x] 实现提现请求、冻结、审核、广播、确认、退还路径
+- [x] 实现内部划转流程
+- [x] 实现资金类 Explorer 基础查询
 - [x] 实现前端登录页、会话保持和基础账户概览页
 - [x] 实现前端充值页与提现页基础状态展示
 
 ### 退出标准
 
-- [ ] 充值仅记账一次
-- [ ] 提现失败可退款
-- [ ] 转账走账本
-- [ ] 所有资金操作具备 trace_id、event_id、ledger_tx_id
+- [x] 充值仅记账一次
+- [x] 提现失败可退款
+- [x] 转账走账本
+- [x] 所有资金操作具备 trace_id、event_id、ledger_tx_id
 
 ### 里程碑 2 当前执行清单
 
@@ -88,9 +88,12 @@
 - [x] 为 nonce / login / session 流程编写单元测试
 - [x] 建立 `api-server` 最小可运行入口
 - [x] 实现 Auth HTTP handler、统一响应封装与 handler 单元测试
-- [ ] 实现持久化 repository
-- [ ] 实现 HTTP handler 与 DTO
-- [ ] 实现真实签名校验器
+- [x] 实现持久化 repository
+- [x] 实现 HTTP handler 与 DTO
+- [x] 实现真实签名校验器
+- [x] 实现用户账户 bootstrap、充值地址分配和系统账户初始化
+- [x] 实现 JWT 鉴权中间件与受保护账户 / 钱包 / Explorer API
+- [x] 为钱包状态机、JWT verifier、查询仓储和账户 / 钱包 handler 补充 UT
 
 ## 里程碑 3：交易核心 P0
 

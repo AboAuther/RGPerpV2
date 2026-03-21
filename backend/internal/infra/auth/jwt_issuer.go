@@ -21,21 +21,21 @@ func NewJWTIssuer(accessSecret string, refreshSecret string) *JWTIssuer {
 }
 
 func (j *JWTIssuer) IssueAccessToken(_ context.Context, user authdomain.User, session authdomain.Session) (string, error) {
-	return j.sign(user, session, j.accessSecret, "access")
+	return j.sign(user, session, j.accessSecret, "access", session.AccessExpiresAt)
 }
 
 func (j *JWTIssuer) IssueRefreshToken(_ context.Context, user authdomain.User, session authdomain.Session) (string, error) {
-	return j.sign(user, session, j.refreshSecret, "refresh")
+	return j.sign(user, session, j.refreshSecret, "refresh", session.RefreshExpiresAt)
 }
 
-func (j *JWTIssuer) sign(user authdomain.User, session authdomain.Session, secret []byte, tokenType string) (string, error) {
+func (j *JWTIssuer) sign(user authdomain.User, session authdomain.Session, secret []byte, tokenType string, expiresAt time.Time) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":        user.ID,
 		"address":    user.EVMAddress,
 		"session_id": session.ID,
 		"jti":        map[string]string{"access": session.AccessJTI, "refresh": session.RefreshJTI}[tokenType],
 		"type":       tokenType,
-		"exp":        session.ExpiresAt.Unix(),
+		"exp":        expiresAt.Unix(),
 		"iat":        time.Now().UTC().Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

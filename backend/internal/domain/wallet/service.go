@@ -3,11 +3,11 @@ package wallet
 import (
 	"context"
 	"fmt"
-	"time"
 
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/authx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/clockx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/idgen"
 )
@@ -15,9 +15,16 @@ import (
 const (
 	StatusCreditReady = "CREDIT_READY"
 	StatusCredited    = "CREDITED"
+	StatusDetected    = "DETECTED"
+	StatusConfirming  = "CONFIRMING"
 	StatusRequested   = "REQUESTED"
 	StatusHold        = "HOLD"
+	StatusRiskReview  = "RISK_REVIEW"
+	StatusApproved    = "APPROVED"
+	StatusSigning     = "SIGNING"
 	StatusBroadcasted = "BROADCASTED"
+	StatusCompleted   = "COMPLETED"
+	StatusFailed      = "FAILED"
 	StatusRefunded    = "REFUNDED"
 )
 
@@ -27,6 +34,8 @@ type AccountResolver interface {
 	DepositPendingAccountID(ctx context.Context, asset string) (uint64, error)
 	WithdrawInTransitAccountID(ctx context.Context, asset string) (uint64, error)
 	WithdrawFeeAccountID(ctx context.Context, asset string) (uint64, error)
+	CustodyHotAccountID(ctx context.Context, asset string) (uint64, error)
+	TestFaucetPoolAccountID(ctx context.Context, asset string) (uint64, error)
 }
 
 type Service struct {
@@ -38,6 +47,8 @@ type Service struct {
 	clock           clockx.Clock
 	idgen           idgen.Generator
 	accountResolver AccountResolver
+	balances        BalanceRepository
+	addresses       DepositAddressRepository
 }
 
 func NewService(
@@ -49,6 +60,8 @@ func NewService(
 	clock clockx.Clock,
 	idgen idgen.Generator,
 	accountResolver AccountResolver,
+	balances BalanceRepository,
+	addresses DepositAddressRepository,
 ) *Service {
 	return &Service{
 		deposits:        deposits,
@@ -59,7 +72,107 @@ func NewService(
 		clock:           clock,
 		idgen:           idgen,
 		accountResolver: accountResolver,
+		balances:        balances,
+		addresses:       addresses,
 	}
+}
+
+func (s *Service) DetectDeposit(ctx context.Context, input DetectDepositInput) (DepositChainTx, error) {
+	if input.UserID == 0 || input.ChainID <= 0 || input.TxHash == "" || input.Asset == "" || input.Amount == "" {
+		return DepositChainTx{}, fmt.Errorf("%w: invalid deposit detection input", errorsx.ErrInvalidArgument)
+	}
+
+	existing, err := s.deposits.GetByTxLog(ctx, input.ChainID, input.TxHash, input.LogIndex)
+	if err == nil {
+		return existing, nil
+	}
+	if err != nil && err != errorsx.ErrNotFound {
+		return DepositChainTx{}, err
+	}
+
+	now := s.clock.Now()
+	status := StatusDetected
+	if input.Confirmations > 0 {
+		status = StatusConfirming
+	}
+	if input.Confirmations >= input.RequiredConfs && input.RequiredConfs > 0 {
+		status = StatusCreditReady
+	}
+
+	deposit := DepositChainTx{
+		DepositID:     s.idgen.NewID("dep"),
+		UserID:        input.UserID,
+		ChainID:       input.ChainID,
+		TxHash:        input.TxHash,
+		LogIndex:      input.LogIndex,
+		FromAddress:   input.FromAddress,
+		ToAddress:     input.ToAddress,
+		TokenAddress:  input.TokenAddress,
+		Amount:        input.Amount,
+		Asset:         input.Asset,
+		BlockNumber:   input.BlockNumber,
+		Confirmations: input.Confirmations,
+		RequiredConfs: input.RequiredConfs,
+		Status:        status,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		pendingID, err := s.accountResolver.DepositPendingAccountID(txCtx, input.Asset)
+		if err != nil {
+			return err
+		}
+		custodyID, err := s.accountResolver.CustodyHotAccountID(txCtx, input.Asset)
+		if err != nil {
+			return err
+		}
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+			LedgerTx: ledgerdomain.LedgerTx{
+				ID:             s.idgen.NewID("ldg"),
+				EventID:        s.idgen.NewID("evt"),
+				BizType:        "DEPOSIT_DETECTED",
+				BizRefID:       deposit.DepositID,
+				Asset:          input.Asset,
+				IdempotencyKey: input.IdempotencyKey,
+				OperatorType:   "system",
+				OperatorID:     "indexer",
+				TraceID:        input.TraceID,
+				Status:         "COMMITTED",
+				CreatedAt:      now,
+			},
+			Entries: []ledgerdomain.LedgerEntry{
+				{AccountID: pendingID, Asset: input.Asset, Amount: input.Amount, EntryType: "DEPOSIT_PENDING_CONFIRM"},
+				{AccountID: custodyID, Asset: input.Asset, Amount: negate(input.Amount), EntryType: "CUSTODY_HOT_PENDING"},
+			},
+		}); err != nil {
+			return err
+		}
+		return s.deposits.Create(txCtx, deposit)
+	}); err != nil {
+		return DepositChainTx{}, err
+	}
+
+	return deposit, nil
+}
+
+func (s *Service) AdvanceDeposit(ctx context.Context, input AdvanceDepositInput) error {
+	deposit, err := s.deposits.GetByID(ctx, input.DepositID)
+	if err != nil {
+		return err
+	}
+	if deposit.Status == StatusCredited {
+		return nil
+	}
+
+	nextStatus := StatusDetected
+	if input.Confirmations > 0 {
+		nextStatus = StatusConfirming
+	}
+	if input.RequiredConfs > 0 && input.Confirmations >= input.RequiredConfs {
+		nextStatus = StatusCreditReady
+	}
+	return s.deposits.UpdateConfirmations(ctx, input.DepositID, input.Confirmations, nextStatus)
 }
 
 func (s *Service) ConfirmDeposit(ctx context.Context, input ConfirmDepositInput) error {
@@ -111,6 +224,15 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 	if _, err := authx.NormalizeEVMAddress(input.ToAddress); err != nil {
 		return WithdrawRequest{}, err
 	}
+	if input.UserID == 0 || input.ChainID <= 0 || input.Asset == "" {
+		return WithdrawRequest{}, fmt.Errorf("%w: invalid withdraw request", errorsx.ErrInvalidArgument)
+	}
+	if err := ensurePositiveAmount(input.Amount); err != nil {
+		return WithdrawRequest{}, err
+	}
+	if err := ensureNonNegativeAmount(input.FeeAmount); err != nil {
+		return WithdrawRequest{}, err
+	}
 	now := s.clock.Now()
 	withdraw := WithdrawRequest{
 		WithdrawID: s.idgen.NewID("wd"),
@@ -128,6 +250,9 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 	err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
 		userWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, input.UserID, input.Asset)
 		if err != nil {
+			return err
+		}
+		if err := s.ensureSufficientBalance(txCtx, userWalletID, input.Asset, input.Amount); err != nil {
 			return err
 		}
 		holdID, err := s.accountResolver.UserWithdrawHoldAccountID(txCtx, input.UserID, input.Asset)
@@ -166,12 +291,88 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 	return withdraw, nil
 }
 
+func (s *Service) ApproveWithdraw(ctx context.Context, input ApproveWithdrawInput) error {
+	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
+	if err != nil {
+		return err
+	}
+	if withdraw.Status != StatusHold && withdraw.Status != StatusRiskReview {
+		return fmt.Errorf("%w: withdraw cannot be approved from current state", errorsx.ErrConflict)
+	}
+	return s.withdraws.UpdateStatus(ctx, input.WithdrawID, []string{StatusHold, StatusRiskReview}, StatusApproved)
+}
+
+func (s *Service) GrantReviewFaucet(ctx context.Context, input GrantReviewFaucetInput) (DepositChainTx, error) {
+	if input.UserID == 0 || input.ChainID <= 0 || input.Asset == "" || input.Amount == "" {
+		return DepositChainTx{}, fmt.Errorf("%w: invalid faucet request", errorsx.ErrInvalidArgument)
+	}
+
+	now := s.clock.Now()
+	deposit := DepositChainTx{
+		DepositID:     s.idgen.NewID("dep"),
+		UserID:        input.UserID,
+		ChainID:       input.ChainID,
+		TxHash:        s.idgen.NewID("tx"),
+		LogIndex:      0,
+		FromAddress:   "review_faucet",
+		ToAddress:     input.ToAddress,
+		TokenAddress:  "review_usdc",
+		Amount:        input.Amount,
+		Asset:         input.Asset,
+		BlockNumber:   0,
+		Confirmations: 1,
+		RequiredConfs: 1,
+		Status:        StatusCredited,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		userWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, input.UserID, input.Asset)
+		if err != nil {
+			return err
+		}
+		faucetID, err := s.accountResolver.TestFaucetPoolAccountID(txCtx, input.Asset)
+		if err != nil {
+			return err
+		}
+		ledgerTxID := s.idgen.NewID("ldg")
+		deposit.CreditedLedgerTxID = ledgerTxID
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+			LedgerTx: ledgerdomain.LedgerTx{
+				ID:             ledgerTxID,
+				EventID:        s.idgen.NewID("evt"),
+				BizType:        "REVIEW_FAUCET",
+				BizRefID:       deposit.DepositID,
+				Asset:          input.Asset,
+				IdempotencyKey: input.IdempotencyKey,
+				OperatorType:   "system",
+				OperatorID:     "review_faucet",
+				TraceID:        input.TraceID,
+				Status:         "COMMITTED",
+				CreatedAt:      now,
+			},
+			Entries: []ledgerdomain.LedgerEntry{
+				{AccountID: userWalletID, Asset: input.Asset, Amount: input.Amount, EntryType: "REVIEW_FAUCET_CREDIT"},
+				{AccountID: faucetID, Asset: input.Asset, Amount: negate(input.Amount), EntryType: "REVIEW_FAUCET_POOL_DEBIT"},
+			},
+		}); err != nil {
+			return err
+		}
+		return s.deposits.Create(txCtx, deposit)
+	}); err != nil {
+		return DepositChainTx{}, err
+	}
+
+	return deposit, nil
+}
+
 func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWithdrawInput) error {
 	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
 	if err != nil {
 		return err
 	}
-	if withdraw.Status != StatusHold && withdraw.Status != StatusRequested {
+	if withdraw.Status != StatusApproved {
 		return fmt.Errorf("%w: withdraw cannot be broadcasted from current state", errorsx.ErrConflict)
 	}
 
@@ -189,7 +390,10 @@ func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWi
 			return err
 		}
 
-		netAmount := subtract(withdraw.Amount, withdraw.FeeAmount)
+		netAmount, err := subtract(withdraw.Amount, withdraw.FeeAmount)
+		if err != nil {
+			return err
+		}
 		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
 			LedgerTx: ledgerdomain.LedgerTx{
 				ID:             s.idgen.NewID("ldg"),
@@ -212,7 +416,61 @@ func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWi
 		}); err != nil {
 			return err
 		}
+		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusApproved}, StatusBroadcasted); err != nil {
+			return err
+		}
 		return s.withdraws.MarkBroadcasted(txCtx, withdraw.WithdrawID, input.TxHash)
+	})
+}
+
+func (s *Service) CompleteWithdraw(ctx context.Context, input CompleteWithdrawInput) error {
+	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
+	if err != nil {
+		return err
+	}
+	if withdraw.Status != StatusBroadcasted {
+		return fmt.Errorf("%w: withdraw is not awaiting completion", errorsx.ErrConflict)
+	}
+
+	netAmount, err := subtract(withdraw.Amount, withdraw.FeeAmount)
+	if err != nil {
+		return err
+	}
+
+	return s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		custodyID, err := s.accountResolver.CustodyHotAccountID(txCtx, withdraw.Asset)
+		if err != nil {
+			return err
+		}
+		inTransitID, err := s.accountResolver.WithdrawInTransitAccountID(txCtx, withdraw.Asset)
+		if err != nil {
+			return err
+		}
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+			LedgerTx: ledgerdomain.LedgerTx{
+				ID:             s.idgen.NewID("ldg"),
+				EventID:        s.idgen.NewID("evt"),
+				BizType:        "WITHDRAW_COMPLETE",
+				BizRefID:       withdraw.WithdrawID,
+				Asset:          withdraw.Asset,
+				IdempotencyKey: input.IdempotencyKey,
+				OperatorType:   "system",
+				OperatorID:     "indexer",
+				TraceID:        input.TraceID,
+				Status:         "COMMITTED",
+				CreatedAt:      s.clock.Now(),
+			},
+			Entries: []ledgerdomain.LedgerEntry{
+				{AccountID: custodyID, Asset: withdraw.Asset, Amount: netAmount, EntryType: "WITHDRAW_CUSTODY_SETTLEMENT"},
+				{AccountID: inTransitID, Asset: withdraw.Asset, Amount: negate(netAmount), EntryType: "WITHDRAW_IN_TRANSIT_RELEASE"},
+			},
+		}); err != nil {
+			return err
+		}
+		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusBroadcasted}, StatusCompleted); err != nil {
+			return err
+		}
+		return s.withdraws.MarkCompleted(txCtx, withdraw.WithdrawID)
 	})
 }
 
@@ -231,25 +489,89 @@ func (s *Service) RefundWithdraw(ctx context.Context, input RefundWithdrawInput)
 		if err != nil {
 			return err
 		}
-		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
-			LedgerTx: ledgerdomain.LedgerTx{
-				ID:             s.idgen.NewID("ldg"),
-				EventID:        s.idgen.NewID("evt"),
-				BizType:        "WITHDRAW_REFUND",
-				BizRefID:       withdraw.WithdrawID,
-				Asset:          withdraw.Asset,
-				IdempotencyKey: input.IdempotencyKey,
-				OperatorType:   "system",
-				OperatorID:     "wallet",
-				TraceID:        input.TraceID,
-				Status:         "COMMITTED",
-				CreatedAt:      s.clock.Now(),
-			},
-			Entries: []ledgerdomain.LedgerEntry{
-				{AccountID: userWalletID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_REFUND_IN"},
-				{AccountID: holdID, Asset: withdraw.Asset, Amount: negate(withdraw.Amount), EntryType: "WITHDRAW_REFUND_OUT"},
-			},
-		}); err != nil {
+		switch withdraw.Status {
+		case StatusHold, StatusRequested, StatusApproved, StatusRiskReview:
+			if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+				LedgerTx: ledgerdomain.LedgerTx{
+					ID:             s.idgen.NewID("ldg"),
+					EventID:        s.idgen.NewID("evt"),
+					BizType:        "WITHDRAW_REFUND",
+					BizRefID:       withdraw.WithdrawID,
+					Asset:          withdraw.Asset,
+					IdempotencyKey: input.IdempotencyKey,
+					OperatorType:   "system",
+					OperatorID:     "wallet",
+					TraceID:        input.TraceID,
+					Status:         "COMMITTED",
+					CreatedAt:      s.clock.Now(),
+				},
+				Entries: []ledgerdomain.LedgerEntry{
+					{AccountID: userWalletID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_REFUND_IN"},
+					{AccountID: holdID, Asset: withdraw.Asset, Amount: negate(withdraw.Amount), EntryType: "WITHDRAW_REFUND_OUT"},
+				},
+			}); err != nil {
+				return err
+			}
+		case StatusBroadcasted, StatusFailed:
+			inTransitID, err := s.accountResolver.WithdrawInTransitAccountID(txCtx, withdraw.Asset)
+			if err != nil {
+				return err
+			}
+			feeID, err := s.accountResolver.WithdrawFeeAccountID(txCtx, withdraw.Asset)
+			if err != nil {
+				return err
+			}
+			netAmount, err := subtract(withdraw.Amount, withdraw.FeeAmount)
+			if err != nil {
+				return err
+			}
+			if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+				LedgerTx: ledgerdomain.LedgerTx{
+					ID:             s.idgen.NewID("ldg"),
+					EventID:        s.idgen.NewID("evt"),
+					BizType:        "WITHDRAW_REFUND_REVERSAL",
+					BizRefID:       withdraw.WithdrawID,
+					Asset:          withdraw.Asset,
+					IdempotencyKey: input.IdempotencyKey + ":reversal",
+					OperatorType:   "system",
+					OperatorID:     "wallet",
+					TraceID:        input.TraceID,
+					Status:         "COMMITTED",
+					CreatedAt:      s.clock.Now(),
+				},
+				Entries: []ledgerdomain.LedgerEntry{
+					{AccountID: holdID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_HOLD_RESTORE"},
+					{AccountID: inTransitID, Asset: withdraw.Asset, Amount: negate(netAmount), EntryType: "WITHDRAW_IN_TRANSIT_REVERSE"},
+					{AccountID: feeID, Asset: withdraw.Asset, Amount: negate(withdraw.FeeAmount), EntryType: "WITHDRAW_FEE_REVERSE"},
+				},
+			}); err != nil {
+				return err
+			}
+			if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+				LedgerTx: ledgerdomain.LedgerTx{
+					ID:             s.idgen.NewID("ldg"),
+					EventID:        s.idgen.NewID("evt"),
+					BizType:        "WITHDRAW_REFUND",
+					BizRefID:       withdraw.WithdrawID,
+					Asset:          withdraw.Asset,
+					IdempotencyKey: input.IdempotencyKey + ":refund",
+					OperatorType:   "system",
+					OperatorID:     "wallet",
+					TraceID:        input.TraceID,
+					Status:         "COMMITTED",
+					CreatedAt:      s.clock.Now(),
+				},
+				Entries: []ledgerdomain.LedgerEntry{
+					{AccountID: userWalletID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_REFUND_IN"},
+					{AccountID: holdID, Asset: withdraw.Asset, Amount: negate(withdraw.Amount), EntryType: "WITHDRAW_REFUND_OUT"},
+				},
+			}); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%w: withdraw cannot be refunded from current state", errorsx.ErrConflict)
+		}
+		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusHold, StatusBroadcasted, StatusFailed}, StatusRefunded); err != nil {
 			return err
 		}
 		return s.withdraws.MarkRefunded(txCtx, withdraw.WithdrawID)
@@ -260,9 +582,15 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 	if req.FromUserID == 0 || req.ToUserID == 0 || req.Asset == "" || req.Amount == "" {
 		return fmt.Errorf("%w: invalid transfer request", errorsx.ErrInvalidArgument)
 	}
+	if err := ensurePositiveAmount(req.Amount); err != nil {
+		return err
+	}
 	return s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
 		fromWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, req.FromUserID, req.Asset)
 		if err != nil {
+			return err
+		}
+		if err := s.ensureSufficientBalance(txCtx, fromWalletID, req.Asset, req.Amount); err != nil {
 			return err
 		}
 		toWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, req.ToUserID, req.Asset)
@@ -291,6 +619,10 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 	})
 }
 
+func (s *Service) ListDepositAddresses(ctx context.Context, userID uint64) ([]DepositAddress, error) {
+	return s.addresses.ListByUser(ctx, userID)
+}
+
 func negate(raw string) string {
 	if raw == "" {
 		return raw
@@ -301,13 +633,58 @@ func negate(raw string) string {
 	return "-" + raw
 }
 
-func subtract(amount string, fee string) string {
-	// P0 implementation uses string subtraction placeholder only for equal-scale input.
-	// Full decimal arithmetic should be provided by the infra decimal package later.
-	if fee == "0" || fee == "0.0" || fee == "0.000000" {
-		return amount
+func subtract(amount string, fee string) (string, error) {
+	base, err := decimalx.NewFromString(amount)
+	if err != nil {
+		return "", err
 	}
-	return amount
+	cost, err := decimalx.NewFromString(fee)
+	if err != nil {
+		return "", err
+	}
+	if base.LessThan(cost) {
+		return "", fmt.Errorf("%w: fee exceeds amount", errorsx.ErrInvalidArgument)
+	}
+	return base.Sub(cost).String(), nil
 }
 
-var _ = time.Time{}
+func (s *Service) ensureSufficientBalance(ctx context.Context, accountID uint64, asset string, amount string) error {
+	currentRaw, err := s.balances.GetAccountBalanceForUpdate(ctx, accountID, asset)
+	if err != nil {
+		return err
+	}
+	current, err := decimalx.NewFromString(currentRaw)
+	if err != nil {
+		return err
+	}
+	required, err := decimalx.NewFromString(amount)
+	if err != nil {
+		return err
+	}
+	if current.LessThan(required) {
+		return fmt.Errorf("%w: insufficient available balance", errorsx.ErrForbidden)
+	}
+	return nil
+}
+
+func ensurePositiveAmount(raw string) error {
+	amount, err := decimalx.NewFromString(raw)
+	if err != nil {
+		return err
+	}
+	if !amount.GreaterThan(decimalx.MustFromString("0")) {
+		return fmt.Errorf("%w: amount must be positive", errorsx.ErrInvalidArgument)
+	}
+	return nil
+}
+
+func ensureNonNegativeAmount(raw string) error {
+	amount, err := decimalx.NewFromString(raw)
+	if err != nil {
+		return err
+	}
+	if amount.LessThan(decimalx.MustFromString("0")) {
+		return fmt.Errorf("%w: amount must be non-negative", errorsx.ErrInvalidArgument)
+	}
+	return nil
+}

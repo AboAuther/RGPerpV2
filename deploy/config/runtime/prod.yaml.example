@@ -1,0 +1,34 @@
+version: 1
+global:
+  system_mode: prod
+  read_only: false
+  reduce_only: false
+  trace_header_required: true
+auth:
+  nonce_ttl_sec: 300
+  access_ttl_sec: 3600
+  refresh_ttl_sec: 2592000
+  max_failed_login_per_ip_per_hour: 60
+wallet:
+  deposit_confirmations:
+    ethereum: 12
+    arbitrum: 20
+    base: 20
+  withdraw_fee_usdc: "1"
+  withdraw_manual_review_threshold: "10000"
+  withdraw_daily_limit_per_user: "50000"
+  hot_wallet_min_balance: "10000"
+  hot_wallet_max_balance: "200000"
+hedge:
+  enabled: true
+  soft_threshold_ratio: "0.2"
+  hard_threshold_ratio: "0.4"
+  max_retry: 5
+  degrade_to_reduce_only_on_failure: true
+review:
+  faucet:
+    enabled: false
+    amount_per_request: "0"
+    max_requests_per_day: 1
+  mock_market_data:
+    enabled: false

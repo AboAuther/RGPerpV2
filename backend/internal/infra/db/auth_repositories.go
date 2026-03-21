@@ -51,10 +51,24 @@ func (r *NonceRepository) GetByValue(ctx context.Context, nonceValue string) (au
 }
 
 func (r *NonceRepository) MarkUsed(ctx context.Context, nonceID string) error {
-	return DB(ctx, r.db).Model(&LoginNonceModel{}).
+	result := DB(ctx, r.db).Model(&LoginNonceModel{}).
 		Where("nonce = ? AND used_at IS NULL", nonceID).
-		Update("used_at", gorm.Expr("CURRENT_TIMESTAMP")).
-		Error
+		Update("used_at", gorm.Expr("CURRENT_TIMESTAMP"))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 1 {
+		return nil
+	}
+	var existing LoginNonceModel
+	err := DB(ctx, r.db).Where("nonce = ?", nonceID).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return errorsx.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return errorsx.ErrConflict
 }
 
 type UserRepository struct {
@@ -97,6 +111,14 @@ func (r *UserRepository) Create(ctx context.Context, user authdomain.User) (auth
 	return user, nil
 }
 
+func (r *UserRepository) ResolveUserIDByAddress(ctx context.Context, address string) (uint64, error) {
+	user, err := r.GetByAddress(ctx, address)
+	if err != nil {
+		return 0, err
+	}
+	return user.ID, nil
+}
+
 type SessionRepository struct {
 	db *gorm.DB
 }
@@ -113,7 +135,8 @@ func (r *SessionRepository) Create(ctx context.Context, session authdomain.Sessi
 		DeviceFingerprint: session.DeviceFingerprint,
 		IP:                session.IP,
 		UserAgent:         session.UserAgent,
-		ExpiresAt:         session.ExpiresAt,
+		AccessExpiresAt:   session.AccessExpiresAt,
+		RefreshExpiresAt:  session.RefreshExpiresAt,
 		CreatedAt:         session.CreatedAt,
 	}).Error
 }

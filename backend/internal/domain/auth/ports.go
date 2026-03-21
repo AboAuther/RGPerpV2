@@ -29,3 +29,7 @@ type TokenIssuer interface {
 type TxManager interface {
 	WithinTransaction(ctx context.Context, fn func(txCtx context.Context) error) error
 }
+
+type UserBootstrapper interface {
+	EnsureUserBootstrap(ctx context.Context, user User) error
+}

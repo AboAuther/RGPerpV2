@@ -106,8 +106,16 @@ func (h *AuthHandler) login(c *gin.Context) {
 	})
 }
 
-func NewEngine(authHandler *AuthHandler) *gin.Engine {
+func NewEngine(
+	verifier AccessVerifier,
+	authHandler *AuthHandler,
+	accountHandler *AccountHandler,
+	walletHandler *WalletHandler,
+	explorerHandler *ExplorerHandler,
+	adminHandler *AdminHandler,
+) *gin.Engine {
 	engine := gin.New()
+	engine.Use(TraceMiddleware())
 	engine.Use(gin.Recovery())
 
 	engine.GET("/healthz", func(c *gin.Context) {
@@ -117,6 +125,20 @@ func NewEngine(authHandler *AuthHandler) *gin.Engine {
 	v1 := engine.Group("/api/v1")
 	if authHandler != nil {
 		authHandler.Register(v1)
+	}
+	authed := v1.Group("")
+	authed.Use(AuthMiddleware(verifier))
+	if accountHandler != nil {
+		accountHandler.Register(authed)
+	}
+	if walletHandler != nil {
+		walletHandler.Register(authed)
+	}
+	if explorerHandler != nil {
+		explorerHandler.Register(authed)
+	}
+	if adminHandler != nil {
+		adminHandler.Register(authed)
 	}
 	return engine
 }

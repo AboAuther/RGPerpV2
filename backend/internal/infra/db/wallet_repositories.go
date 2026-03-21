@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"time"
 
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
@@ -12,6 +13,26 @@ import (
 type DepositRepository struct{ db *gorm.DB }
 
 func NewDepositRepository(db *gorm.DB) *DepositRepository { return &DepositRepository{db: db} }
+
+func (r *DepositRepository) Create(ctx context.Context, deposit walletdomain.DepositChainTx) error {
+	return DB(ctx, r.db).Create(&DepositChainTxModel{
+		DepositID:          deposit.DepositID,
+		UserID:             deposit.UserID,
+		ChainID:            deposit.ChainID,
+		TxHash:             deposit.TxHash,
+		LogIndex:           deposit.LogIndex,
+		FromAddress:        deposit.FromAddress,
+		ToAddress:          deposit.ToAddress,
+		TokenAddress:       deposit.TokenAddress,
+		Amount:             deposit.Amount,
+		BlockNumber:        deposit.BlockNumber,
+		Confirmations:      deposit.Confirmations,
+		Status:             deposit.Status,
+		CreditedLedgerTxID: deposit.CreditedLedgerTxID,
+		CreatedAt:          deposit.CreatedAt,
+		UpdatedAt:          deposit.UpdatedAt,
+	}).Error
+}
 
 func (r *DepositRepository) GetByID(ctx context.Context, depositID string) (walletdomain.DepositChainTx, error) {
 	var model DepositChainTxModel
@@ -28,7 +49,13 @@ func (r *DepositRepository) GetByID(ctx context.Context, depositID string) (wall
 		ChainID:            model.ChainID,
 		TxHash:             model.TxHash,
 		LogIndex:           model.LogIndex,
+		FromAddress:        model.FromAddress,
+		ToAddress:          model.ToAddress,
+		TokenAddress:       model.TokenAddress,
 		Amount:             model.Amount,
+		BlockNumber:        model.BlockNumber,
+		Confirmations:      model.Confirmations,
+		RequiredConfs:      requiredConfirmations(model.ChainID),
 		Status:             model.Status,
 		Asset:              "USDC",
 		CreditedLedgerTxID: model.CreditedLedgerTxID,
@@ -37,14 +64,79 @@ func (r *DepositRepository) GetByID(ctx context.Context, depositID string) (wall
 	}, nil
 }
 
-func (r *DepositRepository) MarkCredited(ctx context.Context, depositID string, ledgerTxID string) error {
-	return DB(ctx, r.db).
-		Model(&DepositChainTxModel{}).
+func (r *DepositRepository) GetByTxLog(ctx context.Context, chainID int64, txHash string, logIndex int64) (walletdomain.DepositChainTx, error) {
+	var model DepositChainTxModel
+	err := DB(ctx, r.db).Where("chain_id = ? AND tx_hash = ? AND log_index = ?", chainID, txHash, logIndex).First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return walletdomain.DepositChainTx{}, errorsx.ErrNotFound
+		}
+		return walletdomain.DepositChainTx{}, err
+	}
+	return r.GetByID(ctx, model.DepositID)
+}
+
+func (r *DepositRepository) UpdateConfirmations(ctx context.Context, depositID string, confirmations int, status string) error {
+	result := DB(ctx, r.db).Model(&DepositChainTxModel{}).
 		Where("deposit_id = ?", depositID).
+		Updates(map[string]any{
+			"confirmations": confirmations,
+			"status":        status,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrNotFound
+	}
+	return nil
+}
+
+func (r *DepositRepository) MarkCredited(ctx context.Context, depositID string, ledgerTxID string) error {
+	result := DB(ctx, r.db).
+		Model(&DepositChainTxModel{}).
+		Where("deposit_id = ? AND status = ?", depositID, walletdomain.StatusCreditReady).
 		Updates(map[string]any{
 			"status":                walletdomain.StatusCredited,
 			"credited_ledger_tx_id": ledgerTxID,
-		}).Error
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
+func (r *DepositRepository) ListByUser(ctx context.Context, userID uint64) ([]walletdomain.DepositChainTx, error) {
+	var models []DepositChainTxModel
+	if err := DB(ctx, r.db).Where("user_id = ?", userID).Order("created_at DESC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]walletdomain.DepositChainTx, 0, len(models))
+	for _, model := range models {
+		out = append(out, walletdomain.DepositChainTx{
+			DepositID:          model.DepositID,
+			UserID:             model.UserID,
+			ChainID:            model.ChainID,
+			TxHash:             model.TxHash,
+			LogIndex:           model.LogIndex,
+			FromAddress:        model.FromAddress,
+			ToAddress:          model.ToAddress,
+			TokenAddress:       model.TokenAddress,
+			Amount:             model.Amount,
+			Asset:              "USDC",
+			BlockNumber:        model.BlockNumber,
+			Confirmations:      model.Confirmations,
+			RequiredConfs:      requiredConfirmations(model.ChainID),
+			Status:             model.Status,
+			CreditedLedgerTxID: model.CreditedLedgerTxID,
+			CreatedAt:          model.CreatedAt,
+			UpdatedAt:          model.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 type WithdrawRepository struct{ db *gorm.DB }
@@ -92,19 +184,86 @@ func (r *WithdrawRepository) GetByID(ctx context.Context, withdrawID string) (wa
 	}, nil
 }
 
+func (r *WithdrawRepository) UpdateStatus(ctx context.Context, withdrawID string, from []string, to string) error {
+	query := DB(ctx, r.db).Model(&WithdrawRequestModel{}).Where("withdraw_id = ?", withdrawID)
+	if len(from) > 0 {
+		query = query.Where("status IN ?", from)
+	}
+	result := query.Update("status", to)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
 func (r *WithdrawRepository) MarkBroadcasted(ctx context.Context, withdrawID string, txHash string) error {
-	return DB(ctx, r.db).Model(&WithdrawRequestModel{}).
+	result := DB(ctx, r.db).Model(&WithdrawRequestModel{}).
 		Where("withdraw_id = ?", withdrawID).
 		Updates(map[string]any{
-			"status":            walletdomain.StatusBroadcasted,
 			"broadcast_tx_hash": txHash,
-		}).Error
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
+func (r *WithdrawRepository) MarkCompleted(ctx context.Context, withdrawID string) error {
+	now := time.Now().UTC()
+	result := DB(ctx, r.db).Model(&WithdrawRequestModel{}).
+		Where("withdraw_id = ?", withdrawID).
+		Update("completed_at", now)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
 }
 
 func (r *WithdrawRepository) MarkRefunded(ctx context.Context, withdrawID string) error {
-	return DB(ctx, r.db).Model(&WithdrawRequestModel{}).
+	result := DB(ctx, r.db).Model(&WithdrawRequestModel{}).
 		Where("withdraw_id = ?", withdrawID).
-		Update("status", walletdomain.StatusRefunded).Error
+		Update("updated_at", time.Now().UTC())
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
+func (r *WithdrawRepository) ListByUser(ctx context.Context, userID uint64) ([]walletdomain.WithdrawRequest, error) {
+	var models []WithdrawRequestModel
+	if err := DB(ctx, r.db).Where("user_id = ?", userID).Order("created_at DESC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]walletdomain.WithdrawRequest, 0, len(models))
+	for _, model := range models {
+		out = append(out, walletdomain.WithdrawRequest{
+			WithdrawID:      model.WithdrawID,
+			UserID:          model.UserID,
+			ChainID:         model.ChainID,
+			Asset:           model.Asset,
+			Amount:          model.Amount,
+			FeeAmount:       model.FeeAmount,
+			ToAddress:       model.ToAddress,
+			Status:          model.Status,
+			HoldLedgerTxID:  model.HoldLedgerTxID,
+			BroadcastTxHash: model.BroadcastTxHash,
+			CreatedAt:       model.CreatedAt,
+			UpdatedAt:       model.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 type AccountResolver struct{ db *gorm.DB }
@@ -125,6 +284,12 @@ func (r *AccountResolver) WithdrawInTransitAccountID(ctx context.Context, asset 
 }
 func (r *AccountResolver) WithdrawFeeAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "WITHDRAW_FEE_ACCOUNT", asset)
+}
+func (r *AccountResolver) CustodyHotAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "CUSTODY_HOT", asset)
+}
+func (r *AccountResolver) TestFaucetPoolAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "TEST_FAUCET_POOL", asset)
 }
 
 func (r *AccountResolver) lookupAccountID(ctx context.Context, userID *uint64, accountCode string, asset string) (uint64, error) {

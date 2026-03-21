@@ -37,7 +37,8 @@ type SessionModel struct {
 	DeviceFingerprint string     `gorm:"column:device_fingerprint;size:255;not null"`
 	IP                string     `gorm:"column:ip;size:64;not null"`
 	UserAgent         string     `gorm:"column:user_agent;size:512;not null"`
-	ExpiresAt         time.Time  `gorm:"column:expires_at;not null"`
+	AccessExpiresAt   time.Time  `gorm:"column:access_expires_at;not null"`
+	RefreshExpiresAt  time.Time  `gorm:"column:refresh_expires_at;not null"`
 	RevokedAt         *time.Time `gorm:"column:revoked_at"`
 	CreatedAt         time.Time  `gorm:"column:created_at;not null"`
 }
@@ -69,6 +70,7 @@ type LedgerTxModel struct {
 	OperatorID     string    `gorm:"column:operator_id;size:64;not null"`
 	TraceID        string    `gorm:"column:trace_id;size:64;not null"`
 	Status         string    `gorm:"column:status;size:32;not null"`
+	MetadataJSON   *string   `gorm:"column:metadata_json;type:json"`
 	CreatedAt      time.Time `gorm:"column:created_at;not null"`
 }
 
@@ -121,13 +123,25 @@ type MessageConsumptionModel struct {
 
 func (MessageConsumptionModel) TableName() string { return "message_consumptions" }
 
+type DepositAddressModel struct {
+	ID        uint64    `gorm:"primaryKey;autoIncrement"`
+	UserID    uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_user_chain_asset;index"`
+	ChainID   int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_user_chain_asset"`
+	Address   string    `gorm:"column:address;size:64;not null;uniqueIndex:uk_chain_address"`
+	Asset     string    `gorm:"column:asset;size:32;not null;uniqueIndex:uk_user_chain_asset"`
+	Status    string    `gorm:"column:status;size:32;not null"`
+	CreatedAt time.Time `gorm:"column:created_at;not null"`
+}
+
+func (DepositAddressModel) TableName() string { return "deposit_addresses" }
+
 type DepositChainTxModel struct {
 	ID                 uint64    `gorm:"primaryKey;autoIncrement"`
 	DepositID          string    `gorm:"column:deposit_id;size:64;uniqueIndex;not null"`
 	UserID             uint64    `gorm:"column:user_id;not null;index"`
-	ChainID            int64     `gorm:"column:chain_id;not null"`
-	TxHash             string    `gorm:"column:tx_hash;size:128;not null"`
-	LogIndex           int64     `gorm:"column:log_index;not null"`
+	ChainID            int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_chain_tx_log,priority:1"`
+	TxHash             string    `gorm:"column:tx_hash;size:128;not null;uniqueIndex:uk_chain_tx_log,priority:2"`
+	LogIndex           int64     `gorm:"column:log_index;not null;uniqueIndex:uk_chain_tx_log,priority:3"`
 	FromAddress        string    `gorm:"column:from_address;size:64;not null"`
 	ToAddress          string    `gorm:"column:to_address;size:64;not null"`
 	TokenAddress       string    `gorm:"column:token_address;size:64;not null"`
@@ -174,6 +188,7 @@ func Migrate(db *gorm.DB) error {
 		&AccountBalanceSnapshotModel{},
 		&OutboxEventModel{},
 		&MessageConsumptionModel{},
+		&DepositAddressModel{},
 		&DepositChainTxModel{},
 		&WithdrawRequestModel{},
 	)

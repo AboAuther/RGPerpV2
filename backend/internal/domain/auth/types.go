@@ -29,7 +29,8 @@ type Session struct {
 	DeviceFingerprint string
 	IP                string
 	UserAgent         string
-	ExpiresAt         time.Time
+	AccessExpiresAt   time.Time
+	RefreshExpiresAt  time.Time
 	CreatedAt         time.Time
 }
 

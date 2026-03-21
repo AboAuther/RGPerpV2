@@ -2,17 +2,21 @@ package db
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", t.Name())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
@@ -78,9 +82,36 @@ func TestAuthRepository_CRUD(t *testing.T) {
 		DeviceFingerprint: "device",
 		IP:                "127.0.0.1",
 		UserAgent:         "ua",
-		ExpiresAt:         now.Add(time.Hour),
+		AccessExpiresAt:   now.Add(time.Hour),
+		RefreshExpiresAt:  now.Add(24 * time.Hour),
 		CreatedAt:         now,
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
+	}
+}
+
+func TestNonceRepository_MarkUsed_IsSingleUse(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewNonceRepository(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := repo.Create(ctx, authdomain.Nonce{
+		Address:   "0x0000000000000000000000000000000000000001",
+		ChainID:   8453,
+		Domain:    "localhost",
+		Value:     "challenge_1",
+		ExpiresAt: now.Add(time.Minute),
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("create nonce: %v", err)
+	}
+
+	if err := repo.MarkUsed(ctx, "challenge_1"); err != nil {
+		t.Fatalf("first mark used: %v", err)
+	}
+	err := repo.MarkUsed(ctx, "challenge_1")
+	if !errors.Is(err, errorsx.ErrConflict) {
+		t.Fatalf("expected conflict on second mark, got %v", err)
 	}
 }
