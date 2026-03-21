@@ -22,6 +22,7 @@
 - [x] 完成账本、风险、Vault、订单执行、Indexer、补偿规范
 - [x] 完成 OpenAPI、事件 Schema 与 MySQL DDL 初稿
 - [x] 定义环境配置与配置加载
+- [x] 补齐静态 env 配置文件与运行时默认配置文件
 - [x] 定义后端进程布局与包依赖边界
 - [x] 定义前端页面 IA、模块边界与数据依赖
 - [x] 定义 review / dev / staging / prod 环境差异
@@ -64,8 +65,8 @@
 - [ ] 实现提现请求、冻结、审核、广播、确认、退还路径
 - [ ] 实现内部划转流程
 - [ ] 实现资金类 Explorer 基础查询
-- [ ] 实现前端登录页、会话保持和基础账户概览页
-- [ ] 实现前端充值页与提现页基础状态展示
+- [x] 实现前端登录页、会话保持和基础账户概览页
+- [x] 实现前端充值页与提现页基础状态展示
 
 ### 退出标准
 
@@ -79,7 +80,9 @@
 - [x] 初始化 backend Go module
 - [x] 建立 mock-friendly 基础包：`clockx`、`idgen`、`errorsx`、`authx`
 - [x] 实现静态配置加载与校验
+- [x] 将静态配置重构为 `common.env + <APP_ENV>.env + env override`
 - [x] 为配置加载编写单元测试
+- [x] 为运行时默认配置文件加载编写单元测试
 - [x] 实现 auth domain 的 types / ports / service
 - [x] 通过接口注入实现 signer、repo、token issuer、tx manager 可 mock
 - [x] 为 nonce / login / session 流程编写单元测试
