@@ -92,7 +92,20 @@ type RequestWithdrawInput struct {
 	TraceID        string
 }
 
+type GenerateDepositAddressInput struct {
+	UserID  uint64
+	ChainID int64
+	Asset   string
+	TraceID string
+}
+
 type ConfirmDepositInput struct {
+	DepositID      string
+	IdempotencyKey string
+	TraceID        string
+}
+
+type ReverseDepositInput struct {
 	DepositID      string
 	IdempotencyKey string
 	TraceID        string
@@ -121,16 +134,6 @@ type CompleteWithdrawInput struct {
 
 type RefundWithdrawInput struct {
 	WithdrawID     string
-	IdempotencyKey string
-	TraceID        string
-}
-
-type GrantReviewFaucetInput struct {
-	UserID         uint64
-	ChainID        int64
-	Asset          string
-	Amount         string
-	ToAddress      string
 	IdempotencyKey string
 	TraceID        string
 }

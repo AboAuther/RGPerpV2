@@ -3,7 +3,7 @@ package httptransport
 import (
 	"context"
 	"fmt"
-	"strings"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
@@ -19,17 +19,21 @@ type WalletReader interface {
 
 type WalletMutator interface {
 	RequestWithdraw(ctx context.Context, input walletdomain.RequestWithdrawInput) (walletdomain.WithdrawRequest, error)
-	GrantReviewFaucet(ctx context.Context, input walletdomain.GrantReviewFaucetInput) (walletdomain.DepositChainTx, error)
+	GenerateDepositAddress(ctx context.Context, input walletdomain.GenerateDepositAddressInput) (walletdomain.DepositAddress, error)
+}
+
+type LocalChainSupport interface {
+	GrantNativeToken(ctx context.Context, address string, chainID int64) (string, error)
 }
 
 type WalletHandler struct {
-	reader              WalletReader
-	mutator             WalletMutator
-	reviewFaucetEnabled bool
+	reader          WalletReader
+	mutator         WalletMutator
+	localChainTools LocalChainSupport
 }
 
-func NewWalletHandler(reader WalletReader, mutator WalletMutator, reviewFaucetEnabled bool) *WalletHandler {
-	return &WalletHandler{reader: reader, mutator: mutator, reviewFaucetEnabled: reviewFaucetEnabled}
+func NewWalletHandler(reader WalletReader, mutator WalletMutator, localChainTools LocalChainSupport) *WalletHandler {
+	return &WalletHandler{reader: reader, mutator: mutator, localChainTools: localChainTools}
 }
 
 type withdrawRequest struct {
@@ -39,17 +43,17 @@ type withdrawRequest struct {
 	ToAddress string `json:"to_address"`
 }
 
-type faucetRequest struct {
-	Address string `json:"address"`
-	ChainID int64  `json:"chain_id"`
+type localNativeFaucetRequest struct {
+	ChainID int64 `json:"chain_id"`
 }
 
 func (h *WalletHandler) Register(r gin.IRoutes) {
 	r.GET("/wallet/deposit-addresses", h.getDepositAddresses)
+	r.POST("/wallet/deposit-addresses/:chainId/generate", h.generateDepositAddress)
 	r.GET("/wallet/deposits", h.getDeposits)
 	r.GET("/wallet/withdrawals", h.getWithdrawals)
 	r.POST("/wallet/withdrawals", h.createWithdrawal)
-	r.POST("/review/faucet", h.requestFaucet)
+	r.POST("/wallet/local-faucet/native", h.requestLocalNativeFaucet)
 }
 
 func (h *WalletHandler) getDepositAddresses(c *gin.Context) {
@@ -71,6 +75,35 @@ func (h *WalletHandler) getDepositAddresses(c *gin.Context) {
 		})
 	}
 	writeOK(c, resp)
+}
+
+func (h *WalletHandler) generateDepositAddress(c *gin.Context) {
+	if !requireUser(c) {
+		return
+	}
+	chainID, err := strconv.ParseInt(c.Param("chainId"), 10, 64)
+	if err != nil || chainID <= 0 {
+		writeError(c, fmt.Errorf("%w: invalid chain id", errorsx.ErrInvalidArgument))
+		return
+	}
+
+	item, err := h.mutator.GenerateDepositAddress(c.Request.Context(), walletdomain.GenerateDepositAddressInput{
+		UserID:  userIDFromContext(c),
+		ChainID: chainID,
+		Asset:   "USDC",
+		TraceID: traceIDFromContext(c),
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+
+	writeOK(c, readmodel.DepositAddressItem{
+		ChainID:       item.ChainID,
+		Asset:         item.Asset,
+		Address:       item.Address,
+		Confirmations: item.Confirmations,
+	})
 }
 
 func (h *WalletHandler) getDeposits(c *gin.Context) {
@@ -126,34 +159,27 @@ func (h *WalletHandler) createWithdrawal(c *gin.Context) {
 	})
 }
 
-func (h *WalletHandler) requestFaucet(c *gin.Context) {
+func (h *WalletHandler) requestLocalNativeFaucet(c *gin.Context) {
 	if !requireUser(c) {
 		return
 	}
-	if !h.reviewFaucetEnabled {
-		writeError(c, fmt.Errorf("%w: review faucet disabled", errorsx.ErrForbidden))
+	if h.localChainTools == nil {
+		writeError(c, fmt.Errorf("%w: local native faucet disabled", errorsx.ErrForbidden))
 		return
 	}
-	var req faucetRequest
+	var req localNativeFaucetRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, err)
 		return
 	}
-	if !strings.EqualFold(strings.TrimSpace(req.Address), strings.TrimSpace(addressFromContext(c))) {
-		writeError(c, fmt.Errorf("%w: faucet address mismatch", errorsx.ErrForbidden))
-		return
-	}
-	if _, err := h.mutator.GrantReviewFaucet(c.Request.Context(), walletdomain.GrantReviewFaucetInput{
-		UserID:         userIDFromContext(c),
-		ChainID:        req.ChainID,
-		Asset:          "USDC",
-		Amount:         "10000",
-		ToAddress:      req.Address,
-		IdempotencyKey: "review_faucet:" + traceIDFromContext(c),
-		TraceID:        traceIDFromContext(c),
-	}); err != nil {
+	txHash, err := h.localChainTools.GrantNativeToken(
+		c.Request.Context(),
+		addressFromContext(c),
+		req.ChainID,
+	)
+	if err != nil {
 		writeError(c, err)
 		return
 	}
-	writeOK(c, gin.H{})
+	writeOK(c, gin.H{"tx_hash": txHash})
 }

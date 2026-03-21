@@ -114,6 +114,16 @@ type OutboxEventModel struct {
 
 func (OutboxEventModel) TableName() string { return "outbox_events" }
 
+type ChainCursorModel struct {
+	ID          uint64    `gorm:"primaryKey;autoIncrement"`
+	ChainID     int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_chain_cursor"`
+	CursorType  string    `gorm:"column:cursor_type;size:64;not null;uniqueIndex:uk_chain_cursor"`
+	CursorValue string    `gorm:"column:cursor_value;size:128;not null"`
+	UpdatedAt   time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (ChainCursorModel) TableName() string { return "chain_cursors" }
+
 type MessageConsumptionModel struct {
 	ID           uint64    `gorm:"primaryKey;autoIncrement"`
 	ConsumerName string    `gorm:"column:consumer_name;size:128;not null;uniqueIndex:uk_consumer_event"`
@@ -187,6 +197,7 @@ func Migrate(db *gorm.DB) error {
 		&LedgerEntryModel{},
 		&AccountBalanceSnapshotModel{},
 		&OutboxEventModel{},
+		&ChainCursorModel{},
 		&MessageConsumptionModel{},
 		&DepositAddressModel{},
 		&DepositChainTxModel{},

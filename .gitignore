@@ -12,3 +12,5 @@ contracts/cache/
 contracts/out/
 
 *.log
+
+.local/

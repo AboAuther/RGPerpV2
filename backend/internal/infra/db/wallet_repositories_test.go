@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -115,10 +114,7 @@ func TestDepositRepository_CreateRejectsDuplicateChainTxLog(t *testing.T) {
 
 func TestBootstrapRepository_EnsureUserBootstrap(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewBootstrapRepository(db, []ChainSpec{
-		{ChainID: 1, Asset: "USDC"},
-		{ChainID: 8453, Asset: "USDC"},
-	}, &stubAllocator{})
+	repo := NewBootstrapRepository(db)
 
 	if err := repo.EnsureSystemBootstrap(context.Background()); err != nil {
 		t.Fatalf("ensure system bootstrap: %v", err)
@@ -134,18 +130,6 @@ func TestBootstrapRepository_EnsureUserBootstrap(t *testing.T) {
 	if count != 4 {
 		t.Fatalf("expected 4 user accounts, got %d", count)
 	}
-	if err := db.Model(&DepositAddressModel{}).Where("user_id = ?", 7).Count(&count).Error; err != nil {
-		t.Fatalf("count deposit addresses: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("expected 2 deposit addresses, got %d", count)
-	}
-}
-
-type stubAllocator struct{}
-
-func (stubAllocator) Allocate(user authdomain.User, chainID int64, asset string) (string, error) {
-	return fmt.Sprintf("0x%040x", chainID+int64(user.ID)), nil
 }
 
 func authUser(id uint64) authdomain.User {

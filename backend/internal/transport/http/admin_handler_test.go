@@ -26,6 +26,8 @@ func TestAdminHandler_ApproveWithdrawal(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
 		NewAdminHandler(approver, []string{"0xabc"}),
 	)
 

@@ -254,10 +254,7 @@ export function AppShell() {
         <Space size={12} className="app-shell-actions">
           <Space wrap size={[8, 8]}>
             <Tag color="geekblue">{appConfig.appEnv.toUpperCase()}</Tag>
-            <Tag color={appConfig.apiProvider === 'http' ? 'success' : appConfig.apiProvider === 'auto' ? 'gold' : 'cyan'}>
-              API {appConfig.apiProvider.toUpperCase()}
-            </Tag>
-            {session ? <Tag color="default">{session.provider.toUpperCase()} session</Tag> : null}
+            <Tag color="success">API HTTP</Tag>
           </Space>
           <Text type="secondary" className="app-shell-identity">
             {session ? `${formatAddress(session.user.evm_address)} / ${session.user.status}` : '未登录'}

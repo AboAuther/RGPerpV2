@@ -1,0 +1,12 @@
+.git
+.DS_Store
+.idea
+
+.local
+
+frontend/node_modules
+frontend/dist
+backend/coverage.out
+contracts/cache
+contracts/out
+

@@ -9,7 +9,7 @@ import (
 )
 
 type AuthUseCase interface {
-	IssueNonce(ctx context.Context, input authdomain.IssueNonceInput) (authdomain.IssueNonceOutput, error)
+	IssueChallenge(ctx context.Context, input authdomain.IssueChallengeInput) (authdomain.IssueChallengeOutput, error)
 	Login(ctx context.Context, input authdomain.LoginInput) (authdomain.LoginResult, error)
 }
 
@@ -21,7 +21,7 @@ func NewAuthHandler(authUC AuthUseCase) *AuthHandler {
 	return &AuthHandler{authUC: authUC}
 }
 
-type issueNonceRequest struct {
+type issueChallengeRequest struct {
 	Address string `json:"address"`
 	ChainID int64  `json:"chain_id"`
 }
@@ -37,18 +37,19 @@ type loginRequest struct {
 }
 
 func (h *AuthHandler) Register(r gin.IRoutes) {
-	r.POST("/auth/nonce", h.issueNonce)
+	r.POST("/auth/challenge", h.issueChallenge)
+	r.POST("/auth/nonce", h.issueChallenge)
 	r.POST("/auth/login", h.login)
 }
 
-func (h *AuthHandler) issueNonce(c *gin.Context) {
-	var req issueNonceRequest
+func (h *AuthHandler) issueChallenge(c *gin.Context) {
+	var req issueChallengeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		writeError(c, err)
 		return
 	}
 
-	resp, err := h.authUC.IssueNonce(c.Request.Context(), authdomain.IssueNonceInput{
+	resp, err := h.authUC.IssueChallenge(c.Request.Context(), authdomain.IssueChallengeInput{
 		Address: req.Address,
 		ChainID: req.ChainID,
 	})
@@ -59,6 +60,7 @@ func (h *AuthHandler) issueNonce(c *gin.Context) {
 
 	writeOK(c, gin.H{
 		"nonce":      resp.Nonce,
+		"message":    resp.Message,
 		"domain":     resp.Domain,
 		"chain_id":   resp.ChainID,
 		"expires_at": resp.ExpiresAt,
@@ -109,13 +111,16 @@ func (h *AuthHandler) login(c *gin.Context) {
 func NewEngine(
 	verifier AccessVerifier,
 	authHandler *AuthHandler,
+	marketHandler *MarketHandler,
 	accountHandler *AccountHandler,
 	walletHandler *WalletHandler,
+	tradingHandler *TradingHandler,
 	explorerHandler *ExplorerHandler,
 	adminHandler *AdminHandler,
 ) *gin.Engine {
 	engine := gin.New()
 	engine.Use(TraceMiddleware())
+	engine.Use(CORSMiddleware())
 	engine.Use(gin.Recovery())
 
 	engine.GET("/healthz", func(c *gin.Context) {
@@ -126,6 +131,9 @@ func NewEngine(
 	if authHandler != nil {
 		authHandler.Register(v1)
 	}
+	if marketHandler != nil {
+		marketHandler.Register(v1)
+	}
 	authed := v1.Group("")
 	authed.Use(AuthMiddleware(verifier))
 	if accountHandler != nil {
@@ -133,6 +141,9 @@ func NewEngine(
 	}
 	if walletHandler != nil {
 		walletHandler.Register(authed)
+	}
+	if tradingHandler != nil {
+		tradingHandler.Register(authed)
 	}
 	if explorerHandler != nil {
 		explorerHandler.Register(authed)

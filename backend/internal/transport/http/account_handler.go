@@ -14,6 +14,7 @@ type AccountReader interface {
 	GetSummary(ctx context.Context, userID uint64) (readmodel.AccountSummary, error)
 	ListBalances(ctx context.Context, userID uint64) ([]readmodel.BalanceItem, error)
 	GetRisk(ctx context.Context, userID uint64) (readmodel.RiskSnapshot, error)
+	ListFunding(ctx context.Context, userID uint64) ([]readmodel.FundingItem, error)
 	ListTransfers(ctx context.Context, userID uint64) ([]readmodel.TransferItem, error)
 }
 
@@ -41,6 +42,7 @@ func (h *AccountHandler) Register(r gin.IRoutes) {
 	r.GET("/account/summary", h.getSummary)
 	r.GET("/account/balances", h.getBalances)
 	r.GET("/account/risk", h.getRisk)
+	r.GET("/account/funding", h.getFunding)
 	r.GET("/account/transfers", h.getTransfers)
 	r.POST("/account/transfer", h.transfer)
 }
@@ -74,6 +76,18 @@ func (h *AccountHandler) getRisk(c *gin.Context) {
 		return
 	}
 	data, err := h.reader.GetRisk(c.Request.Context(), userIDFromContext(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeOK(c, data)
+}
+
+func (h *AccountHandler) getFunding(c *gin.Context) {
+	if !requireUser(c) {
+		return
+	}
+	data, err := h.reader.ListFunding(c.Request.Context(), userIDFromContext(c))
 	if err != nil {
 		writeError(c, err)
 		return

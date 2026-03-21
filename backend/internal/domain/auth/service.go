@@ -58,13 +58,17 @@ func NewService(
 	}
 }
 
-func (s *Service) IssueNonce(ctx context.Context, input IssueNonceInput) (IssueNonceOutput, error) {
+func BuildLoginMessage(domain string, chainID int64, nonce string) string {
+	return fmt.Sprintf("RGPerp Login\nDomain: %s\nChain ID: %d\nNonce: %s", domain, chainID, nonce)
+}
+
+func (s *Service) IssueChallenge(ctx context.Context, input IssueChallengeInput) (IssueChallengeOutput, error) {
 	address, err := authx.NormalizeEVMAddress(input.Address)
 	if err != nil {
-		return IssueNonceOutput{}, err
+		return IssueChallengeOutput{}, err
 	}
 	if input.ChainID <= 0 {
-		return IssueNonceOutput{}, fmt.Errorf("%w: chain id must be positive", errorsx.ErrInvalidArgument)
+		return IssueChallengeOutput{}, fmt.Errorf("%w: chain id must be positive", errorsx.ErrInvalidArgument)
 	}
 
 	now := s.clock.Now()
@@ -79,11 +83,12 @@ func (s *Service) IssueNonce(ctx context.Context, input IssueNonceInput) (IssueN
 	}
 
 	if err := s.nonces.Create(ctx, nonce); err != nil {
-		return IssueNonceOutput{}, err
+		return IssueChallengeOutput{}, err
 	}
 
-	return IssueNonceOutput{
+	return IssueChallengeOutput{
 		Nonce:     nonce.Value,
+		Message:   BuildLoginMessage(nonce.Domain, nonce.ChainID, nonce.Value),
 		Domain:    nonce.Domain,
 		ChainID:   nonce.ChainID,
 		ExpiresAt: nonce.ExpiresAt,

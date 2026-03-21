@@ -27,6 +27,7 @@ func TestLoadStaticConfigFromEnv_Success(t *testing.T) {
 		"ETH_FACTORY_ADDRESS":             "0x0000000000000000000000000000000000000003",
 		"REVIEW_FAUCET_ENABLED":           "true",
 		"REVIEW_MOCK_MARKET_DATA_ENABLED": "true",
+		"LOCAL_ANVIL_ADMIN_PRIVATE_KEY":   "0xabc123",
 	}
 
 	cfg, err := LoadStaticConfigFromEnv(func(key string) string {
@@ -71,6 +72,7 @@ func TestLoadStaticConfigWithOptions_LoadsCommonAndEnvSpecificFiles(t *testing.T
 		"JWT_ACCESS_SECRET=access-review",
 		"REVIEW_FAUCET_ENABLED=true",
 		"REVIEW_MOCK_MARKET_DATA_ENABLED=true",
+		"LOCAL_ANVIL_ADMIN_PRIVATE_KEY=0xabc123",
 		"",
 	}, "\n"))
 

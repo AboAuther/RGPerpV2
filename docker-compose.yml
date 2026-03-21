@@ -1,0 +1,111 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: rgperp
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  mysql-init:
+    image: mysql:8.4
+    depends_on:
+      mysql:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - mysql -hmysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS rgperp CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  api-server:
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    environment:
+      SERVICE_BIN: api-server
+      CHAIN_ENV_FILE: /shared/contracts.env
+      APP_ENV: dev
+      APP_PORT: 8080
+      LOG_LEVEL: debug
+      TZ: UTC
+      RUNTIME_CONFIG_PATH: /workspace/deploy/config/runtime/dev.yaml
+      MYSQL_DSN: root:root@tcp(mysql:3306)/rgperp?charset=utf8mb4&parseTime=True&loc=UTC
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AUTH_DOMAIN: localhost
+      JWT_ACCESS_SECRET: local-access-secret
+      JWT_REFRESH_SECRET: local-refresh-secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./.local:/shared
+    ports:
+      - "8080:8080"
+
+  indexer:
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    environment:
+      SERVICE_BIN: indexer
+      CHAIN_ENV_FILE: /shared/contracts.env
+      APP_ENV: dev
+      APP_PORT: 8081
+      LOG_LEVEL: debug
+      TZ: UTC
+      RUNTIME_CONFIG_PATH: /workspace/deploy/config/runtime/dev.yaml
+      MYSQL_DSN: root:root@tcp(mysql:3306)/rgperp?charset=utf8mb4&parseTime=True&loc=UTC
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AUTH_DOMAIN: localhost
+      JWT_ACCESS_SECRET: local-access-secret
+      JWT_REFRESH_SECRET: local-refresh-secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./.local:/shared
+
+volumes:
+  mysql_data:

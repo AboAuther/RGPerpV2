@@ -2,35 +2,18 @@ package db
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	"gorm.io/gorm"
 )
 
-type DepositAddressAllocator interface {
-	Allocate(user authdomain.User, chainID int64, asset string) (string, error)
-}
-
-type ChainSpec struct {
-	ChainID       int64
-	Asset         string
-	Confirmations int
-}
-
 type BootstrapRepository struct {
-	db        *gorm.DB
-	chains    []ChainSpec
-	allocator DepositAddressAllocator
+	db *gorm.DB
 }
 
-func NewBootstrapRepository(db *gorm.DB, chains []ChainSpec, allocator DepositAddressAllocator) *BootstrapRepository {
-	return &BootstrapRepository{
-		db:        db,
-		chains:    chains,
-		allocator: allocator,
-	}
+func NewBootstrapRepository(db *gorm.DB) *BootstrapRepository {
+	return &BootstrapRepository{db: db}
 }
 
 func (r *BootstrapRepository) EnsureSystemBootstrap(ctx context.Context) error {
@@ -66,29 +49,6 @@ func (r *BootstrapRepository) EnsureUserBootstrap(ctx context.Context, user auth
 		}
 		if err := DB(ctx, r.db).
 			Where("user_id = ? AND account_code = ? AND asset = ?", user.ID, code, "USDC").
-			FirstOrCreate(&model).Error; err != nil {
-			return err
-		}
-	}
-
-	for _, chain := range r.chains {
-		if r.allocator == nil {
-			return fmt.Errorf("deposit address allocator is required")
-		}
-		address, err := r.allocator.Allocate(user, chain.ChainID, chain.Asset)
-		if err != nil {
-			return err
-		}
-		model := DepositAddressModel{
-			UserID:    user.ID,
-			ChainID:   chain.ChainID,
-			Address:   address,
-			Asset:     chain.Asset,
-			Status:    "ACTIVE",
-			CreatedAt: now,
-		}
-		if err := DB(ctx, r.db).
-			Where("user_id = ? AND chain_id = ? AND asset = ?", user.ID, chain.ChainID, chain.Asset).
 			FirstOrCreate(&model).Error; err != nil {
 			return err
 		}

@@ -1,6 +1,7 @@
-import type { ApiProvider, AppEnv, ChainOption } from './domain';
+import type { AppEnv, ChainOption } from './domain';
 
 const fallbackChains: ChainOption[] = [
+  { id: 31337, key: 'local', name: 'Local Anvil', confirmations: 1 },
   { id: 1, key: 'ethereum', name: 'Ethereum', confirmations: 12 },
   { id: 42161, key: 'arbitrum', name: 'Arbitrum', confirmations: 20 },
   { id: 8453, key: 'base', name: 'Base', confirmations: 20 },
@@ -14,25 +15,23 @@ function requireEnv(name: string): string {
   throw new Error(`缺少必填前端环境变量 ${name}`);
 }
 
-function parseProvider(value: string): ApiProvider {
-  if (value === 'http' || value === 'auto' || value === 'mock') {
-    return value;
-  }
-  throw new Error(`不支持的 VITE_API_PROVIDER=${value}`);
-}
-
-function parseBool(value: string | undefined, fallback = false): boolean {
-  if (value == null || value === '') {
-    return fallback;
-  }
-  return value === 'true';
-}
-
 function parseEnv(value: string): AppEnv {
-  if (value === 'dev' || value === 'staging' || value === 'prod' || value === 'review') {
+  if (value === 'dev' || value === 'staging' || value === 'prod') {
     return value;
   }
   throw new Error(`不支持的 VITE_APP_ENV=${value}`);
+}
+
+function parseIntEnv(name: string, fallback: number): number {
+  const raw = import.meta.env[name];
+  if (raw == null || raw === '') {
+    return fallback;
+  }
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`环境变量 ${name} 必须是正整数`);
+  }
+  return value;
 }
 
 function parseChains(value: string | undefined): ChainOption[] {
@@ -51,37 +50,16 @@ function parseChains(value: string | undefined): ChainOption[] {
   return selected.length > 0 ? selected : fallbackChains;
 }
 
-function isReviewLikeEnv(env: AppEnv): boolean {
-  return env === 'dev' || env === 'review';
-}
-
-const appEnv = parseEnv(requireEnv('VITE_APP_ENV'));
-const apiProvider = parseProvider(requireEnv('VITE_API_PROVIDER'));
-const reviewFeaturesEnabled = isReviewLikeEnv(appEnv);
-
-if (apiProvider === 'mock' && !reviewFeaturesEnabled) {
-  throw new Error('VITE_API_PROVIDER=mock 仅允许在 dev/review 环境启用');
-}
-
-const disableRouteGuard = parseBool(import.meta.env.VITE_DISABLE_ROUTE_GUARD, false);
-if (disableRouteGuard && !reviewFeaturesEnabled) {
-  throw new Error('VITE_DISABLE_ROUTE_GUARD=true 仅允许在 dev/review 环境启用');
-}
-
-const reviewFaucetEnabled = reviewFeaturesEnabled && parseBool(import.meta.env.VITE_REVIEW_FAUCET_ENABLED, false);
-
 export const appConfig = {
-  appEnv,
-  apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080',
-  wsBaseUrl: import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8080/ws',
-  apiProvider,
-  disableRouteGuard,
-  reviewFaucetEnabled,
-  reviewFeaturesEnabled,
-  mockSessionPersistenceEnabled: reviewFeaturesEnabled && apiProvider === 'mock',
+  appEnv: parseEnv(requireEnv('VITE_APP_ENV')),
+  apiBaseUrl: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8080',
+  wsBaseUrl: import.meta.env.VITE_WS_BASE_URL || 'ws://127.0.0.1:8080/ws',
   supportedChains: parseChains(import.meta.env.VITE_SUPPORTED_CHAINS),
+  localChainId: parseIntEnv('VITE_LOCAL_CHAIN_ID', 31337),
+  localUsdcAddress: (import.meta.env.VITE_LOCAL_USDC_ADDRESS || '').trim(),
 };
 
 export function getChainOption(chainId: number): ChainOption | undefined {
   return appConfig.supportedChains.find((chain) => chain.id === chainId);
 }
+

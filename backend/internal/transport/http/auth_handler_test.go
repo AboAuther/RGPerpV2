@@ -14,17 +14,17 @@ import (
 )
 
 type fakeAuthUseCase struct {
-	issueNonceResp authdomain.IssueNonceOutput
-	issueNonceErr  error
-	loginResp      authdomain.LoginResult
-	loginErr       error
-	lastNonceInput authdomain.IssueNonceInput
-	lastLoginInput authdomain.LoginInput
+	challengeResp    authdomain.IssueChallengeOutput
+	challengeErr     error
+	loginResp        authdomain.LoginResult
+	loginErr         error
+	lastChallengeReq authdomain.IssueChallengeInput
+	lastLoginInput   authdomain.LoginInput
 }
 
-func (f *fakeAuthUseCase) IssueNonce(_ context.Context, input authdomain.IssueNonceInput) (authdomain.IssueNonceOutput, error) {
-	f.lastNonceInput = input
-	return f.issueNonceResp, f.issueNonceErr
+func (f *fakeAuthUseCase) IssueChallenge(_ context.Context, input authdomain.IssueChallengeInput) (authdomain.IssueChallengeOutput, error) {
+	f.lastChallengeReq = input
+	return f.challengeResp, f.challengeErr
 }
 
 func (f *fakeAuthUseCase) Login(_ context.Context, input authdomain.LoginInput) (authdomain.LoginResult, error) {
@@ -32,24 +32,24 @@ func (f *fakeAuthUseCase) Login(_ context.Context, input authdomain.LoginInput) 
 	return f.loginResp, f.loginErr
 }
 
-func TestIssueNonceHandler_Success(t *testing.T) {
+func TestChallengeHandler_Success(t *testing.T) {
 	fakeUC := &fakeAuthUseCase{
-		issueNonceResp: authdomain.IssueNonceOutput{
+		challengeResp: authdomain.IssueChallengeOutput{
 			Nonce:     "challenge_1",
+			Message:   "RGPerp Login",
 			Domain:    "localhost",
 			ChainID:   8453,
 			ExpiresAt: time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
 		},
 	}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"address":  "0x0000000000000000000000000000000000000001",
 		"chain_id": 8453,
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/nonce", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/challenge", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Trace-Id", "trace_1")
 	rec := httptest.NewRecorder()
 
 	engine.ServeHTTP(rec, req)
@@ -57,7 +57,7 @@ func TestIssueNonceHandler_Success(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if fakeUC.lastNonceInput.ChainID != 8453 {
+	if fakeUC.lastChallengeReq.ChainID != 8453 {
 		t.Fatalf("expected chain id propagated")
 	}
 }
@@ -75,9 +75,9 @@ func TestLoginHandler_UsesFallbackIPAndUA(t *testing.T) {
 			ExpiresAt:    time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
 		},
 	}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"address":            "0x0000000000000000000000000000000000000001",
 		"chain_id":           8453,
 		"nonce":              "challenge_1",
@@ -101,9 +101,9 @@ func TestLoginHandler_UsesFallbackIPAndUA(t *testing.T) {
 
 func TestLoginHandler_MapsDomainErrors(t *testing.T) {
 	fakeUC := &fakeAuthUseCase{loginErr: errorsx.ErrUnauthorized}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
 
-	body, _ := json.Marshal(map[string]interface{}{
+	body, _ := json.Marshal(map[string]any{
 		"address":   "0x0000000000000000000000000000000000000001",
 		"chain_id":  8453,
 		"nonce":     "challenge_1",

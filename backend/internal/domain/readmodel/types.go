@@ -65,6 +65,78 @@ type TransferItem struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+type SymbolItem struct {
+	Symbol      string `json:"symbol"`
+	AssetClass  string `json:"asset_class"`
+	TickSize    string `json:"tick_size"`
+	StepSize    string `json:"step_size"`
+	MinNotional string `json:"min_notional"`
+	Status      string `json:"status"`
+}
+
+type TickerItem struct {
+	Symbol     string `json:"symbol"`
+	IndexPrice string `json:"index_price"`
+	MarkPrice  string `json:"mark_price"`
+	BestBid    string `json:"best_bid"`
+	BestAsk    string `json:"best_ask"`
+	TS         string `json:"ts"`
+}
+
+type OrderItem struct {
+	OrderID        string  `json:"order_id"`
+	ClientOrderID  string  `json:"client_order_id"`
+	Symbol         string  `json:"symbol"`
+	Side           string  `json:"side"`
+	PositionEffect string  `json:"position_effect"`
+	Type           string  `json:"type"`
+	Qty            string  `json:"qty"`
+	FilledQty      string  `json:"filled_qty"`
+	AvgFillPrice   string  `json:"avg_fill_price"`
+	Price          *string `json:"price"`
+	TriggerPrice   *string `json:"trigger_price"`
+	ReduceOnly     bool    `json:"reduce_only"`
+	Status         string  `json:"status"`
+	RejectReason   *string `json:"reject_reason"`
+}
+
+type FillItem struct {
+	FillID    string `json:"fill_id"`
+	OrderID   string `json:"order_id"`
+	Symbol    string `json:"symbol"`
+	Side      string `json:"side"`
+	Qty       string `json:"qty"`
+	Price     string `json:"price"`
+	FeeAmount string `json:"fee_amount"`
+	CreatedAt string `json:"created_at"`
+}
+
+type PositionItem struct {
+	PositionID        string `json:"position_id"`
+	Symbol            string `json:"symbol"`
+	Side              string `json:"side"`
+	Qty               string `json:"qty"`
+	AvgEntryPrice     string `json:"avg_entry_price"`
+	MarkPrice         string `json:"mark_price"`
+	InitialMargin     string `json:"initial_margin"`
+	MaintenanceMargin string `json:"maintenance_margin"`
+	RealizedPnL       string `json:"realized_pnl"`
+	UnrealizedPnL     string `json:"unrealized_pnl"`
+	FundingAccrual    string `json:"funding_accrual"`
+	LiquidationPrice  string `json:"liquidation_price"`
+	Status            string `json:"status"`
+}
+
+type FundingItem struct {
+	FundingID string `json:"funding_id"`
+	Symbol    string `json:"symbol"`
+	Direction string `json:"direction"`
+	Rate      string `json:"rate"`
+	Amount    string `json:"amount"`
+	SettledAt string `json:"settled_at"`
+	BatchID   string `json:"batch_id"`
+}
+
 type ExplorerEvent struct {
 	EventID     string         `json:"event_id"`
 	EventType   string         `json:"event_type"`

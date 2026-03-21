@@ -1,6 +1,4 @@
-export type ApiProvider = 'mock' | 'http' | 'auto';
-export type RuntimeProvider = 'mock' | 'http';
-export type AppEnv = 'dev' | 'review' | 'staging' | 'prod';
+export type AppEnv = 'dev' | 'staging' | 'prod';
 
 export interface ApiEnvelope<T> {
   code: string;
@@ -25,8 +23,9 @@ export interface User {
   capabilities?: string[];
 }
 
-export interface NonceResponse {
+export interface ChallengeResponse {
   nonce: string;
+  message: string;
   domain: string;
   chain_id: number;
   expires_at: string;
@@ -208,5 +207,4 @@ export interface AuthenticatedSession {
   refreshToken: string;
   expiresAt?: string;
   user: User;
-  provider: RuntimeProvider;
 }

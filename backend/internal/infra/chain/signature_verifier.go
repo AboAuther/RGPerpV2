@@ -6,6 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
+	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
@@ -16,7 +17,7 @@ func NewSignatureVerifier() *SignatureVerifier {
 }
 
 func (v *SignatureVerifier) VerifyLogin(_ context.Context, address string, chainID int64, domain string, nonce string, signature string) error {
-	message := loginMessage(domain, chainID, nonce)
+	message := authdomain.BuildLoginMessage(domain, chainID, nonce)
 	sig := common.FromHex(signature)
 	if len(sig) != 65 {
 		return fmt.Errorf("%w: invalid signature length", errorsx.ErrUnauthorized)
@@ -35,8 +36,4 @@ func (v *SignatureVerifier) VerifyLogin(_ context.Context, address string, chain
 		return fmt.Errorf("%w: signer mismatch", errorsx.ErrUnauthorized)
 	}
 	return nil
-}
-
-func loginMessage(domain string, chainID int64, nonce string) string {
-	return fmt.Sprintf("RGPerp Login\nDomain: %s\nChain ID: %d\nNonce: %s", domain, chainID, nonce)
 }

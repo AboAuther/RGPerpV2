@@ -13,19 +13,20 @@ import (
 )
 
 const (
-	StatusCreditReady = "CREDIT_READY"
-	StatusCredited    = "CREDITED"
-	StatusDetected    = "DETECTED"
-	StatusConfirming  = "CONFIRMING"
-	StatusRequested   = "REQUESTED"
-	StatusHold        = "HOLD"
-	StatusRiskReview  = "RISK_REVIEW"
-	StatusApproved    = "APPROVED"
-	StatusSigning     = "SIGNING"
-	StatusBroadcasted = "BROADCASTED"
-	StatusCompleted   = "COMPLETED"
-	StatusFailed      = "FAILED"
-	StatusRefunded    = "REFUNDED"
+	StatusCreditReady   = "CREDIT_READY"
+	StatusCredited      = "CREDITED"
+	StatusDetected      = "DETECTED"
+	StatusConfirming    = "CONFIRMING"
+	StatusReorgReversed = "REORG_REVERSED"
+	StatusRequested     = "REQUESTED"
+	StatusHold          = "HOLD"
+	StatusRiskReview    = "RISK_REVIEW"
+	StatusApproved      = "APPROVED"
+	StatusSigning       = "SIGNING"
+	StatusBroadcasted   = "BROADCASTED"
+	StatusCompleted     = "COMPLETED"
+	StatusFailed        = "FAILED"
+	StatusRefunded      = "REFUNDED"
 )
 
 type AccountResolver interface {
@@ -49,6 +50,7 @@ type Service struct {
 	accountResolver AccountResolver
 	balances        BalanceRepository
 	addresses       DepositAddressRepository
+	allocator       DepositAddressAllocator
 }
 
 func NewService(
@@ -62,7 +64,12 @@ func NewService(
 	accountResolver AccountResolver,
 	balances BalanceRepository,
 	addresses DepositAddressRepository,
+	allocator ...DepositAddressAllocator,
 ) *Service {
+	var optionalAllocator DepositAddressAllocator
+	if len(allocator) > 0 {
+		optionalAllocator = allocator[0]
+	}
 	return &Service{
 		deposits:        deposits,
 		withdraws:       withdraws,
@@ -74,6 +81,7 @@ func NewService(
 		accountResolver: accountResolver,
 		balances:        balances,
 		addresses:       addresses,
+		allocator:       optionalAllocator,
 	}
 }
 
@@ -220,6 +228,52 @@ func (s *Service) ConfirmDeposit(ctx context.Context, input ConfirmDepositInput)
 	})
 }
 
+func (s *Service) ReverseDeposit(ctx context.Context, input ReverseDepositInput) error {
+	deposit, err := s.deposits.GetByID(ctx, input.DepositID)
+	if err != nil {
+		return err
+	}
+	if deposit.Status == StatusReorgReversed {
+		return nil
+	}
+	if deposit.Status == StatusCredited {
+		return fmt.Errorf("%w: credited deposit requires manual reconciliation", errorsx.ErrConflict)
+	}
+
+	return s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		pendingID, err := s.accountResolver.DepositPendingAccountID(txCtx, deposit.Asset)
+		if err != nil {
+			return err
+		}
+		custodyID, err := s.accountResolver.CustodyHotAccountID(txCtx, deposit.Asset)
+		if err != nil {
+			return err
+		}
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+			LedgerTx: ledgerdomain.LedgerTx{
+				ID:             s.idgen.NewID("ldg"),
+				EventID:        s.idgen.NewID("evt"),
+				BizType:        "DEPOSIT_REORG_REVERSAL",
+				BizRefID:       deposit.DepositID,
+				Asset:          deposit.Asset,
+				IdempotencyKey: input.IdempotencyKey,
+				OperatorType:   "system",
+				OperatorID:     "indexer",
+				TraceID:        input.TraceID,
+				Status:         "COMMITTED",
+				CreatedAt:      s.clock.Now(),
+			},
+			Entries: []ledgerdomain.LedgerEntry{
+				{AccountID: pendingID, Asset: deposit.Asset, Amount: negate(deposit.Amount), EntryType: "DEPOSIT_PENDING_REORG_REVERSE"},
+				{AccountID: custodyID, Asset: deposit.Asset, Amount: deposit.Amount, EntryType: "CUSTODY_HOT_REORG_RESTORE"},
+			},
+		}); err != nil {
+			return err
+		}
+		return s.deposits.MarkReorgReversed(txCtx, deposit.DepositID)
+	})
+}
+
 func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInput) (WithdrawRequest, error) {
 	if _, err := authx.NormalizeEVMAddress(input.ToAddress); err != nil {
 		return WithdrawRequest{}, err
@@ -302,69 +356,44 @@ func (s *Service) ApproveWithdraw(ctx context.Context, input ApproveWithdrawInpu
 	return s.withdraws.UpdateStatus(ctx, input.WithdrawID, []string{StatusHold, StatusRiskReview}, StatusApproved)
 }
 
-func (s *Service) GrantReviewFaucet(ctx context.Context, input GrantReviewFaucetInput) (DepositChainTx, error) {
-	if input.UserID == 0 || input.ChainID <= 0 || input.Asset == "" || input.Amount == "" {
-		return DepositChainTx{}, fmt.Errorf("%w: invalid faucet request", errorsx.ErrInvalidArgument)
+func (s *Service) GenerateDepositAddress(ctx context.Context, input GenerateDepositAddressInput) (DepositAddress, error) {
+	if input.UserID == 0 || input.ChainID <= 0 {
+		return DepositAddress{}, fmt.Errorf("%w: invalid deposit address request", errorsx.ErrInvalidArgument)
 	}
-
-	now := s.clock.Now()
-	deposit := DepositChainTx{
-		DepositID:     s.idgen.NewID("dep"),
+	asset := input.Asset
+	if asset == "" {
+		asset = "USDC"
+	}
+	if existing, err := s.addresses.GetByUserChainAsset(ctx, input.UserID, input.ChainID, asset); err == nil {
+		return existing, nil
+	} else if err != errorsx.ErrNotFound {
+		return DepositAddress{}, err
+	}
+	if s.allocator == nil {
+		return DepositAddress{}, fmt.Errorf("%w: deposit address allocator not configured", errorsx.ErrForbidden)
+	}
+	address, err := s.allocator.Allocate(ctx, input.UserID, input.ChainID, asset)
+	if err != nil {
+		return DepositAddress{}, err
+	}
+	if _, err := authx.NormalizeEVMAddress(address); err != nil {
+		return DepositAddress{}, err
+	}
+	item := DepositAddress{
 		UserID:        input.UserID,
 		ChainID:       input.ChainID,
-		TxHash:        s.idgen.NewID("tx"),
-		LogIndex:      0,
-		FromAddress:   "review_faucet",
-		ToAddress:     input.ToAddress,
-		TokenAddress:  "review_usdc",
-		Amount:        input.Amount,
-		Asset:         input.Asset,
-		BlockNumber:   0,
-		Confirmations: 1,
-		RequiredConfs: 1,
-		Status:        StatusCredited,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		Asset:         asset,
+		Address:       address,
+		Status:        "ACTIVE",
+		Confirmations: 0,
+		CreatedAt:     s.clock.Now(),
 	}
-
 	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
-		userWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, input.UserID, input.Asset)
-		if err != nil {
-			return err
-		}
-		faucetID, err := s.accountResolver.TestFaucetPoolAccountID(txCtx, input.Asset)
-		if err != nil {
-			return err
-		}
-		ledgerTxID := s.idgen.NewID("ldg")
-		deposit.CreditedLedgerTxID = ledgerTxID
-		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
-			LedgerTx: ledgerdomain.LedgerTx{
-				ID:             ledgerTxID,
-				EventID:        s.idgen.NewID("evt"),
-				BizType:        "REVIEW_FAUCET",
-				BizRefID:       deposit.DepositID,
-				Asset:          input.Asset,
-				IdempotencyKey: input.IdempotencyKey,
-				OperatorType:   "system",
-				OperatorID:     "review_faucet",
-				TraceID:        input.TraceID,
-				Status:         "COMMITTED",
-				CreatedAt:      now,
-			},
-			Entries: []ledgerdomain.LedgerEntry{
-				{AccountID: userWalletID, Asset: input.Asset, Amount: input.Amount, EntryType: "REVIEW_FAUCET_CREDIT"},
-				{AccountID: faucetID, Asset: input.Asset, Amount: negate(input.Amount), EntryType: "REVIEW_FAUCET_POOL_DEBIT"},
-			},
-		}); err != nil {
-			return err
-		}
-		return s.deposits.Create(txCtx, deposit)
+		return s.addresses.Upsert(txCtx, item)
 	}); err != nil {
-		return DepositChainTx{}, err
+		return DepositAddress{}, err
 	}
-
-	return deposit, nil
+	return item, nil
 }
 
 func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWithdrawInput) error {

@@ -3,7 +3,6 @@ import type { PropsWithChildren } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import type { AuthenticatedSession, User } from './domain';
 import { setApiAccessToken } from './api';
-import { appConfig } from './env';
 
 interface AuthContextValue {
   session: AuthenticatedSession | null;
@@ -12,28 +11,42 @@ interface AuthContextValue {
   signOut: () => void;
 }
 
-const mockSessionStorageKey = 'rgperp.mock.session';
+const sessionStorageKey = 'rgperp.session';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-function readMockSession(): AuthenticatedSession | null {
-  if (!appConfig.mockSessionPersistenceEnabled) {
-    window.sessionStorage.removeItem(mockSessionStorageKey);
-    return null;
+function isSessionExpired(session: AuthenticatedSession): boolean {
+  if (!session.expiresAt) {
+    return false;
   }
 
-  const raw = window.sessionStorage.getItem(mockSessionStorageKey);
+  const expiresAt = Date.parse(session.expiresAt);
+  if (Number.isNaN(expiresAt)) {
+    return true;
+  }
+
+  return expiresAt <= Date.now();
+}
+
+function readPersistedSession(): AuthenticatedSession | null {
+  const raw = window.sessionStorage.getItem(sessionStorageKey);
   if (!raw) {
     return null;
   }
 
   try {
     const parsed = JSON.parse(raw) as AuthenticatedSession;
-    if (parsed.provider !== 'mock') {
+    if (!parsed.accessToken || !parsed.user) {
+      window.sessionStorage.removeItem(sessionStorageKey);
+      return null;
+    }
+    if (isSessionExpired(parsed)) {
+      window.sessionStorage.removeItem(sessionStorageKey);
       return null;
     }
     return parsed;
   } catch {
+    window.sessionStorage.removeItem(sessionStorageKey);
     return null;
   }
 }
@@ -59,14 +72,14 @@ export function hasAdminAccess(user: User | null | undefined): boolean {
 }
 
 export function AuthProvider({ children }: PropsWithChildren) {
-  const [session, setSession] = useState<AuthenticatedSession | null>(null);
-
-  useEffect(() => {
-    const restored = readMockSession();
-    if (restored) {
-      setSession(restored);
+  const [session, setSession] = useState<AuthenticatedSession | null>(() => {
+    if (typeof window === 'undefined') {
+      return null;
     }
-  }, []);
+    const restored = readPersistedSession();
+    setApiAccessToken(restored?.accessToken);
+    return restored;
+  });
 
   useEffect(() => {
     setApiAccessToken(session?.accessToken);
@@ -77,16 +90,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
       session,
       isAuthenticated: !!session,
       signIn(nextSession) {
+        setApiAccessToken(nextSession.accessToken);
         setSession(nextSession);
-        if (nextSession.provider === 'mock' && appConfig.mockSessionPersistenceEnabled) {
-          window.sessionStorage.setItem(mockSessionStorageKey, JSON.stringify(nextSession));
-        } else {
-          window.sessionStorage.removeItem(mockSessionStorageKey);
-        }
+        window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(nextSession));
       },
       signOut() {
+        setApiAccessToken(undefined);
         setSession(null);
-        window.sessionStorage.removeItem(mockSessionStorageKey);
+        window.sessionStorage.removeItem(sessionStorageKey);
       },
     }),
     [session],
@@ -107,10 +118,6 @@ export function ProtectedOutlet() {
   const { isAuthenticated } = useAuth();
   const location = useLocation();
 
-  if (appConfig.disableRouteGuard) {
-    return <Outlet />;
-  }
-
   if (!isAuthenticated) {
     return <Navigate replace to="/login" state={{ from: location.pathname }} />;
   }
@@ -121,10 +128,6 @@ export function ProtectedOutlet() {
 export function AdminOutlet() {
   const { isAuthenticated, session } = useAuth();
   const location = useLocation();
-
-  if (appConfig.disableRouteGuard) {
-    return <Outlet />;
-  }
 
   if (!isAuthenticated) {
     return <Navigate replace to="/login" state={{ from: location.pathname }} />;

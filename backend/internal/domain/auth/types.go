@@ -34,13 +34,14 @@ type Session struct {
 	CreatedAt         time.Time
 }
 
-type IssueNonceInput struct {
+type IssueChallengeInput struct {
 	Address string
 	ChainID int64
 }
 
-type IssueNonceOutput struct {
+type IssueChallengeOutput struct {
 	Nonce     string
+	Message   string
 	Domain    string
 	ChainID   int64
 	ExpiresAt time.Time

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
@@ -53,15 +54,25 @@ type DepositAddressRepository struct {
 }
 
 func NewDepositAddressRepository(db *gorm.DB, confirmations map[int64]int) *DepositAddressRepository {
+	setRequiredConfirmations(confirmations)
 	return &DepositAddressRepository{db: db, confirmations: confirmations}
 }
 
 func (r *DepositAddressRepository) ListByUser(ctx context.Context, userID uint64) ([]walletdomain.DepositAddress, error) {
 	var models []DepositAddressModel
-	if err := DB(ctx, r.db).
-		Where("user_id = ?", userID).
-		Order("chain_id ASC").
-		Find(&models).Error; err != nil {
+	query := DB(ctx, r.db).Where("user_id = ?", userID)
+	if len(r.confirmations) > 0 {
+		chainIDs := make([]int64, 0, len(r.confirmations))
+		for chainID, confirmations := range r.confirmations {
+			if confirmations > 0 {
+				chainIDs = append(chainIDs, chainID)
+			}
+		}
+		if len(chainIDs) > 0 {
+			query = query.Where("chain_id IN ?", chainIDs)
+		}
+	}
+	if err := query.Order("chain_id ASC").Find(&models).Error; err != nil {
 		return nil, err
 	}
 	items := make([]walletdomain.DepositAddress, 0, len(models))
@@ -77,6 +88,54 @@ func (r *DepositAddressRepository) ListByUser(ctx context.Context, userID uint64
 		})
 	}
 	return items, nil
+}
+
+func (r *DepositAddressRepository) GetByUserChainAsset(ctx context.Context, userID uint64, chainID int64, asset string) (walletdomain.DepositAddress, error) {
+	var model DepositAddressModel
+	err := DB(ctx, r.db).
+		Where("user_id = ? AND chain_id = ? AND asset = ?", userID, chainID, asset).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return walletdomain.DepositAddress{}, errorsx.ErrNotFound
+		}
+		return walletdomain.DepositAddress{}, err
+	}
+	return walletdomain.DepositAddress{
+		UserID:        model.UserID,
+		ChainID:       model.ChainID,
+		Asset:         model.Asset,
+		Address:       model.Address,
+		Status:        model.Status,
+		Confirmations: r.confirmations[model.ChainID],
+		CreatedAt:     model.CreatedAt,
+	}, nil
+}
+
+func (r *DepositAddressRepository) Upsert(ctx context.Context, address walletdomain.DepositAddress) error {
+	now := time.Now().UTC()
+	model := DepositAddressModel{
+		UserID:    address.UserID,
+		ChainID:   address.ChainID,
+		Address:   address.Address,
+		Asset:     address.Asset,
+		Status:    address.Status,
+		CreatedAt: address.CreatedAt,
+	}
+	if model.CreatedAt.IsZero() {
+		model.CreatedAt = now
+	}
+	return DB(ctx, r.db).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "user_id"},
+			{Name: "chain_id"},
+			{Name: "asset"},
+		},
+		DoUpdates: clause.Assignments(map[string]any{
+			"address": address.Address,
+			"status":  address.Status,
+		}),
+	}).Create(&model).Error
 }
 
 type AccountQueryRepository struct {
@@ -167,6 +226,11 @@ func (r *AccountQueryRepository) GetRisk(ctx context.Context, userID uint64) (re
 		risk.Notes = append(risk.Notes, "账户权益为 0，新增风险应保持保守策略。")
 	}
 	return risk, nil
+}
+
+func (r *AccountQueryRepository) ListFunding(ctx context.Context, userID uint64) ([]readmodel.FundingItem, error) {
+	reviewRepo := NewReviewReadRepository()
+	return reviewRepo.ListFunding(ctx, userID)
 }
 
 func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint64) ([]readmodel.TransferItem, error) {
@@ -353,12 +417,34 @@ func extractPositiveTransferAmount(ctx context.Context, db *gorm.DB, ledgerTxID 
 }
 
 func requiredConfirmations(chainID int64) int {
+	requiredConfirmationMu.RLock()
+	if value, ok := requiredConfirmationByChain[chainID]; ok && value > 0 {
+		requiredConfirmationMu.RUnlock()
+		return value
+	}
+	requiredConfirmationMu.RUnlock()
 	switch chainID {
 	case 1:
 		return 12
 	case 42161, 8453:
 		return 20
+	case 31337:
+		return 1
 	default:
 		return 0
+	}
+}
+
+var (
+	requiredConfirmationMu      sync.RWMutex
+	requiredConfirmationByChain = map[int64]int{}
+)
+
+func setRequiredConfirmations(values map[int64]int) {
+	requiredConfirmationMu.Lock()
+	defer requiredConfirmationMu.Unlock()
+	requiredConfirmationByChain = make(map[int64]int, len(values))
+	for chainID, confirmations := range values {
+		requiredConfirmationByChain[chainID] = confirmations
 	}
 }

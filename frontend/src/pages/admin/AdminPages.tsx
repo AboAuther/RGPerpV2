@@ -60,7 +60,7 @@ export function AdminConfigsPage() {
     <AdminPageTemplate
       title="Configs"
       description="配置中心页面预留给可审计配置变更、审批与回滚。"
-      items={['symbol 状态', 'risk 参数', 'withdraw 限额', 'review 专用开关']}
+      items={['symbol 状态', 'risk 参数', 'withdraw 限额', '本地测试链开关']}
     />
   );
 }

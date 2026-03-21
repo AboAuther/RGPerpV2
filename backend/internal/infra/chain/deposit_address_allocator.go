@@ -1,11 +1,10 @@
 package chain
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-
-	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 )
 
 type DeterministicDepositAddressAllocator struct{}
@@ -14,7 +13,7 @@ func NewDeterministicDepositAddressAllocator() *DeterministicDepositAddressAlloc
 	return &DeterministicDepositAddressAllocator{}
 }
 
-func (a *DeterministicDepositAddressAllocator) Allocate(user authdomain.User, chainID int64, asset string) (string, error) {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("rgperp:%d:%s:%d", user.ID, asset, chainID)))
+func (a *DeterministicDepositAddressAllocator) Allocate(_ context.Context, userID uint64, chainID int64, asset string) (string, error) {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("rgperp:%d:%s:%d", userID, asset, chainID)))
 	return "0x" + hex.EncodeToString(sum[len(sum)-20:]), nil
 }

@@ -10,8 +10,10 @@ type DepositRepository interface {
 	Create(ctx context.Context, deposit DepositChainTx) error
 	GetByID(ctx context.Context, depositID string) (DepositChainTx, error)
 	GetByTxLog(ctx context.Context, chainID int64, txHash string, logIndex int64) (DepositChainTx, error)
+	ListPendingByChain(ctx context.Context, chainID int64, statuses []string, limit int) ([]DepositChainTx, error)
 	UpdateConfirmations(ctx context.Context, depositID string, confirmations int, status string) error
 	MarkCredited(ctx context.Context, depositID string, ledgerTxID string) error
+	MarkReorgReversed(ctx context.Context, depositID string) error
 	ListByUser(ctx context.Context, userID uint64) ([]DepositChainTx, error)
 }
 
@@ -43,4 +45,10 @@ type BalanceRepository interface {
 
 type DepositAddressRepository interface {
 	ListByUser(ctx context.Context, userID uint64) ([]DepositAddress, error)
+	GetByUserChainAsset(ctx context.Context, userID uint64, chainID int64, asset string) (DepositAddress, error)
+	Upsert(ctx context.Context, address DepositAddress) error
+}
+
+type DepositAddressAllocator interface {
+	Allocate(ctx context.Context, userID uint64, chainID int64, asset string) (string, error)
 }

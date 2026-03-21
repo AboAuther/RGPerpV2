@@ -123,7 +123,7 @@ func (s *stubBootstrapper) EnsureUserBootstrap(_ context.Context, user User) err
 	return s.err
 }
 
-func TestIssueNonce_Success(t *testing.T) {
+func TestIssueChallenge_Success(t *testing.T) {
 	clock := fakeClock{now: time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)}
 	ids := &fakeIDGen{values: []string{"nonce_1", "challenge_1"}}
 	nonces := &stubNonceRepo{}
@@ -140,7 +140,7 @@ func TestIssueNonce_Success(t *testing.T) {
 		nil,
 	)
 
-	got, err := svc.IssueNonce(context.Background(), IssueNonceInput{
+	got, err := svc.IssueChallenge(context.Background(), IssueChallengeInput{
 		Address: "0x0000000000000000000000000000000000000001",
 		ChainID: 8453,
 	})
@@ -149,6 +149,9 @@ func TestIssueNonce_Success(t *testing.T) {
 	}
 	if got.Nonce != "challenge_1" {
 		t.Fatalf("unexpected nonce: %s", got.Nonce)
+	}
+	if got.Message == "" {
+		t.Fatalf("expected challenge message")
 	}
 	if len(nonces.created) != 1 {
 		t.Fatalf("expected nonce create call")

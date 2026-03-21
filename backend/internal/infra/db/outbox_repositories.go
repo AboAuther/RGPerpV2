@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -16,6 +18,40 @@ type OutboxRepository struct {
 
 func NewOutboxRepository(db *gorm.DB) *OutboxRepository {
 	return &OutboxRepository{db: db}
+}
+
+type OutboxMessage struct {
+	EventID       string
+	AggregateType string
+	AggregateID   string
+	EventType     string
+	Payload       any
+	Status        string
+	CreatedAt     time.Time
+}
+
+func (r *OutboxRepository) Create(ctx context.Context, msg OutboxMessage) error {
+	payload, err := json.Marshal(msg.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal outbox payload: %w", err)
+	}
+	status := msg.Status
+	if status == "" {
+		status = "PENDING"
+	}
+	createdAt := msg.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	return DB(ctx, r.db).Create(&OutboxEventModel{
+		EventID:       msg.EventID,
+		AggregateType: msg.AggregateType,
+		AggregateID:   msg.AggregateID,
+		EventType:     msg.EventType,
+		PayloadJSON:   string(payload),
+		Status:        status,
+		CreatedAt:     createdAt,
+	}).Error
 }
 
 func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]OutboxEventModel, error) {
@@ -90,4 +126,44 @@ func containsAny(text string, items ...string) bool {
 		}
 	}
 	return false
+}
+
+type ChainCursorRepository struct {
+	db *gorm.DB
+}
+
+func NewChainCursorRepository(db *gorm.DB) *ChainCursorRepository {
+	return &ChainCursorRepository{db: db}
+}
+
+func (r *ChainCursorRepository) Get(ctx context.Context, chainID int64, cursorType string) (ChainCursorModel, error) {
+	var cursor ChainCursorModel
+	err := DB(ctx, r.db).
+		Where("chain_id = ? AND cursor_type = ?", chainID, cursorType).
+		First(&cursor).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ChainCursorModel{}, errorsx.ErrNotFound
+		}
+		return ChainCursorModel{}, err
+	}
+	return cursor, nil
+}
+
+func (r *ChainCursorRepository) Upsert(ctx context.Context, chainID int64, cursorType string, cursorValue string, updatedAt time.Time) error {
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	return DB(ctx, r.db).
+		Where("chain_id = ? AND cursor_type = ?", chainID, cursorType).
+		Assign(map[string]any{
+			"cursor_value": cursorValue,
+			"updated_at":   updatedAt,
+		}).
+		FirstOrCreate(&ChainCursorModel{
+			ChainID:     chainID,
+			CursorType:  cursorType,
+			CursorValue: cursorValue,
+			UpdatedAt:   updatedAt,
+		}).Error
 }

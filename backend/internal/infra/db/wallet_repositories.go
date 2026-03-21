@@ -76,6 +76,45 @@ func (r *DepositRepository) GetByTxLog(ctx context.Context, chainID int64, txHas
 	return r.GetByID(ctx, model.DepositID)
 }
 
+func (r *DepositRepository) ListPendingByChain(ctx context.Context, chainID int64, statuses []string, limit int) ([]walletdomain.DepositChainTx, error) {
+	query := DB(ctx, r.db).Where("chain_id = ?", chainID)
+	if len(statuses) > 0 {
+		query = query.Where("status IN ?", statuses)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	var models []DepositChainTxModel
+	if err := query.Order("block_number ASC, log_index ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+
+	out := make([]walletdomain.DepositChainTx, 0, len(models))
+	for _, model := range models {
+		out = append(out, walletdomain.DepositChainTx{
+			DepositID:          model.DepositID,
+			UserID:             model.UserID,
+			ChainID:            model.ChainID,
+			TxHash:             model.TxHash,
+			LogIndex:           model.LogIndex,
+			FromAddress:        model.FromAddress,
+			ToAddress:          model.ToAddress,
+			TokenAddress:       model.TokenAddress,
+			Amount:             model.Amount,
+			Asset:              "USDC",
+			BlockNumber:        model.BlockNumber,
+			Confirmations:      model.Confirmations,
+			RequiredConfs:      requiredConfirmations(model.ChainID),
+			Status:             model.Status,
+			CreditedLedgerTxID: model.CreditedLedgerTxID,
+			CreatedAt:          model.CreatedAt,
+			UpdatedAt:          model.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
 func (r *DepositRepository) UpdateConfirmations(ctx context.Context, depositID string, confirmations int, status string) error {
 	result := DB(ctx, r.db).Model(&DepositChainTxModel{}).
 		Where("deposit_id = ?", depositID).
@@ -100,6 +139,24 @@ func (r *DepositRepository) MarkCredited(ctx context.Context, depositID string, 
 			"status":                walletdomain.StatusCredited,
 			"credited_ledger_tx_id": ledgerTxID,
 		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
+func (r *DepositRepository) MarkReorgReversed(ctx context.Context, depositID string) error {
+	result := DB(ctx, r.db).
+		Model(&DepositChainTxModel{}).
+		Where("deposit_id = ? AND status IN ?", depositID, []string{
+			walletdomain.StatusDetected,
+			walletdomain.StatusConfirming,
+			walletdomain.StatusCreditReady,
+		}).
+		Update("status", walletdomain.StatusReorgReversed)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -182,6 +239,38 @@ func (r *WithdrawRepository) GetByID(ctx context.Context, withdrawID string) (wa
 		CreatedAt:       model.CreatedAt,
 		UpdatedAt:       model.UpdatedAt,
 	}, nil
+}
+
+func (r *WithdrawRepository) ListByChainStatuses(ctx context.Context, chainID int64, statuses []string, limit int) ([]walletdomain.WithdrawRequest, error) {
+	query := DB(ctx, r.db).Where("chain_id = ?", chainID)
+	if len(statuses) > 0 {
+		query = query.Where("status IN ?", statuses)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	var models []WithdrawRequestModel
+	if err := query.Order("created_at ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]walletdomain.WithdrawRequest, 0, len(models))
+	for _, model := range models {
+		out = append(out, walletdomain.WithdrawRequest{
+			WithdrawID:      model.WithdrawID,
+			UserID:          model.UserID,
+			ChainID:         model.ChainID,
+			Asset:           model.Asset,
+			Amount:          model.Amount,
+			FeeAmount:       model.FeeAmount,
+			ToAddress:       model.ToAddress,
+			Status:          model.Status,
+			HoldLedgerTxID:  model.HoldLedgerTxID,
+			BroadcastTxHash: model.BroadcastTxHash,
+			CreatedAt:       model.CreatedAt,
+			UpdatedAt:       model.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 func (r *WithdrawRepository) UpdateStatus(ctx context.Context, withdrawID string, from []string, to string) error {
@@ -307,4 +396,43 @@ func (r *AccountResolver) lookupAccountID(ctx context.Context, userID *uint64, a
 		return 0, err
 	}
 	return model.ID, nil
+}
+
+func (r *DepositAddressRepository) GetByChainAddress(ctx context.Context, chainID int64, address string) (walletdomain.DepositAddress, error) {
+	var model DepositAddressModel
+	err := DB(ctx, r.db).
+		Where("chain_id = ? AND lower(address) = lower(?)", chainID, address).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return walletdomain.DepositAddress{}, errorsx.ErrNotFound
+		}
+		return walletdomain.DepositAddress{}, err
+	}
+	return walletdomain.DepositAddress{
+		UserID:        model.UserID,
+		ChainID:       model.ChainID,
+		Asset:         model.Asset,
+		Address:       model.Address,
+		Status:        model.Status,
+		Confirmations: r.confirmations[model.ChainID],
+		CreatedAt:     model.CreatedAt,
+	}, nil
+}
+
+func (r *DepositAddressRepository) AssignToUser(ctx context.Context, userID uint64, chainID int64, asset string, address string) error {
+	result := DB(ctx, r.db).
+		Model(&DepositAddressModel{}).
+		Where("user_id = ? AND chain_id = ? AND asset = ?", userID, chainID, asset).
+		Updates(map[string]any{
+			"address": address,
+			"status":  "ACTIVE",
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrNotFound
+	}
+	return nil
 }

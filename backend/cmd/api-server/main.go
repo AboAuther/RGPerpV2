@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"math/big"
 	"strconv"
 	"time"
 
@@ -40,12 +41,21 @@ func main() {
 		log.Fatalf("migrate db: %v", err)
 	}
 
-	chains := []db.ChainSpec{
-		{ChainID: 1, Asset: "USDC", Confirmations: cfg.Chains.Ethereum.Confirmations},
-		{ChainID: 42161, Asset: "USDC", Confirmations: cfg.Chains.Arbitrum.Confirmations},
-		{ChainID: 8453, Asset: "USDC", Confirmations: cfg.Chains.Base.Confirmations},
+	enabledChains := config.EnabledChains(cfg)
+	routerChains := make([]chaininfra.RouterAllocatorChainConfig, 0, len(enabledChains))
+	for _, chain := range enabledChains {
+		routerChains = append(routerChains, chaininfra.RouterAllocatorChainConfig{
+			ChainID:        chain.ChainID,
+			RPCURL:         chain.RPCURL,
+			FactoryAddress: chain.FactoryAddress,
+		})
 	}
-	bootstrap := db.NewBootstrapRepository(gormDB, chains, chaininfra.NewDeterministicDepositAddressAllocator())
+	allocator, err := chaininfra.NewRouterDepositAddressAllocator(cfg.Review.LocalMinterPrivateKey, routerChains)
+	if err != nil {
+		log.Fatalf("create deposit allocator: %v", err)
+	}
+	defer allocator.Close()
+	bootstrap := db.NewBootstrapRepository(gormDB)
 	if err := bootstrap.EnsureSystemBootstrap(context.Background()); err != nil {
 		log.Fatalf("ensure system bootstrap: %v", err)
 	}
@@ -75,13 +85,21 @@ func main() {
 		db.NewLedgerRepository(gormDB),
 		decimalx.LedgerDecimalFactory{},
 	)
-	confirmations := map[int64]int{
-		1:     cfg.Chains.Ethereum.Confirmations,
-		42161: cfg.Chains.Arbitrum.Confirmations,
-		8453:  cfg.Chains.Base.Confirmations,
-	}
+	confirmations := config.EnabledChainConfirmations(cfg)
 	depositAddressRepo := db.NewDepositAddressRepository(gormDB, confirmations)
 	walletQueryRepo := db.NewWalletQueryRepository(gormDB)
+	var localNativeFaucet *chaininfra.LocalNativeFaucet
+	if cfg.App.Env == "dev" && cfg.Review.LocalMinterPrivateKey != "" && cfg.Chains.Base.RPCURL != "" {
+		faucet, err := chaininfra.NewLocalNativeFaucet(cfg.Review.LocalMinterPrivateKey, []chaininfra.LocalNativeFaucetChainConfig{{
+			ChainID: config.EffectiveBaseChainID(cfg.App.Env),
+			RPCURL:  cfg.Chains.Base.RPCURL,
+		}}, big.NewInt(1_000_000_000_000_000_000))
+		if err != nil {
+			log.Fatalf("create local native faucet: %v", err)
+		}
+		defer faucet.Close()
+		localNativeFaucet = faucet
+	}
 	walletService := walletdomain.NewService(
 		db.NewDepositRepository(gormDB),
 		db.NewWithdrawRepository(gormDB),
@@ -93,20 +111,24 @@ func main() {
 		db.NewAccountResolver(gormDB),
 		db.NewBalanceRepository(gormDB),
 		depositAddressRepo,
+		allocator,
 	)
 
 	verifier := &accessVerifierAdapter{verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret)}
 	authHandler := httptransport.NewAuthHandler(authService)
+	reviewReadRepo := db.NewReviewReadRepository()
+	marketHandler := httptransport.NewMarketHandler(reviewReadRepo)
 	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepository(gormDB), walletService, userRepo)
 	walletHandler := httptransport.NewWalletHandler(
 		db.NewWalletReadService(depositAddressRepo, walletQueryRepo),
 		walletService,
-		cfg.App.Env == "review" && cfg.Review.FaucetEnabled && runtimeCfg.Review.Faucet.Enabled,
+		localNativeFaucet,
 	)
+	tradingHandler := httptransport.NewTradingHandler(reviewReadRepo)
 	explorerHandler := httptransport.NewExplorerHandler(db.NewExplorerQueryRepository(gormDB), cfg.Admin.Wallets)
 	adminHandler := httptransport.NewAdminHandler(walletService, cfg.Admin.Wallets)
 
-	router := httptransport.NewEngine(verifier, authHandler, accountHandler, walletHandler, explorerHandler, adminHandler)
+	router := httptransport.NewEngine(verifier, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler)
 
 	addr := ":" + strconv.Itoa(cfg.App.Port)
 	if err := router.Run(addr); err != nil {

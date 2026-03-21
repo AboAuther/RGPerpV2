@@ -30,6 +30,8 @@ func TestExplorerHandler_FiltersAsUser(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
+		nil,
 		NewExplorerHandler(reader, []string{"0x0000000000000000000000000000000000000002"}),
 		nil,
 	)
@@ -54,6 +56,8 @@ func TestExplorerHandler_AllowsAdminGlobalView(t *testing.T) {
 	reader := &fakeExplorerReader{items: []readmodel.ExplorerEvent{{EventID: "evt_1"}}}
 	engine := NewEngine(
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0x0000000000000000000000000000000000000001"}},
+		nil,
+		nil,
 		nil,
 		nil,
 		nil,

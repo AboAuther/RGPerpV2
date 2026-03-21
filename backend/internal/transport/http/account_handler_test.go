@@ -31,6 +31,9 @@ func (fakeAccountReader) ListBalances(_ context.Context, _ uint64) ([]readmodel.
 func (fakeAccountReader) GetRisk(_ context.Context, _ uint64) (readmodel.RiskSnapshot, error) {
 	return readmodel.RiskSnapshot{AccountStatus: "ACTIVE", RiskState: "SAFE", Notes: []string{"ok"}}, nil
 }
+func (fakeAccountReader) ListFunding(_ context.Context, _ uint64) ([]readmodel.FundingItem, error) {
+	return []readmodel.FundingItem{{FundingID: "fund_1", Symbol: "BTC-PERP", Direction: "PAY", Amount: "-1"}}, nil
+}
 func (fakeAccountReader) ListTransfers(_ context.Context, _ uint64) ([]readmodel.TransferItem, error) {
 	return []readmodel.TransferItem{{TransferID: "trf_1", Asset: "USDC", Amount: "10", Status: "COMMITTED"}}, nil
 }
@@ -54,7 +57,9 @@ func TestAccountHandler_GetSummary(t *testing.T) {
 	engine := NewEngine(
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
 		nil,
+		nil,
 		NewAccountHandler(fakeAccountReader{}, &fakeTransferUseCase{}, fakeTransferResolver{}),
+		nil,
 		nil,
 		nil,
 		nil,
@@ -76,7 +81,9 @@ func TestAccountHandler_Transfer(t *testing.T) {
 	engine := NewEngine(
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
 		nil,
+		nil,
 		NewAccountHandler(fakeAccountReader{}, transferUC, fakeTransferResolver{}),
+		nil,
 		nil,
 		nil,
 		nil,

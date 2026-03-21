@@ -70,6 +70,9 @@ func (s *stubDepositRepo) GetByTxLog(_ context.Context, _ int64, _ string, _ int
 	}
 	return s.deposit, nil
 }
+func (s *stubDepositRepo) ListPendingByChain(_ context.Context, _ int64, _ []string, _ int) ([]DepositChainTx, error) {
+	return s.list, nil
+}
 func (s *stubDepositRepo) UpdateConfirmations(_ context.Context, depositID string, confirmations int, status string) error {
 	s.deposit.DepositID = depositID
 	s.deposit.Confirmations = confirmations
@@ -79,6 +82,11 @@ func (s *stubDepositRepo) UpdateConfirmations(_ context.Context, depositID strin
 func (s *stubDepositRepo) MarkCredited(_ context.Context, depositID string, ledgerTxID string) error {
 	s.credit.id = depositID
 	s.credit.ledgerTxID = ledgerTxID
+	return s.markErr
+}
+func (s *stubDepositRepo) MarkReorgReversed(_ context.Context, depositID string) error {
+	s.deposit.DepositID = depositID
+	s.deposit.Status = StatusReorgReversed
 	return s.markErr
 }
 func (s *stubDepositRepo) ListByUser(_ context.Context, _ uint64) ([]DepositChainTx, error) {
@@ -187,11 +195,38 @@ func (s stubBalances) GetAccountBalanceForUpdate(_ context.Context, _ uint64, _ 
 
 type stubDepositAddresses struct {
 	items []DepositAddress
+	item  DepositAddress
 	err   error
 }
 
 func (s stubDepositAddresses) ListByUser(_ context.Context, _ uint64) ([]DepositAddress, error) {
 	return s.items, s.err
+}
+
+func (s stubDepositAddresses) GetByUserChainAsset(_ context.Context, userID uint64, chainID int64, asset string) (DepositAddress, error) {
+	if s.err != nil {
+		return DepositAddress{}, s.err
+	}
+	if s.item.UserID == userID && s.item.ChainID == chainID && s.item.Asset == asset {
+		return s.item, nil
+	}
+	return DepositAddress{}, errorsx.ErrNotFound
+}
+
+func (s stubDepositAddresses) Upsert(_ context.Context, _ DepositAddress) error {
+	return s.err
+}
+
+type stubAllocator struct {
+	address string
+	err     error
+}
+
+func (s stubAllocator) Allocate(_ context.Context, _ uint64, _ int64, _ string) (string, error) {
+	if s.address == "" {
+		return "0x00000000000000000000000000000000000000ab", s.err
+	}
+	return s.address, s.err
 }
 
 func TestConfirmDeposit_Success(t *testing.T) {
@@ -577,39 +612,31 @@ func TestRequestWithdraw_RejectsInsufficientBalance(t *testing.T) {
 	}
 }
 
-func TestGrantReviewFaucet_Success(t *testing.T) {
-	ledger := &stubLedger{}
-	deposits := &stubDepositRepo{}
+func TestGenerateDepositAddress_Success(t *testing.T) {
 	svc := NewService(
-		deposits,
+		&stubDepositRepo{},
 		&stubWithdrawRepo{},
 		&stubTransferResolver{},
-		ledger,
+		&stubLedger{},
 		stubTxManager{},
 		fakeClock{now: time.Now()},
-		&fakeIDGen{values: []string{"dep_1", "tx_1", "ldg_1", "evt_1"}},
+		&fakeIDGen{values: []string{"unused"}},
 		stubAccounts{},
 		stubBalances{value: "1000"},
 		stubDepositAddresses{},
+		stubAllocator{address: "0x00000000000000000000000000000000000000ab"},
 	)
 
-	deposit, err := svc.GrantReviewFaucet(context.Background(), GrantReviewFaucetInput{
-		UserID:         7,
-		ChainID:        8453,
-		Asset:          "USDC",
-		Amount:         "10000",
-		ToAddress:      "0x0000000000000000000000000000000000000001",
-		IdempotencyKey: "idem_1",
-		TraceID:        "trace_1",
+	result, err := svc.GenerateDepositAddress(context.Background(), GenerateDepositAddressInput{
+		UserID:  7,
+		ChainID: 31337,
+		Asset:   "USDC",
 	})
 	if err != nil {
-		t.Fatalf("grant faucet: %v", err)
+		t.Fatalf("generate deposit address: %v", err)
 	}
-	if deposit.Status != StatusCredited {
-		t.Fatalf("unexpected faucet deposit status: %s", deposit.Status)
-	}
-	if ledger.req.LedgerTx.BizType != "REVIEW_FAUCET" {
-		t.Fatalf("unexpected ledger biz type: %s", ledger.req.LedgerTx.BizType)
+	if result.Address != "0x00000000000000000000000000000000000000ab" {
+		t.Fatalf("unexpected generated address: %+v", result)
 	}
 }
 

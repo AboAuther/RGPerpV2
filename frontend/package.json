@@ -6,12 +6,14 @@
   "packageManager": "pnpm@10.32.1",
   "scripts": {
     "dev": "vite",
+    "dev:local": "sh ../deploy/scripts/start-frontend-local.sh",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
     "antd": "^6.3.3",
+    "ethers": "^6.16.0",
     "gsap": "^3.14.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

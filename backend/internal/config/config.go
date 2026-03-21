@@ -85,6 +85,7 @@ type HedgeConfig struct {
 type ReviewConfig struct {
 	FaucetEnabled         bool
 	MockMarketDataEnabled bool
+	LocalMinterPrivateKey string
 }
 
 var knownEnvKeys = []string{
@@ -124,6 +125,7 @@ var knownEnvKeys = []string{
 	"HL_ACCOUNT_ADDRESS",
 	"REVIEW_FAUCET_ENABLED",
 	"REVIEW_MOCK_MARKET_DATA_ENABLED",
+	"LOCAL_ANVIL_ADMIN_PRIVATE_KEY",
 }
 
 func LoadStaticConfig() (StaticConfig, error) {
@@ -220,6 +222,7 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 		Review: ReviewConfig{
 			FaucetEnabled:         getBool(getenv, "REVIEW_FAUCET_ENABLED", false),
 			MockMarketDataEnabled: getBool(getenv, "REVIEW_MOCK_MARKET_DATA_ENABLED", false),
+			LocalMinterPrivateKey: strings.TrimSpace(getenv("LOCAL_ANVIL_ADMIN_PRIVATE_KEY")),
 		},
 	}
 }
@@ -279,6 +282,9 @@ func (c StaticConfig) Validate() error {
 		if c.Review.MockMarketDataEnabled {
 			errs = append(errs, fmt.Errorf("%w: mock market data must be disabled in prod", errorsx.ErrForbidden))
 		}
+	}
+	if (c.App.Env == "review" || c.App.Env == "dev") && c.Review.FaucetEnabled && c.Review.LocalMinterPrivateKey == "" {
+		errs = append(errs, fmt.Errorf("%w: LOCAL_ANVIL_ADMIN_PRIVATE_KEY is required when review faucet is enabled", errorsx.ErrInvalidArgument))
 	}
 
 	if len(errs) == 0 {
