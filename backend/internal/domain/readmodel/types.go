@@ -30,6 +30,19 @@ type DepositAddressItem struct {
 	Confirmations int    `json:"confirmations"`
 }
 
+type SystemChainItem struct {
+	ChainID           int64   `json:"chain_id"`
+	Key               string  `json:"key"`
+	Name              string  `json:"name"`
+	Asset             string  `json:"asset"`
+	Confirmations     int     `json:"confirmations"`
+	LocalTestnet      bool    `json:"local_testnet"`
+	LocalToolsEnabled bool    `json:"local_tools_enabled"`
+	DepositEnabled    bool    `json:"deposit_enabled"`
+	WithdrawEnabled   bool    `json:"withdraw_enabled"`
+	USDCAddress       *string `json:"usdc_address,omitempty"`
+}
+
 type DepositItem struct {
 	DepositID             string `json:"deposit_id"`
 	ChainID               int64  `json:"chain_id"`
@@ -53,6 +66,21 @@ type WithdrawItem struct {
 	Status     string  `json:"status"`
 	TxHash     *string `json:"tx_hash"`
 	CreatedAt  string  `json:"created_at"`
+}
+
+type AdminWithdrawReviewItem struct {
+	WithdrawID  string  `json:"withdraw_id"`
+	UserID      uint64  `json:"user_id"`
+	UserAddress string  `json:"user_address"`
+	ChainID     int64   `json:"chain_id"`
+	Asset       string  `json:"asset"`
+	Amount      string  `json:"amount"`
+	FeeAmount   string  `json:"fee_amount"`
+	ToAddress   string  `json:"to_address"`
+	Status      string  `json:"status"`
+	RiskFlag    *string `json:"risk_flag,omitempty"`
+	TxHash      *string `json:"tx_hash,omitempty"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 type TransferItem struct {
@@ -140,6 +168,9 @@ type FundingItem struct {
 type ExplorerEvent struct {
 	EventID     string         `json:"event_id"`
 	EventType   string         `json:"event_type"`
+	Asset       *string        `json:"asset,omitempty"`
+	Amount      *string        `json:"amount,omitempty"`
+	CreatedAt   string         `json:"created_at"`
 	LedgerTxID  *string        `json:"ledger_tx_id,omitempty"`
 	ChainTxHash *string        `json:"chain_tx_hash,omitempty"`
 	Address     *string        `json:"address,omitempty"`

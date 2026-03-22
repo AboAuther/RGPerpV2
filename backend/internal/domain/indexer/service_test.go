@@ -182,12 +182,21 @@ func (c *cursorRepo) Upsert(_ context.Context, chainID int64, cursorType string,
 
 type source struct {
 	latest    int64
+	blockHash string
 	deposits  []DepositObserved
 	withdraws []WithdrawExecuted
+	receipts  map[string]ReceiptStatus
 }
 
 func (s source) LatestBlockNumber(_ context.Context, _ int64) (int64, error) {
 	return s.latest, nil
+}
+
+func (s source) BlockHash(_ context.Context, _ int64, _ int64) (string, error) {
+	if s.blockHash == "" {
+		return "0xgenesis", nil
+	}
+	return s.blockHash, nil
 }
 
 func (s source) ListRouterCreatedEvents(_ context.Context, _ int64, fromBlock int64, toBlock int64) ([]RouterCreated, error) {
@@ -214,20 +223,26 @@ func (s source) ListWithdrawEvents(_ context.Context, _ int64, fromBlock int64, 
 	return out, nil
 }
 
-func (s source) GetReceiptStatus(_ context.Context, _ int64, _ string) (ReceiptStatus, error) {
+func (s source) GetReceiptStatus(_ context.Context, _ int64, txHash string) (ReceiptStatus, error) {
+	if s.receipts == nil {
+		return ReceiptStatus{Found: false}, nil
+	}
+	if status, ok := s.receipts[txHash]; ok {
+		return status, nil
+	}
 	return ReceiptStatus{Found: false}, nil
 }
 
 type fakeWallet struct {
-	deposits            *memoryDeposits
-	withdraws           *memoryWithdraws
-	detectCalls         int
-	advanceCalls        int
-	confirmCalls        int
-	reverseCalls        int
-	broadcastCalls      int
-	completeCalls       int
-	refundCalls         int
+	deposits       *memoryDeposits
+	withdraws      *memoryWithdraws
+	detectCalls    int
+	advanceCalls   int
+	confirmCalls   int
+	reverseCalls   int
+	broadcastCalls int
+	completeCalls  int
+	refundCalls    int
 }
 
 func (f *fakeWallet) DetectDeposit(_ context.Context, input walletdomain.DetectDepositInput) (walletdomain.DepositChainTx, error) {
@@ -607,5 +622,148 @@ func TestRunner_SyncChainAdvancesCursors(t *testing.T) {
 	}
 	if wallet.confirmCalls != 1 {
 		t.Fatalf("expected one credited deposit from sync, got %d", wallet.confirmCalls)
+	}
+}
+
+func TestRunner_ScanRangeResetsCursorWhenChainHeightRegresses(t *testing.T) {
+	chainRules := []ChainRule{{ChainID: 31337, Asset: "USDC", RequiredConfirmations: 1, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}}
+	svc, err := NewService(
+		&fakeWallet{deposits: newMemoryDeposits(), withdraws: newMemoryWithdraws()},
+		newMemoryDeposits(),
+		newMemoryWithdraws(),
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		&publisher{},
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		chainRules,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	cursors := newCursorRepo()
+	if err := cursors.Upsert(context.Background(), 31337, CursorTypeDepositScan, "48", time.Unix(90, 0).UTC()); err != nil {
+		t.Fatalf("seed cursor: %v", err)
+	}
+	runner, err := NewRunner(source{latest: 12}, svc, cursors, fakeClock{now: time.Unix(100, 0).UTC()}, chainRules, 500)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+
+	fromBlock, toBlock, err := runner.scanRange(context.Background(), 31337, CursorTypeDepositScan, 12)
+	if err != nil {
+		t.Fatalf("scan range: %v", err)
+	}
+	if fromBlock != 1 || toBlock != 12 {
+		t.Fatalf("expected rescan from genesis-ish range 1..12, got %d..%d", fromBlock, toBlock)
+	}
+	if got := cursors.items["31337:"+CursorTypeDepositScan].CursorValue; got != "0" {
+		t.Fatalf("expected cursor reset to 0, got %s", got)
+	}
+}
+
+func TestRunner_EnsureChainIdentityResetsScanCursors(t *testing.T) {
+	chainRules := []ChainRule{{ChainID: 31337, Asset: "USDC", RequiredConfirmations: 1, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}}
+	svc, err := NewService(
+		&fakeWallet{deposits: newMemoryDeposits(), withdraws: newMemoryWithdraws()},
+		newMemoryDeposits(),
+		newMemoryWithdraws(),
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		&publisher{},
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		chainRules,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	cursors := newCursorRepo()
+	_ = cursors.Upsert(context.Background(), 31337, CursorTypeChainIDHash, "0xold", time.Unix(90, 0).UTC())
+	_ = cursors.Upsert(context.Background(), 31337, CursorTypeDepositScan, "48", time.Unix(90, 0).UTC())
+	_ = cursors.Upsert(context.Background(), 31337, CursorTypeWithdrawScan, "48", time.Unix(90, 0).UTC())
+	runner, err := NewRunner(source{latest: 12, blockHash: "0xnew"}, svc, cursors, fakeClock{now: time.Unix(100, 0).UTC()}, chainRules, 500)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	if err := runner.ensureChainIdentity(context.Background(), 31337); err != nil {
+		t.Fatalf("ensure chain identity: %v", err)
+	}
+	if got := cursors.items["31337:"+CursorTypeDepositScan].CursorValue; got != "0" {
+		t.Fatalf("expected deposit cursor reset, got %s", got)
+	}
+	if got := cursors.items["31337:"+CursorTypeWithdrawScan].CursorValue; got != "0" {
+		t.Fatalf("expected withdraw cursor reset, got %s", got)
+	}
+	if got := cursors.items["31337:"+CursorTypeChainIDHash].CursorValue; got != "0xnew" {
+		t.Fatalf("expected chain identity updated, got %s", got)
+	}
+}
+
+func TestRunner_SyncDepositReorgs_ReversesPendingReceiptLoss(t *testing.T) {
+	deposits := newMemoryDeposits()
+	deposits.byID["dep_1"] = walletdomain.DepositChainTx{
+		DepositID: "dep_1", UserID: 7, ChainID: 8453, TxHash: "0xdep", LogIndex: 1,
+		BlockNumber: 100, Status: walletdomain.StatusConfirming, Asset: "USDC",
+	}
+	deposits.byTxLog["8453:0xdep:1"] = "dep_1"
+	withdraws := newMemoryWithdraws()
+	wallet := &fakeWallet{deposits: deposits, withdraws: withdraws}
+	svc, err := NewService(
+		wallet,
+		deposits,
+		withdraws,
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		&publisher{},
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		[]ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	runner, err := NewRunner(source{latest: 130, receipts: map[string]ReceiptStatus{"0xdep": {Found: false}}}, svc, newCursorRepo(), fakeClock{now: time.Unix(100, 0).UTC()}, []ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}}, 500)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	if err := runner.syncDepositReorgs(context.Background(), 8453, 130); err != nil {
+		t.Fatalf("sync deposit reorgs: %v", err)
+	}
+	if wallet.reverseCalls != 1 {
+		t.Fatalf("expected reverse deposit once, got %d", wallet.reverseCalls)
+	}
+}
+
+func TestRunner_SyncStuckSigningWithdrawalsEscalatesReview(t *testing.T) {
+	withdraws := newMemoryWithdraws()
+	withdraws.items["wd_1"] = walletdomain.WithdrawRequest{
+		WithdrawID: "wd_1", UserID: 7, ChainID: 8453, Asset: "USDC", Amount: "100", FeeAmount: "1",
+		Status: walletdomain.StatusSigning, CreatedAt: time.Unix(10, 0).UTC(), UpdatedAt: time.Unix(10, 0).UTC(),
+	}
+	svc, err := NewService(
+		&fakeWallet{deposits: newMemoryDeposits(), withdraws: withdraws},
+		newMemoryDeposits(),
+		withdraws,
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		&publisher{},
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		[]ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	runner, err := NewRunner(source{latest: 100}, svc, newCursorRepo(), fakeClock{now: time.Unix(100, 0).UTC()}, []ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}}, 500)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	if err := runner.syncStuckSigningWithdrawals(context.Background(), 8453); err != nil {
+		t.Fatalf("sync stuck signing: %v", err)
+	}
+	if got := withdraws.items["wd_1"].Status; got != walletdomain.StatusRiskReview {
+		t.Fatalf("expected stuck signing to move to risk review, got %s", got)
 	}
 }

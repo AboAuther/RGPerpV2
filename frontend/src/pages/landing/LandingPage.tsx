@@ -150,7 +150,7 @@ export function LandingPage() {
             <BrandLogo size={48} />
             <ShinyText text="RG Perp" className="landing-brand-text" />
           </button>
-          <Button className="landing-docs-top-btn" size="large" type="text" onClick={() => navigate('/login')}>
+          <Button className="landing-docs-top-btn" size="large" type="text" onClick={() => navigate('/trade')}>
             进入平台
           </Button>
         </header>
@@ -172,7 +172,7 @@ export function LandingPage() {
             </Typography.Paragraph>
 
             <div className="landing-actions">
-              <Button className="landing-launch-btn" size="large" onClick={() => navigate('/login')}>
+              <Button className="landing-launch-btn" size="large" onClick={() => navigate('/trade')}>
                 Launch Platform
               </Button>
             </div>

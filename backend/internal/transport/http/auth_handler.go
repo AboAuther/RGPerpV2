@@ -3,6 +3,7 @@ package httptransport
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
@@ -14,11 +15,16 @@ type AuthUseCase interface {
 }
 
 type AuthHandler struct {
-	authUC AuthUseCase
+	authUC       AuthUseCase
+	adminWallets map[string]struct{}
 }
 
-func NewAuthHandler(authUC AuthUseCase) *AuthHandler {
-	return &AuthHandler{authUC: authUC}
+func NewAuthHandler(authUC AuthUseCase, adminWallets []string) *AuthHandler {
+	allow := make(map[string]struct{}, len(adminWallets))
+	for _, wallet := range adminWallets {
+		allow[strings.ToLower(strings.TrimSpace(wallet))] = struct{}{}
+	}
+	return &AuthHandler{authUC: authUC, adminWallets: allow}
 }
 
 type issueChallengeRequest struct {
@@ -104,8 +110,17 @@ func (h *AuthHandler) login(c *gin.Context) {
 			"id":          resp.User.ID,
 			"evm_address": resp.User.EVMAddress,
 			"status":      resp.User.Status,
+			"is_admin":    h.isAdminWallet(resp.User.EVMAddress),
 		},
 	})
+}
+
+func (h *AuthHandler) isAdminWallet(address string) bool {
+	if h == nil {
+		return false
+	}
+	_, ok := h.adminWallets[strings.ToLower(strings.TrimSpace(address))]
+	return ok
 }
 
 func NewEngine(
@@ -117,6 +132,7 @@ func NewEngine(
 	tradingHandler *TradingHandler,
 	explorerHandler *ExplorerHandler,
 	adminHandler *AdminHandler,
+	systemHandlers ...*SystemHandler,
 ) *gin.Engine {
 	engine := gin.New()
 	engine.Use(TraceMiddleware())
@@ -128,6 +144,9 @@ func NewEngine(
 	})
 
 	v1 := engine.Group("/api/v1")
+	if len(systemHandlers) > 0 && systemHandlers[0] != nil {
+		systemHandlers[0].Register(v1)
+	}
 	if authHandler != nil {
 		authHandler.Register(v1)
 	}

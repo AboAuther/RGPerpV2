@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 )
 
 type fakeDepositAddressAllocator struct {
@@ -52,9 +54,9 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 
 	outbox := []OutboxEventModel{
-		{EventID: "ob_dep_user", AggregateType: "ledger_tx", AggregateID: "ldg_dep_user", EventType: "deposit.user", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
+		{EventID: "ob_dep_user", AggregateType: "ledger_tx", AggregateID: "ldg_dep_user", EventType: "deposit.user", PayloadJSON: "{\"tx_hash\":\"0xchain_dep_user\",\"router_address\":\"0xrouter_user\"}", Status: "PENDING", CreatedAt: now},
 		{EventID: "ob_dep_other", AggregateType: "ledger_tx", AggregateID: "ldg_dep_other", EventType: "deposit.other", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
-		{EventID: "ob_wd_user", AggregateType: "ledger_tx", AggregateID: "ldg_wd_user", EventType: "withdraw.user", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
+		{EventID: "ob_wd_user", AggregateType: "ledger_tx", AggregateID: "ldg_wd_user", EventType: "withdraw.user", PayloadJSON: "{\"tx_hash\":\"0xchain_wd_user\",\"to_address\":\"0xwithdraw_user\"}", Status: "PENDING", CreatedAt: now},
 		{EventID: "ob_wd_other", AggregateType: "ledger_tx", AggregateID: "ldg_wd_other", EventType: "withdraw.other", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
 		{EventID: "ob_trf_user", AggregateType: "ledger_tx", AggregateID: "ldg_trf_user", EventType: "transfer.user", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
 		{EventID: "ob_trf_other", AggregateType: "ledger_tx", AggregateID: "ldg_trf_other", EventType: "transfer.other", PayloadJSON: "{}", Status: "PENDING", CreatedAt: now},
@@ -87,6 +89,40 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 	if len(adminItems) != 6 {
 		t.Fatalf("expected 6 admin-visible events, got %d", len(adminItems))
+	}
+
+	var depositEvent, withdrawEvent *readmodel.ExplorerEvent
+	for idx := range items {
+		switch items[idx].EventID {
+		case "ob_dep_user":
+			depositEvent = &items[idx]
+		case "ob_wd_user":
+			withdrawEvent = &items[idx]
+		}
+	}
+	if depositEvent == nil || depositEvent.ChainTxHash == nil || *depositEvent.ChainTxHash != "0xchain_dep_user" {
+		t.Fatalf("expected deposit event chain tx hash to be exposed, got %+v", depositEvent)
+	}
+	if depositEvent.Address == nil || *depositEvent.Address != "0xrouter_user" {
+		t.Fatalf("expected deposit event address to be exposed, got %+v", depositEvent)
+	}
+	if depositEvent.Amount == nil || *depositEvent.Amount != "100" {
+		t.Fatalf("expected deposit event amount to be exposed, got %+v", depositEvent)
+	}
+	if depositEvent.Asset == nil || *depositEvent.Asset != "USDC" {
+		t.Fatalf("expected deposit event asset to be exposed, got %+v", depositEvent)
+	}
+	if depositEvent.CreatedAt == "" {
+		t.Fatalf("expected deposit event created_at to be exposed, got %+v", depositEvent)
+	}
+	if withdrawEvent == nil || withdrawEvent.ChainTxHash == nil || *withdrawEvent.ChainTxHash != "0xchain_wd_user" {
+		t.Fatalf("expected withdraw event chain tx hash to be exposed, got %+v", withdrawEvent)
+	}
+	if withdrawEvent.Address == nil || *withdrawEvent.Address != "0xwithdraw_user" {
+		t.Fatalf("expected withdraw event address to be exposed, got %+v", withdrawEvent)
+	}
+	if withdrawEvent.Amount == nil || *withdrawEvent.Amount != "100" {
+		t.Fatalf("expected withdraw event amount to be exposed, got %+v", withdrawEvent)
 	}
 }
 

@@ -10,7 +10,9 @@ import (
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
+	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
+	withdrawexecdomain "github.com/xiaobao/rgperp/backend/internal/domain/withdrawexec"
 	authinfra "github.com/xiaobao/rgperp/backend/internal/infra/auth"
 	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
 	"github.com/xiaobao/rgperp/backend/internal/infra/db"
@@ -113,9 +115,36 @@ func main() {
 		depositAddressRepo,
 		allocator,
 	)
+	if cfg.Review.LocalMinterPrivateKey != "" {
+		withdrawChains := make([]chaininfra.VaultWithdrawChainConfig, 0, len(enabledChains))
+		for _, chain := range enabledChains {
+			if chain.RPCURL == "" || chain.VaultAddress == "" || chain.USDCAddress == "" {
+				continue
+			}
+			withdrawChains = append(withdrawChains, chaininfra.VaultWithdrawChainConfig{
+				ChainID:      chain.ChainID,
+				RPCURL:       chain.RPCURL,
+				VaultAddress: chain.VaultAddress,
+				TokenAddress: chain.USDCAddress,
+			})
+		}
+		if len(withdrawChains) > 0 {
+			executor, err := chaininfra.NewVaultWithdrawExecutor(cfg.Review.LocalMinterPrivateKey, withdrawChains)
+			if err != nil {
+				log.Fatalf("create vault withdraw executor: %v", err)
+			}
+			defer executor.Close()
+			walletService.SetWithdrawRiskEvaluator(chaininfra.NewWithdrawRiskEvaluator(runtimeCfg.Global, runtimeCfg.Wallet, executor))
+			withdrawExecService, err := withdrawexecdomain.NewService(db.NewWithdrawRepository(gormDB), walletService, executor)
+			if err != nil {
+				log.Fatalf("create withdraw executor service: %v", err)
+			}
+			go startWithdrawExecutorLoop(withdrawExecService, enabledChains)
+		}
+	}
 
 	verifier := &accessVerifierAdapter{verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret)}
-	authHandler := httptransport.NewAuthHandler(authService)
+	authHandler := httptransport.NewAuthHandler(authService, cfg.Admin.Wallets)
 	reviewReadRepo := db.NewReviewReadRepository()
 	marketHandler := httptransport.NewMarketHandler(reviewReadRepo)
 	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepository(gormDB), walletService, userRepo)
@@ -124,15 +153,54 @@ func main() {
 		walletService,
 		localNativeFaucet,
 	)
+	systemChains := buildSystemChains(enabledChains, cfg)
+	systemHandler := httptransport.NewSystemHandler(httptransport.NewStaticSystemReader(systemChains))
 	tradingHandler := httptransport.NewTradingHandler(reviewReadRepo)
 	explorerHandler := httptransport.NewExplorerHandler(db.NewExplorerQueryRepository(gormDB), cfg.Admin.Wallets)
-	adminHandler := httptransport.NewAdminHandler(walletService, cfg.Admin.Wallets)
+	adminHandler := httptransport.NewAdminHandler(walletService, walletQueryRepo, cfg.Admin.Wallets)
 
-	router := httptransport.NewEngine(verifier, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler)
+	router := httptransport.NewEngine(verifier, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler, systemHandler)
 
 	addr := ":" + strconv.Itoa(cfg.App.Port)
 	if err := router.Run(addr); err != nil {
 		log.Fatalf("run api-server: %v", err)
+	}
+}
+
+func buildSystemChains(chains []config.EnabledChain, cfg config.StaticConfig) []readmodel.SystemChainItem {
+	items := make([]readmodel.SystemChainItem, 0, len(chains))
+	for _, chain := range chains {
+		var usdcAddress *string
+		if chain.USDCAddress != "" {
+			value := chain.USDCAddress
+			usdcAddress = &value
+		}
+		items = append(items, readmodel.SystemChainItem{
+			ChainID:           chain.ChainID,
+			Key:               chain.Key,
+			Name:              config.ChainDisplayName(chain),
+			Asset:             chain.Asset,
+			Confirmations:     chain.Confirmations,
+			LocalTestnet:      chain.Key == "local",
+			LocalToolsEnabled: chain.Key == "local" && cfg.Review.LocalMinterPrivateKey != "" && chain.USDCAddress != "",
+			DepositEnabled:    chain.RPCURL != "" && chain.FactoryAddress != "" && chain.USDCAddress != "",
+			WithdrawEnabled:   chain.RPCURL != "" && chain.VaultAddress != "" && chain.USDCAddress != "",
+			USDCAddress:       usdcAddress,
+		})
+	}
+	return items
+}
+
+func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []config.EnabledChain) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		for _, chain := range chains {
+			if err := service.ProcessChain(context.Background(), chain.ChainID, 50); err != nil {
+				log.Printf("withdraw executor sync failed: chain_id=%d err=%v", chain.ChainID, err)
+			}
+		}
+		<-ticker.C
 	}
 }
 

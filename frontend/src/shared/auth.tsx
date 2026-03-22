@@ -3,6 +3,7 @@ import type { PropsWithChildren } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import type { AuthenticatedSession, User } from './domain';
 import { setApiAccessToken } from './api';
+import { appConfig } from './env';
 
 interface AuthContextValue {
   session: AuthenticatedSession | null;
@@ -65,6 +66,10 @@ export function hasAdminAccess(user: User | null | undefined): boolean {
 
   const normalizedRole = user.role?.trim().toLowerCase();
   if (normalizedRole && adminRoles.has(normalizedRole)) {
+    return true;
+  }
+
+  if (user.evm_address && appConfig.adminWallets.includes(user.evm_address.trim().toLowerCase())) {
     return true;
   }
 

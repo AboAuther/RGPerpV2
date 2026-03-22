@@ -34,6 +34,7 @@ type AuthRuntimeConfig struct {
 type WalletRuntimeConfig struct {
 	DepositConfirmations          map[string]int `yaml:"deposit_confirmations"`
 	WithdrawFeeUSDC               string         `yaml:"withdraw_fee_usdc"`
+	WithdrawCircuitMode           string         `yaml:"withdraw_circuit_mode"`
 	WithdrawManualReviewThreshold string         `yaml:"withdraw_manual_review_threshold"`
 	WithdrawDailyLimitPerUser     string         `yaml:"withdraw_daily_limit_per_user"`
 	HotWalletMinBalance           string         `yaml:"hot_wallet_min_balance"`
@@ -102,6 +103,9 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	}
 	if c.Wallet.WithdrawFeeUSDC == "" {
 		errs = append(errs, fmt.Errorf("%w: wallet.withdraw_fee_usdc is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Wallet.WithdrawCircuitMode == "" {
+		errs = append(errs, fmt.Errorf("%w: wallet.withdraw_circuit_mode is required", errorsx.ErrInvalidArgument))
 	}
 	if c.Wallet.WithdrawManualReviewThreshold == "" {
 		errs = append(errs, fmt.Errorf("%w: wallet.withdraw_manual_review_threshold is required", errorsx.ErrInvalidArgument))

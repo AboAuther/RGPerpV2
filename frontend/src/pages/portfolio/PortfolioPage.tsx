@@ -1,10 +1,11 @@
 import { Alert, Button, Card, Col, Row, Space, Spin, Table, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
-import { ErrorAlert, MetricCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
+import { ErrorAlert, LoginRequiredCard, MetricCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
 import type { AccountSummary, BalanceItem, PositionItem, RiskSnapshot } from '../../shared/domain';
 import { formatAddress, formatDecimal, formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
+import { useAuth } from '../../shared/auth';
 
 const { Paragraph, Text } = Typography;
 
@@ -16,6 +17,7 @@ interface PortfolioState {
 }
 
 export function PortfolioPage() {
+  const { session } = useAuth();
   const [state, setState] = useState<PortfolioState | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -46,8 +48,15 @@ export function PortfolioPage() {
   }
 
   useEffect(() => {
+    if (!session) {
+      setState(null);
+      setLoading(false);
+      setRefreshing(false);
+      setError(null);
+      return;
+    }
     void loadData();
-  }, []);
+  }, [session]);
 
   function refreshInBackground() {
     void (async () => {
@@ -75,6 +84,8 @@ export function PortfolioPage() {
 
       {loading ? <Spin size="large" /> : null}
       <ErrorAlert error={error} />
+
+      {!session ? <LoginRequiredCard title="登录后查看账户资产" description="Portfolio 允许未登录进入浏览，但账户权益、余额、仓位和风险数据属于个人资金信息，需登录后才能拉取。" /> : null}
 
       {state ? (
         <>

@@ -1,18 +1,18 @@
-import { EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
-import { App as AntdApp, Alert, Button, Card, Col, Row, Space, Spin, Table, Typography } from 'antd';
+import { CopyOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons';
+import { App as AntdApp, Alert, Button, Card, Input, Select, Space, Spin, Table, Typography } from 'antd';
 import { BrowserProvider, Contract, parseUnits } from 'ethers';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
-import { ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
+import { EmptyStateCard, ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
 import type { DepositAddressItem, DepositItem } from '../../shared/domain';
-import { appConfig } from '../../shared/env';
 import { formatAddress, formatChainName, formatDateTime, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
+import { useSystemConfig } from '../../shared/system';
 
 const { Paragraph, Text } = Typography;
 
-const mockUsdcAbi = [
+const mintableUsdcAbi = [
   'function mint(address to, uint256 amount)',
   'function transfer(address to, uint256 amount) returns (bool)',
 ];
@@ -27,6 +27,7 @@ interface DepositState {
 export function DepositPage() {
   const { message } = AntdApp.useApp();
   const { session } = useAuth();
+  const { chains, loading: chainsLoading, error: chainsError, localChain } = useSystemConfig();
   const [state, setState] = useState<DepositState | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -36,8 +37,17 @@ export function DepositPage() {
   const [mintingChain, setMintingChain] = useState<number | null>(null);
   const [fundingNativeChain, setFundingNativeChain] = useState<number | null>(null);
   const [quickDepositingChain, setQuickDepositingChain] = useState<number | null>(null);
+  const [selectedChainId, setSelectedChainId] = useState<number | null>(null);
+  const [depositAmount, setDepositAmount] = useState('1000');
 
   async function loadData(background = false) {
+    if (!session) {
+      setState({ addresses: [], deposits: [] });
+      setLoading(false);
+      setRefreshing(false);
+      setError(null);
+      return;
+    }
     if (background && state) {
       setRefreshing(true);
     } else {
@@ -58,11 +68,22 @@ export function DepositPage() {
 
   useEffect(() => {
     void loadData();
-  }, []);
+  }, [session]);
 
   useWindowRefetch(() => {
     void loadData(true);
   }, !!state);
+
+  useEffect(() => {
+    if (chains.length === 0) {
+      setSelectedChainId(null);
+      return;
+    }
+    const fallbackChainID = localChain?.chain_id ?? chains[0]?.chain_id ?? null;
+    if (selectedChainId == null || !chains.some((chain) => chain.chain_id === selectedChainId)) {
+      setSelectedChainId(fallbackChainID);
+    }
+  }, [chains, localChain, selectedChainId]);
 
   const addressMap = useMemo(() => {
     const map = new Map<number, DepositAddressItem>();
@@ -72,10 +93,38 @@ export function DepositPage() {
     return map;
   }, [state?.addresses]);
 
-  async function handleCopyAddress(address: string) {
+  const selectedChain = useMemo(
+    () => (selectedChainId == null ? undefined : chains.find((chain) => chain.chain_id === selectedChainId)),
+    [chains, selectedChainId],
+  );
+  const selectedAddress = selectedChain ? addressMap.get(selectedChain.chain_id) : undefined;
+  const selectedAddressVisible = !!(selectedChain && revealed[selectedChain.chain_id]);
+  const selectedDisplayAddress =
+    selectedAddress && selectedChain
+      ? selectedAddressVisible
+        ? selectedAddress.address
+        : formatAddress(selectedAddress.address, 6)
+      : '未生成';
+  const isLocalSelectedChain = !!selectedChain?.local_testnet;
+  const normalizedDepositAmount = String(depositAmount || '').trim();
+  const depositAmountError = useMemo(() => {
+    if (normalizedDepositAmount === '') {
+      return '请输入金额';
+    }
+    if (!/^\d+(\.\d{1,6})?$/.test(normalizedDepositAmount)) {
+      return '请输入合法 USDC 金额，最多 6 位小数';
+    }
+    const amount = Number(normalizedDepositAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return '金额必须大于 0';
+    }
+    return null;
+  }, [normalizedDepositAmount]);
+
+  async function handleCopy(value: string, successMessage: string) {
     try {
-      await navigator.clipboard.writeText(address);
-      message.success('充值地址已复制');
+      await navigator.clipboard.writeText(value);
+      message.success(successMessage);
     } catch {
       message.error('复制失败，请手动复制');
     }
@@ -98,17 +147,9 @@ export function DepositPage() {
     });
   }
 
-  async function getUsdcContract(chainId: number) {
-    const signer = await getChainSigner(chainId);
-    return new Contract(appConfig.localUsdcAddress, mockUsdcAbi, signer);
-  }
-
   async function getChainSigner(chainId: number) {
     if (!window.ethereum) {
       throw new Error('未检测到 MetaMask 或兼容钱包');
-    }
-    if (!appConfig.localUsdcAddress) {
-      throw new Error('本地测试 USDC 合约地址未配置');
     }
 
     await ensureWalletOnChain(chainId);
@@ -120,7 +161,12 @@ export function DepositPage() {
     return signer;
   }
 
-  async function getValidatedRouterContract(chainId: number, address: string) {
+  async function getUsdcContract(chainId: number, usdcAddress: string) {
+    const signer = await getChainSigner(chainId);
+    return new Contract(usdcAddress, mintableUsdcAbi, signer);
+  }
+
+  async function getValidatedRouterContract(chainId: number, address: string, usdcAddress: string) {
     const signer = await getChainSigner(chainId);
     const provider = signer.provider;
     if (!provider) {
@@ -132,8 +178,8 @@ export function DepositPage() {
     }
     const router = new Contract(address, depositRouterAbi, signer);
     const routerToken = String(await router.token()).toLowerCase();
-    if (routerToken !== appConfig.localUsdcAddress.toLowerCase()) {
-      throw new Error('当前充值地址对应的 Router 资产与本地 USDC 配置不一致，已阻止便捷充值');
+    if (routerToken !== usdcAddress.toLowerCase()) {
+      throw new Error('当前充值地址对应的 Router 资产与当前链配置不一致，已阻止便捷充值');
     }
     return router;
   }
@@ -157,6 +203,10 @@ export function DepositPage() {
   }
 
   async function handleGenerateAddress(chainId: number) {
+    if (!session) {
+      message.warning('请先登录后再生成充值地址');
+      return;
+    }
     try {
       setGeneratingChain(chainId);
       const next = await api.wallet.generateDepositAddress(chainId);
@@ -174,6 +224,10 @@ export function DepositPage() {
   }
 
   async function handleMintNative(chainId: number) {
+    if (!session) {
+      message.warning('请先登录后再领取测试 ETH');
+      return;
+    }
     try {
       setFundingNativeChain(chainId);
       await api.wallet.requestLocalNativeFaucet(chainId);
@@ -185,16 +239,26 @@ export function DepositPage() {
     }
   }
 
-  async function handleMintUsdc(chainId: number) {
+  async function handleMintUsdc(chainId: number, usdcAddress?: string | null) {
     if (!session) {
+      message.warning('请先登录后再领取测试 USDC');
       return;
     }
+    if (!usdcAddress) {
+      setError(new Error('当前链未配置 USDC 合约地址'));
+      return;
+    }
+    if (depositAmountError) {
+      setError(new Error(depositAmountError));
+      return;
+    }
+
     try {
       setMintingChain(chainId);
-      const usdc = await getUsdcContract(chainId);
-      const tx = await usdc.mint(session.user.evm_address, parseUnits('1000', 6));
+      const usdc = await getUsdcContract(chainId, usdcAddress);
+      const tx = await usdc.mint(session.user.evm_address, parseUnits(normalizedDepositAmount, 6));
       await tx.wait();
-      message.success('已向当前钱包 mint 1000 USDC');
+      message.success(`已向当前钱包 mint ${normalizedDepositAmount} USDC`);
     } catch (mintError) {
       setError(mintError);
     } finally {
@@ -202,12 +266,25 @@ export function DepositPage() {
     }
   }
 
-  async function handleQuickDeposit(chainId: number, address: string) {
+  async function handleQuickDeposit(chainId: number, address: string, usdcAddress?: string | null) {
+    if (!session) {
+      message.warning('请先登录后再进行便捷充值');
+      return;
+    }
+    if (!usdcAddress) {
+      setError(new Error('当前链未配置 USDC 合约地址，无法执行便捷充值'));
+      return;
+    }
+    if (depositAmountError) {
+      setError(new Error(depositAmountError));
+      return;
+    }
+
     try {
       setQuickDepositingChain(chainId);
-      const router = await getValidatedRouterContract(chainId, address);
-      const usdc = await getUsdcContract(chainId);
-      const transferTx = await usdc.transfer(address, parseUnits('1000', 6));
+      const router = await getValidatedRouterContract(chainId, address, usdcAddress);
+      const usdc = await getUsdcContract(chainId, usdcAddress);
+      const transferTx = await usdc.transfer(address, parseUnits(normalizedDepositAmount, 6));
       await transferTx.wait();
       let forwardHash = '';
       try {
@@ -221,7 +298,7 @@ export function DepositPage() {
       }
       const deposit = await waitForDepositRecord(chainId, address, forwardHash);
       await loadData(true);
-      message.success(`充值记录已创建，当前状态 ${deposit.status}`);
+      message.success(`充值记录已创建，金额 ${normalizedDepositAmount} USDC，当前状态 ${deposit.status}`);
     } catch (depositError) {
       setError(depositError);
     } finally {
@@ -239,9 +316,22 @@ export function DepositPage() {
           titleEffect="shiny"
           descriptionEffect="proximity"
           extra={
-            <Button onClick={() => void loadData(true)} loading={refreshing}>
-              刷新状态
-            </Button>
+            <Space wrap>
+              <Select
+                value={selectedChain?.chain_id}
+                style={{ minWidth: 220 }}
+                placeholder={chains.length === 0 ? '后端未返回可用链' : '请选择链'}
+                options={chains.map((chain) => ({
+                  label: `${chain.name} (${chain.chain_id})`,
+                  value: chain.chain_id,
+                }))}
+                onChange={(value) => setSelectedChainId(value)}
+                disabled={chains.length === 0}
+              />
+              <Button onClick={() => void loadData(true)} loading={refreshing}>
+                刷新状态
+              </Button>
+            </Space>
           }
         />
 
@@ -249,71 +339,97 @@ export function DepositPage() {
           showIcon
           type="info"
           message="充值状态说明"
-          description="DETECTED 表示已检测到链上转账，CONFIRMING 表示确认中，CREDITED 才代表账本已记账。Local Anvil 额外提供领取测试 ETH、领取测试 USDC 和便捷充值入口，便于本地联调。"
+          description="DETECTED 表示已检测到链上转账，CONFIRMING 表示确认中，CREDITED 才代表账本已记账。本地链工具按钮只在后端明确返回 local_testnet/local_tools_enabled 时展示。"
         />
 
-        {loading ? <Spin size="large" /> : null}
-        <ErrorAlert error={error} />
+        {loading || chainsLoading ? <Spin size="large" /> : null}
+        <ErrorAlert error={chainsError || error} />
+        {!session ? <LoginRequiredCard title="登录后使用充值功能" description="充值页允许未登录浏览，但生成充值地址、领取测试资产和便捷充值都需要先登录。" /> : null}
 
-        <Row gutter={[16, 16]}>
-          {appConfig.supportedChains.map((chain) => {
-            const item = addressMap.get(chain.id);
-            const addressVisible = !!revealed[chain.id];
-            const displayAddress = item ? (addressVisible ? item.address : formatAddress(item.address, 6)) : '未生成';
-            const isLocalChain = chain.id === appConfig.localChainId;
+        {!chainsLoading && chains.length === 0 ? (
+          <EmptyStateCard title="暂无可用充值链" description="后端当前未返回任何可用链配置，充值页不会自行伪造链列表或测试地址。" />
+        ) : null}
 
-            return (
-              <Col xs={24} md={12} xl={8} key={chain.id}>
-                <Card className="surface-card" title={`${chain.name} / USDC`} extra={<StatusTag value={item ? 'ACTIVE' : 'PENDING'} />}>
-                  <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                    <Text strong>充值地址</Text>
-                    <Text code>{displayAddress}</Text>
-                    <Text type="secondary">确认数要求: {item?.confirmations ?? chain.confirmations}</Text>
-                    <Space wrap>
-                      {item ? (
-                        <>
-                          <Button
-                            icon={addressVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                            onClick={() => setRevealed((current) => ({ ...current, [chain.id]: !current[chain.id] }))}
-                          >
-                            {addressVisible ? '隐藏地址' : '显示地址'}
-                          </Button>
-                          <Button onClick={() => void handleCopyAddress(item.address)}>复制地址</Button>
-                        </>
-                      ) : (
-                        <Button type="primary" loading={generatingChain === chain.id} onClick={() => void handleGenerateAddress(chain.id)}>
-                          生成充值地址
-                        </Button>
-                      )}
-                    </Space>
-                    {isLocalChain ? (
-                      <Space wrap>
-                        <Button loading={fundingNativeChain === chain.id} onClick={() => void handleMintNative(chain.id)}>
-                          领取测试 ETH
-                        </Button>
-                        <Button loading={mintingChain === chain.id} onClick={() => void handleMintUsdc(chain.id)}>
-                          领取测试 USDC
-                        </Button>
-                        <Button
-                          type="primary"
-                          ghost
-                          disabled={!item}
-                          loading={quickDepositingChain === chain.id}
-                          onClick={() => item && void handleQuickDeposit(chain.id, item.address)}
-                        >
-                          便捷充值 1000 USDC
-                        </Button>
-                      </Space>
-                    ) : null}
-                    <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                      每条链的充值流程一致：用户获取该链充值地址后，可从任意交易所或钱包向该地址转账。测试阶段仅 Local Anvil 提供便捷工具按钮。
-                    </Paragraph>
-                  </Space>
-                </Card>
-              </Col>
-            );
-          })}
-        </Row>
+        {selectedChain ? (
+          <Card className="surface-card" title={`${selectedChain.name} / ${selectedChain.asset}`} extra={<StatusTag value={selectedAddress ? 'ACTIVE' : 'PENDING'} />}>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Text strong>充值地址</Text>
+              <Space wrap>
+                <Text code>{selectedDisplayAddress}</Text>
+                {selectedAddress ? (
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    onClick={() => void handleCopy(selectedAddress.address, '充值地址已复制')}
+                  />
+                ) : null}
+              </Space>
+              <Text type="secondary">确认数要求: {selectedAddress?.confirmations ?? selectedChain.confirmations}</Text>
+              {isLocalSelectedChain && selectedChain.local_tools_enabled ? (
+                <Space direction="vertical" size={6} style={{ maxWidth: 320 }}>
+                  <Text strong>本地链充值金额</Text>
+                  <Input
+                    value={depositAmount}
+                    onChange={(event) => setDepositAmount(event.target.value)}
+                    placeholder="1000"
+                    status={depositAmountError ? 'error' : ''}
+                  />
+                  <Text type={depositAmountError ? 'danger' : 'secondary'}>
+                    {depositAmountError || '便捷充值与测试 USDC mint 将使用该金额'}
+                  </Text>
+                </Space>
+              ) : null}
+              <Space wrap>
+                {selectedAddress ? (
+                  <>
+                    <Button
+                      icon={selectedAddressVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
+                      onClick={() => setRevealed((current) => ({ ...current, [selectedChain.chain_id]: !current[selectedChain.chain_id] }))}
+                    >
+                      {selectedAddressVisible ? '隐藏地址' : '显示地址'}
+                    </Button>
+                    <Button onClick={() => void handleCopy(selectedAddress.address, '充值地址已复制')}>复制地址</Button>
+                  </>
+                ) : (
+                  <Button
+                    type="primary"
+                    loading={generatingChain === selectedChain.chain_id}
+                    onClick={() => void handleGenerateAddress(selectedChain.chain_id)}
+                    disabled={!selectedChain.deposit_enabled}
+                  >
+                    生成充值地址
+                  </Button>
+                )}
+              </Space>
+              {!selectedChain.deposit_enabled ? (
+                <Text type="secondary">当前链未在后端启动配置中启用充值分配能力。</Text>
+              ) : null}
+              {isLocalSelectedChain && selectedChain.local_tools_enabled ? (
+                <Space wrap>
+                  <Button loading={fundingNativeChain === selectedChain.chain_id} onClick={() => void handleMintNative(selectedChain.chain_id)}>
+                    领取测试 ETH
+                  </Button>
+                  <Button loading={mintingChain === selectedChain.chain_id} onClick={() => void handleMintUsdc(selectedChain.chain_id, selectedChain.usdc_address)}>
+                    领取测试 USDC
+                  </Button>
+                  <Button
+                    type="primary"
+                    ghost
+                    disabled={!selectedAddress || !!depositAmountError}
+                    loading={quickDepositingChain === selectedChain.chain_id}
+                    onClick={() => selectedAddress && void handleQuickDeposit(selectedChain.chain_id, selectedAddress.address, selectedChain.usdc_address)}
+                  >
+                    便捷充值 {normalizedDepositAmount || '--'} USDC
+                  </Button>
+                </Space>
+              ) : null}
+              <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+                每条链的充值流程一致：用户获取该链充值地址后，可从任意交易所或钱包向该地址转账。前端只展示后端配置中真实可用的链，不再写死任何链、地址或测试资产。
+              </Paragraph>
+            </Space>
+          </Card>
+        ) : null}
 
         {state ? (
           <Card className="table-card" title="Recent Deposits">
@@ -324,7 +440,7 @@ export function DepositPage() {
               pagination={false}
               columns={[
                 { title: 'Time', dataIndex: 'detected_at', render: (value: string) => formatDateTime(value), width: 180 },
-                { title: 'Chain', dataIndex: 'chain_id', render: (value: number) => formatChainName(value), width: 120 },
+                { title: 'Chain', dataIndex: 'chain_id', render: (value: number) => formatChainName(value, chains), width: 120 },
                 { title: 'Asset', dataIndex: 'asset', width: 90 },
                 { title: 'Amount', dataIndex: 'amount', align: 'right', render: (value: string) => formatUsd(value) },
                 {
@@ -336,12 +452,22 @@ export function DepositPage() {
                 {
                   title: 'Address',
                   dataIndex: 'address',
-                  render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text>,
+                  render: (value: string) => (
+                    <Space size={4}>
+                      <Text type="secondary">{formatAddress(value, 8)}</Text>
+                      <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => void handleCopy(value, '地址已复制')} />
+                    </Space>
+                  ),
                 },
                 {
                   title: 'Tx Hash',
                   dataIndex: 'tx_hash',
-                  render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text>,
+                  render: (value: string) => (
+                    <Space size={4}>
+                      <Text type="secondary">{formatAddress(value, 8)}</Text>
+                      <Button type="text" size="small" icon={<CopyOutlined />} onClick={() => void handleCopy(value, '交易哈希已复制')} />
+                    </Space>
+                  ),
                 },
               ]}
             />

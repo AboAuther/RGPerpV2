@@ -10,6 +10,7 @@ import type {
   FillItem,
   FundingItem,
   LoginResponse,
+  AdminWithdrawReviewItem,
   OrderItem,
   PositionItem,
   RiskSnapshot,
@@ -18,6 +19,7 @@ import type {
   TransferItem,
   WithdrawItem,
   WithdrawRequest,
+  SystemChainItem,
 } from './domain';
 
 export class ApiError extends Error {
@@ -83,6 +85,12 @@ export function setApiAccessToken(token?: string) {
 }
 
 export const api = {
+  system: {
+    getChains(): Promise<SystemChainItem[]> {
+      return requestJson<SystemChainItem[]>('/api/v1/system/chains');
+    },
+  },
+
   auth: {
     challenge(address: string, chainId: number): Promise<ChallengeResponse> {
       return requestJson<ChallengeResponse>('/api/v1/auth/challenge', {
@@ -191,6 +199,21 @@ export const api = {
     },
   },
 
+  admin: {
+    getWithdrawals(): Promise<AdminWithdrawReviewItem[]> {
+      return requestJson<AdminWithdrawReviewItem[]>('/api/v1/admin/withdrawals');
+    },
+    approveWithdrawal(withdrawId: string): Promise<{ withdraw_id: string; status: string }> {
+      return requestJson<{ withdraw_id: string; status: string }>(`/api/v1/admin/withdrawals/${withdrawId}/approve`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('idem'),
+        },
+      });
+    },
+  },
+
   funding: {
     getHistory(): Promise<FundingItem[]> {
       return requestJson<FundingItem[]>('/api/v1/account/funding');
@@ -203,4 +226,3 @@ export const api = {
     },
   },
 };
-

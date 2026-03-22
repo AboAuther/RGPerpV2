@@ -25,6 +25,7 @@ wallet:
     arbitrum: 20
     base: 20
   withdraw_fee_usdc: "1"
+  withdraw_circuit_mode: "NORMAL"
   withdraw_manual_review_threshold: "10000"
   withdraw_daily_limit_per_user: "50000"
   hot_wallet_min_balance: "10000"

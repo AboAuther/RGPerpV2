@@ -1,5 +1,13 @@
-import { Alert, Card, List, Space } from 'antd';
-import { EmptyStateCard, PageIntro } from '../../shared/components';
+import { Alert, Button, Card, List, Space, Table, Typography } from 'antd';
+import { useEffect, useState } from 'react';
+import { api } from '../../shared/api';
+import { EmptyStateCard, ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
+import type { AdminWithdrawReviewItem } from '../../shared/domain';
+import { formatAddress, formatChainName, formatDateTime, formatUsd } from '../../shared/format';
+import { useWindowRefetch } from '../../shared/refetch';
+import { useSystemConfig } from '../../shared/system';
+
+const { Text } = Typography;
 
 function AdminPageTemplate({
   title,
@@ -46,12 +54,94 @@ export function AdminDashboardPage() {
 }
 
 export function AdminWithdrawalsPage() {
+  const { chains } = useSystemConfig();
+  const [items, setItems] = useState<AdminWithdrawReviewItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  const [approving, setApproving] = useState<string | null>(null);
+
+  async function loadData(background = false) {
+    if (!background) {
+      setLoading(true);
+    }
+    setError(null);
+    try {
+      setItems(await api.admin.getWithdrawals());
+    } catch (loadError) {
+      setError(loadError);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  useWindowRefetch(() => {
+    void loadData(true);
+  }, true);
+
+  async function handleApprove(withdrawId: string) {
+    try {
+      setApproving(withdrawId);
+      await api.admin.approveWithdrawal(withdrawId);
+      await loadData(true);
+    } catch (approveError) {
+      setError(approveError);
+    } finally {
+      setApproving(null);
+    }
+  }
+
   return (
-    <AdminPageTemplate
-      title="Withdraw Reviews"
-      description="提现审核、广播与失败退款会在后续里程碑联调。"
-      items={['审核原因记录', 'trace_id / event_id 查询', '广播前签名状态', '失败退款闭环']}
-    />
+    <div className="rg-app-page rg-app-page--admin">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro eyebrow="Admin" title="Withdraw Reviews" description="仅命中特殊风控规则的提现会进入人工复核。批准后会自动继续广播与确认链路。" titleEffect="glitch" descriptionEffect="proximity" />
+        <Alert
+          showIcon
+          type="info"
+          message="审批规则"
+          description="当前仅当金额超过阈值、热钱包余额不足、链路异常或系统进入提现熔断/半熔断时，提现才会进入 RISK_REVIEW。"
+        />
+        <ErrorAlert error={error} />
+        <Card className="table-card" title="Withdrawal Queue">
+          <Table
+            rowKey="withdraw_id"
+            loading={loading}
+            dataSource={items}
+            pagination={false}
+            scroll={{ x: 1200 }}
+            locale={{ emptyText: <EmptyStateCard title="暂无待处理审核" description="当前没有进入 RISK_REVIEW 的提现，或你没有管理员权限。" /> }}
+            columns={[
+              { title: 'Time', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
+              { title: 'User', dataIndex: 'user_address', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
+              { title: 'Chain', dataIndex: 'chain_id', width: 120, render: (value: number) => formatChainName(value, chains) },
+              { title: 'Asset', dataIndex: 'asset', width: 90 },
+              { title: 'Amount', dataIndex: 'amount', align: 'right', render: (value: string) => formatUsd(value) },
+              { title: 'Fee', dataIndex: 'fee_amount', align: 'right', render: (value: string) => formatUsd(value) },
+              { title: 'To', dataIndex: 'to_address', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
+              { title: 'Risk Flag', dataIndex: 'risk_flag', render: (value?: string | null) => value || '--' },
+              { title: 'Status', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
+              {
+                title: 'Action',
+                width: 140,
+                render: (_, record: AdminWithdrawReviewItem) => (
+                  <Button
+                    type="primary"
+                    disabled={record.status !== 'RISK_REVIEW'}
+                    loading={approving === record.withdraw_id}
+                    onClick={() => void handleApprove(record.withdraw_id)}
+                  >
+                    批准并继续提现
+                  </Button>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      </Space>
+    </div>
   );
 }
 

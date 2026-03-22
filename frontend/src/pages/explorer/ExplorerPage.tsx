@@ -1,13 +1,15 @@
 import { Button, Card, Input, Space, Spin, Table, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../shared/api';
-import { ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
+import { ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
 import type { ExplorerEvent } from '../../shared/domain';
-import { formatAddress } from '../../shared/format';
+import { formatAddress, formatDateTime, formatUsd } from '../../shared/format';
+import { useAuth } from '../../shared/auth';
 
 const { Paragraph, Text } = Typography;
 
 export function ExplorerPage() {
+  const { session } = useAuth();
   const [events, setEvents] = useState<ExplorerEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,8 +36,15 @@ export function ExplorerPage() {
   }
 
   useEffect(() => {
+    if (!session) {
+      setEvents([]);
+      setLoading(false);
+      setRefreshing(false);
+      setError(null);
+      return;
+    }
     void loadData();
-  }, []);
+  }, [session]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) {
@@ -44,7 +53,7 @@ export function ExplorerPage() {
 
     const keyword = query.toLowerCase();
     return events.filter((event) =>
-      [event.event_id, event.event_type, event.ledger_tx_id, event.chain_tx_hash, event.order_id, event.address]
+      [event.event_type, event.asset, event.amount, event.ledger_tx_id, event.chain_tx_hash, event.order_id, event.address]
         .filter(Boolean)
         .some((item) => String(item).toLowerCase().includes(keyword)),
     );
@@ -71,7 +80,7 @@ export function ExplorerPage() {
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索 event_id / ledger_tx_id / chain_tx_hash / address"
+            placeholder="搜索 event_type / asset / ledger_tx_id / chain_tx_hash / address"
           />
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
             Explorer 事件流只展示后端返回的读模型结果；查询失败会直接报错，不会自动伪造审计事件。
@@ -81,6 +90,7 @@ export function ExplorerPage() {
 
       {loading ? <Spin size="large" /> : null}
       <ErrorAlert error={error} />
+      {!session ? <LoginRequiredCard title="登录后查询 Explorer" description="Explorer 允许未登录进入页面，但资金事件、充值提现追踪和链上哈希检索需要登录后才可查询。" /> : null}
 
       <Card className="table-card" title="Events">
         <Table
@@ -89,8 +99,16 @@ export function ExplorerPage() {
           scroll={{ x: 1080 }}
           pagination={false}
           columns={[
-            { title: 'Event ID', dataIndex: 'event_id', render: (value: string) => <Text code>{formatAddress(value, 10)}</Text> },
+            { title: 'Time', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
             { title: 'Type', dataIndex: 'event_type', render: (value: string) => <StatusTag value={value} /> },
+            { title: 'Asset', dataIndex: 'asset', width: 90, render: (value: string | null | undefined) => <Text type="secondary">{value || '-'}</Text> },
+            {
+              title: 'Amount',
+              dataIndex: 'amount',
+              align: 'right',
+              width: 140,
+              render: (value: string | null | undefined) => <Text type="secondary">{value ? formatUsd(value) : '-'}</Text>,
+            },
             { title: 'Ledger Tx', dataIndex: 'ledger_tx_id', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
             { title: 'Chain Tx', dataIndex: 'chain_tx_hash', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
             { title: 'Order', dataIndex: 'order_id', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },

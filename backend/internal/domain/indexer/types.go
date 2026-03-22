@@ -6,15 +6,16 @@ const (
 	CursorTypeRouterScan   = "router_created_scan"
 	CursorTypeDepositScan  = "deposit_forwarded_scan"
 	CursorTypeWithdrawScan = "withdraw_executed_scan"
+	CursorTypeChainIDHash  = "chain_identity_hash"
 )
 
 type ChainRule struct {
-	ChainID                int64
-	Asset                  string
-	RequiredConfirmations  int
-	VaultAddress           string
-	TokenAddress           string
-	FactoryAddress         string
+	ChainID               int64
+	Asset                 string
+	RequiredConfirmations int
+	VaultAddress          string
+	TokenAddress          string
+	FactoryAddress        string
 }
 
 type RouterCreated struct {
@@ -31,20 +32,20 @@ type RouterCreated struct {
 }
 
 type DepositObserved struct {
-	ChainID        int64
-	UserID         uint64
-	TxHash         string
-	LogIndex       int64
-	BlockNumber    int64
-	Confirmations  int
-	RouterAddress  string
-	VaultAddress   string
-	TokenAddress   string
-	FromAddress    string
-	Amount         string
-	Removed        bool
-	TraceID        string
-	ObservedAt     time.Time
+	ChainID       int64
+	UserID        uint64
+	TxHash        string
+	LogIndex      int64
+	BlockNumber   int64
+	Confirmations int
+	RouterAddress string
+	VaultAddress  string
+	TokenAddress  string
+	FromAddress   string
+	Amount        string
+	Removed       bool
+	TraceID       string
+	ObservedAt    time.Time
 }
 
 type WithdrawExecuted struct {

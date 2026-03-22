@@ -8,7 +8,8 @@
     "dev": "vite",
     "dev:local": "sh ../deploy/scripts/start-frontend-local.sh",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e:withdraw": "playwright test e2e/withdrawal.spec.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
@@ -22,6 +23,7 @@
     "three": "^0.183.2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",

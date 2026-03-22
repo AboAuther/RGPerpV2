@@ -116,7 +116,7 @@ export function LoginPage() {
           </Title>
           <Paragraph className="page-intro-description page-intro-description--proximity" style={{ fontSize: 17, maxWidth: 760 }}>
             <VariableProximityText
-              text="登录只保留一条真实路径：连接钱包、请求挑战、签名验签。前端不保存资金真相，不复用 challenge，不再保留 mock provider、手工 nonce 或演示登录分支。"
+              text="登录只保留一条真实路径：连接钱包、请求挑战、签名验签。前端不保存资金真相，不复用 challenge，不再保留手工 nonce 或演示登录分支。"
               className="page-intro-description-text"
             />
           </Paragraph>
@@ -186,4 +186,3 @@ export function LoginPage() {
     </div>
   );
 }
-

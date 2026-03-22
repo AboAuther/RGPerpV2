@@ -51,6 +51,7 @@ type Service struct {
 	balances        BalanceRepository
 	addresses       DepositAddressRepository
 	allocator       DepositAddressAllocator
+	riskEvaluator   WithdrawRiskEvaluator
 }
 
 func NewService(
@@ -83,6 +84,10 @@ func NewService(
 		addresses:       addresses,
 		allocator:       optionalAllocator,
 	}
+}
+
+func (s *Service) SetWithdrawRiskEvaluator(evaluator WithdrawRiskEvaluator) {
+	s.riskEvaluator = evaluator
 }
 
 func (s *Service) DetectDeposit(ctx context.Context, input DetectDepositInput) (DepositChainTx, error) {
@@ -288,6 +293,30 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 		return WithdrawRequest{}, err
 	}
 	now := s.clock.Now()
+	status := StatusHold
+	riskFlag := ""
+	if s.riskEvaluator != nil {
+		decision, err := s.riskEvaluator.Evaluate(ctx, WithdrawRiskInput{
+			UserID:    input.UserID,
+			ChainID:   input.ChainID,
+			Asset:     input.Asset,
+			Amount:    input.Amount,
+			FeeAmount: input.FeeAmount,
+			ToAddress: input.ToAddress,
+		})
+		if err != nil {
+			return WithdrawRequest{}, err
+		}
+		switch decision.Status {
+		case "", StatusHold:
+			status = StatusHold
+		case StatusApproved, StatusRiskReview:
+			status = decision.Status
+			riskFlag = decision.RiskFlag
+		default:
+			return WithdrawRequest{}, fmt.Errorf("%w: invalid withdraw risk decision", errorsx.ErrConflict)
+		}
+	}
 	withdraw := WithdrawRequest{
 		WithdrawID: s.idgen.NewID("wd"),
 		UserID:     input.UserID,
@@ -296,7 +325,8 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 		Amount:     input.Amount,
 		FeeAmount:  input.FeeAmount,
 		ToAddress:  input.ToAddress,
-		Status:     StatusHold,
+		Status:     status,
+		RiskFlag:   riskFlag,
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
@@ -415,7 +445,7 @@ func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWi
 	if err != nil {
 		return err
 	}
-	if withdraw.Status != StatusApproved {
+	if withdraw.Status != StatusApproved && withdraw.Status != StatusSigning {
 		return fmt.Errorf("%w: withdraw cannot be broadcasted from current state", errorsx.ErrConflict)
 	}
 
@@ -459,7 +489,7 @@ func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWi
 		}); err != nil {
 			return err
 		}
-		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusApproved}, StatusBroadcasted); err != nil {
+		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusApproved, StatusSigning}, StatusBroadcasted); err != nil {
 			return err
 		}
 		return s.withdraws.MarkBroadcasted(txCtx, withdraw.WithdrawID, input.TxHash)

@@ -12,8 +12,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	indexerdomain "github.com/xiaobao/rgperp/backend/internal/domain/indexer"
 	"github.com/shopspring/decimal"
+	indexerdomain "github.com/xiaobao/rgperp/backend/internal/domain/indexer"
 )
 
 var (
@@ -75,6 +75,18 @@ func (s *EVMEventSource) LatestBlockNumber(ctx context.Context, chainID int64) (
 		return 0, err
 	}
 	return int64(block), nil
+}
+
+func (s *EVMEventSource) BlockHash(ctx context.Context, chainID int64, blockNumber int64) (string, error) {
+	client, err := s.client(chainID)
+	if err != nil {
+		return "", err
+	}
+	header, err := client.HeaderByNumber(ctx, big.NewInt(blockNumber))
+	if err != nil {
+		return "", err
+	}
+	return header.Hash().Hex(), nil
 }
 
 func (s *EVMEventSource) ListRouterCreatedEvents(ctx context.Context, chainID int64, fromBlock int64, toBlock int64) ([]indexerdomain.RouterCreated, error) {

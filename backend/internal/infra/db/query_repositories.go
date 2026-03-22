@@ -370,6 +370,48 @@ func (r *WalletQueryRepository) ListWithdrawals(ctx context.Context, userID uint
 	return items, nil
 }
 
+func (r *WalletQueryRepository) ListAdminWithdrawals(ctx context.Context, limit int) ([]readmodel.AdminWithdrawReviewItem, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []struct {
+		WithdrawRequestModel
+		UserAddress string
+	}
+	if err := DB(ctx, r.db).
+		Table("withdraw_requests").
+		Select("withdraw_requests.*, users.evm_address AS user_address").
+		Joins("JOIN users ON users.id = withdraw_requests.user_id").
+		Order("CASE withdraw_requests.status WHEN 'RISK_REVIEW' THEN 0 ELSE 1 END ASC, withdraw_requests.created_at DESC").
+		Limit(limit).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]readmodel.AdminWithdrawReviewItem, 0, len(rows))
+	for _, row := range rows {
+		var txHash *string
+		if row.BroadcastTxHash != "" {
+			value := row.BroadcastTxHash
+			txHash = &value
+		}
+		items = append(items, readmodel.AdminWithdrawReviewItem{
+			WithdrawID:  row.WithdrawID,
+			UserID:      row.UserID,
+			UserAddress: row.UserAddress,
+			ChainID:     row.ChainID,
+			Asset:       row.Asset,
+			Amount:      row.Amount,
+			FeeAmount:   row.FeeAmount,
+			ToAddress:   row.ToAddress,
+			Status:      row.Status,
+			RiskFlag:    row.RiskFlag,
+			TxHash:      txHash,
+			CreatedAt:   row.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
 type ExplorerQueryRepository struct {
 	db *gorm.DB
 }
@@ -382,9 +424,14 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 	if limit <= 0 {
 		limit = 100
 	}
-	var models []OutboxEventModel
+	var rows []struct {
+		OutboxEventModel
+		Asset    string
+		BizType  string
+		BizRefID string
+	}
 	query := DB(ctx, r.db).Table("outbox_events").
-		Select("outbox_events.*").
+		Select("outbox_events.*, ledger_tx.asset, ledger_tx.biz_type, ledger_tx.biz_ref_id").
 		Joins("JOIN ledger_tx ON ledger_tx.ledger_tx_id = outbox_events.aggregate_id")
 	if !isAdmin {
 		query = query.Where(`
@@ -409,22 +456,100 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 			)
 		`, userID, userID, fmt.Sprintf("%d", userID))
 	}
-	if err := query.Order("outbox_events.created_at DESC").Limit(limit).Find(&models).Error; err != nil {
+	if err := query.Order("outbox_events.created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	items := make([]readmodel.ExplorerEvent, 0, len(models))
-	for _, model := range models {
+	items := make([]readmodel.ExplorerEvent, 0, len(rows))
+	for _, row := range rows {
 		payload := map[string]any{}
-		_ = json.Unmarshal([]byte(model.PayloadJSON), &payload)
-		ledgerTxID := model.AggregateID
+		_ = json.Unmarshal([]byte(row.PayloadJSON), &payload)
+		ledgerTxID := row.AggregateID
+		chainTxHash := payloadString(payload, "tx_hash")
+		address := payloadString(payload, "router_address", "to_address", "address")
+		amount := payloadString(payload, "amount")
+		if chainTxHash == "" || address == "" {
+			fallbackTxHash, fallbackAddress := r.lookupExplorerChainRefs(ctx, row.BizType, row.BizRefID)
+			if chainTxHash == "" {
+				chainTxHash = fallbackTxHash
+			}
+			if address == "" {
+				address = fallbackAddress
+			}
+		}
+		if amount == "" {
+			amount = r.lookupExplorerAmount(ctx, row.BizType, row.BizRefID, ledgerTxID)
+		}
+		asset := row.Asset
 		items = append(items, readmodel.ExplorerEvent{
-			EventID:    model.EventID,
-			EventType:  model.EventType,
-			LedgerTxID: &ledgerTxID,
-			Payload:    payload,
+			EventID:     row.EventID,
+			EventType:   row.EventType,
+			Asset:       optionalStringPtr(asset),
+			Amount:      optionalStringPtr(amount),
+			CreatedAt:   row.CreatedAt.Format(time.RFC3339),
+			LedgerTxID:  &ledgerTxID,
+			ChainTxHash: optionalStringPtr(chainTxHash),
+			Address:     optionalStringPtr(address),
+			Payload:     payload,
 		})
 	}
 	return items, nil
+}
+
+func (r *ExplorerQueryRepository) lookupExplorerChainRefs(ctx context.Context, bizType string, bizRefID string) (string, string) {
+	tx := DB(ctx, r.db)
+	switch bizType {
+	case "DEPOSIT_DETECTED", "DEPOSIT":
+		var deposit DepositChainTxModel
+		if err := tx.Where("deposit_id = ?", bizRefID).Order("id DESC").First(&deposit).Error; err == nil {
+			return deposit.TxHash, deposit.ToAddress
+		}
+	case "WITHDRAW_HOLD", "WITHDRAW_BROADCAST", "WITHDRAW_COMPLETE", "WITHDRAW_REFUND", "WITHDRAW_REFUND_REVERSAL":
+		var withdraw WithdrawRequestModel
+		if err := tx.Where("withdraw_id = ?", bizRefID).First(&withdraw).Error; err == nil {
+			return withdraw.BroadcastTxHash, withdraw.ToAddress
+		}
+	}
+	return "", ""
+}
+
+func (r *ExplorerQueryRepository) lookupExplorerAmount(ctx context.Context, bizType string, bizRefID string, ledgerTxID string) string {
+	tx := DB(ctx, r.db)
+	switch bizType {
+	case "DEPOSIT_DETECTED", "DEPOSIT":
+		var deposit DepositChainTxModel
+		if err := tx.Where("deposit_id = ?", bizRefID).Order("id DESC").First(&deposit).Error; err == nil {
+			return deposit.Amount
+		}
+	case "WITHDRAW_HOLD", "WITHDRAW_BROADCAST", "WITHDRAW_COMPLETE", "WITHDRAW_REFUND", "WITHDRAW_REFUND_REVERSAL":
+		var withdraw WithdrawRequestModel
+		if err := tx.Where("withdraw_id = ?", bizRefID).First(&withdraw).Error; err == nil {
+			return withdraw.Amount
+		}
+	case "TRANSFER":
+		return extractPositiveTransferAmount(ctx, r.db, ledgerTxID)
+	}
+	return ""
+}
+
+func payloadString(payload map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		text, ok := value.(string)
+		if ok && text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func optionalStringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func extractPositiveTransferAmount(ctx context.Context, db *gorm.DB, ledgerTxID string) string {

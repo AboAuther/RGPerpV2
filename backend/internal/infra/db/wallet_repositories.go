@@ -210,6 +210,7 @@ func (r *WithdrawRepository) Create(ctx context.Context, withdraw walletdomain.W
 		FeeAmount:      withdraw.FeeAmount,
 		ToAddress:      withdraw.ToAddress,
 		Status:         withdraw.Status,
+		RiskFlag:       nullableString(withdraw.RiskFlag),
 		HoldLedgerTxID: withdraw.HoldLedgerTxID,
 		CreatedAt:      withdraw.CreatedAt,
 		UpdatedAt:      withdraw.UpdatedAt,
@@ -234,6 +235,7 @@ func (r *WithdrawRepository) GetByID(ctx context.Context, withdrawID string) (wa
 		FeeAmount:       model.FeeAmount,
 		ToAddress:       model.ToAddress,
 		Status:          model.Status,
+		RiskFlag:        derefString(model.RiskFlag),
 		HoldLedgerTxID:  model.HoldLedgerTxID,
 		BroadcastTxHash: model.BroadcastTxHash,
 		CreatedAt:       model.CreatedAt,
@@ -264,6 +266,7 @@ func (r *WithdrawRepository) ListByChainStatuses(ctx context.Context, chainID in
 			FeeAmount:       model.FeeAmount,
 			ToAddress:       model.ToAddress,
 			Status:          model.Status,
+			RiskFlag:        derefString(model.RiskFlag),
 			HoldLedgerTxID:  model.HoldLedgerTxID,
 			BroadcastTxHash: model.BroadcastTxHash,
 			CreatedAt:       model.CreatedAt,
@@ -346,6 +349,7 @@ func (r *WithdrawRepository) ListByUser(ctx context.Context, userID uint64) ([]w
 			FeeAmount:       model.FeeAmount,
 			ToAddress:       model.ToAddress,
 			Status:          model.Status,
+			RiskFlag:        derefString(model.RiskFlag),
 			HoldLedgerTxID:  model.HoldLedgerTxID,
 			BroadcastTxHash: model.BroadcastTxHash,
 			CreatedAt:       model.CreatedAt,
@@ -396,6 +400,21 @@ func (r *AccountResolver) lookupAccountID(ctx context.Context, userID *uint64, a
 		return 0, err
 	}
 	return model.ID, nil
+}
+
+func nullableString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	out := value
+	return &out
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (r *DepositAddressRepository) GetByChainAddress(ctx context.Context, chainID int64, address string) (walletdomain.DepositAddress, error) {

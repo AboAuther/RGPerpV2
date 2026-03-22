@@ -237,6 +237,18 @@ func (s stubAllocator) Validate(_ context.Context, _ uint64, _ int64, _ string, 
 	return s.address, s.valid, s.err
 }
 
+type stubWithdrawRiskEvaluator struct {
+	decision WithdrawDecision
+	err      error
+}
+
+func (s stubWithdrawRiskEvaluator) Evaluate(_ context.Context, _ WithdrawRiskInput) (WithdrawDecision, error) {
+	if s.err != nil {
+		return WithdrawDecision{}, s.err
+	}
+	return s.decision, nil
+}
+
 func TestConfirmDeposit_Success(t *testing.T) {
 	ledger := &stubLedger{}
 	deposits := &stubDepositRepo{deposit: DepositChainTx{
@@ -345,6 +357,74 @@ func TestRequestWithdraw_Success(t *testing.T) {
 	}
 	if wd.WithdrawID != "wd_1" || withdraws.created.WithdrawID != "wd_1" {
 		t.Fatalf("expected withdraw persisted")
+	}
+}
+
+func TestRequestWithdraw_AutoApprovedByRiskEvaluator(t *testing.T) {
+	withdraws := &stubWithdrawRepo{}
+	svc := NewService(
+		&stubDepositRepo{},
+		withdraws,
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"wd_1", "ldg_1", "evt_1"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+	svc.SetWithdrawRiskEvaluator(stubWithdrawRiskEvaluator{decision: WithdrawDecision{Status: StatusApproved}})
+
+	wd, err := svc.RequestWithdraw(context.Background(), RequestWithdrawInput{
+		UserID:         7,
+		ChainID:        31337,
+		Asset:          "USDC",
+		Amount:         "100",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000001",
+		IdempotencyKey: "idem_1",
+		TraceID:        "trace_1",
+	})
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if wd.Status != StatusApproved {
+		t.Fatalf("expected approved status, got %s", wd.Status)
+	}
+}
+
+func TestRequestWithdraw_RiskReviewByRiskEvaluator(t *testing.T) {
+	withdraws := &stubWithdrawRepo{}
+	svc := NewService(
+		&stubDepositRepo{},
+		withdraws,
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"wd_1", "ldg_1", "evt_1"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+	svc.SetWithdrawRiskEvaluator(stubWithdrawRiskEvaluator{decision: WithdrawDecision{Status: StatusRiskReview, RiskFlag: "manual_review_threshold"}})
+
+	wd, err := svc.RequestWithdraw(context.Background(), RequestWithdrawInput{
+		UserID:         7,
+		ChainID:        31337,
+		Asset:          "USDC",
+		Amount:         "100",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000001",
+		IdempotencyKey: "idem_1",
+		TraceID:        "trace_1",
+	})
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if wd.Status != StatusRiskReview {
+		t.Fatalf("expected risk review status, got %s", wd.Status)
 	}
 }
 

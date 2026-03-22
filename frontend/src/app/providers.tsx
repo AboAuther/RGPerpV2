@@ -1,6 +1,7 @@
 import { App as AntdApp, ConfigProvider, theme } from 'antd';
 import type { PropsWithChildren } from 'react';
 import { AuthProvider } from '../shared/auth';
+import { SystemConfigProvider } from '../shared/system';
 
 export function AppProviders({ children }: PropsWithChildren) {
   return (
@@ -48,7 +49,9 @@ export function AppProviders({ children }: PropsWithChildren) {
       }}
     >
       <AntdApp>
-        <AuthProvider>{children}</AuthProvider>
+        <SystemConfigProvider>
+          <AuthProvider>{children}</AuthProvider>
+        </SystemConfigProvider>
       </AntdApp>
     </ConfigProvider>
   );

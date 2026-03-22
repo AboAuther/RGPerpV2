@@ -42,7 +42,7 @@ func TestChallengeHandler_Success(t *testing.T) {
 			ExpiresAt: time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
 		},
 	}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC, nil), nil, nil, nil, nil, nil, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"address":  "0x0000000000000000000000000000000000000001",
@@ -75,7 +75,7 @@ func TestLoginHandler_UsesFallbackIPAndUA(t *testing.T) {
 			ExpiresAt:    time.Date(2026, 3, 21, 12, 0, 0, 0, time.UTC),
 		},
 	}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC, nil), nil, nil, nil, nil, nil, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"address":            "0x0000000000000000000000000000000000000001",
@@ -101,7 +101,7 @@ func TestLoginHandler_UsesFallbackIPAndUA(t *testing.T) {
 
 func TestLoginHandler_MapsDomainErrors(t *testing.T) {
 	fakeUC := &fakeAuthUseCase{loginErr: errorsx.ErrUnauthorized}
-	engine := NewEngine(nil, NewAuthHandler(fakeUC), nil, nil, nil, nil, nil, nil)
+	engine := NewEngine(nil, NewAuthHandler(fakeUC, nil), nil, nil, nil, nil, nil, nil)
 
 	body, _ := json.Marshal(map[string]any{
 		"address":   "0x0000000000000000000000000000000000000001",

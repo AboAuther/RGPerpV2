@@ -1,9 +1,10 @@
 import { Alert, Card, Col, Row, Space, Spin, Table, Typography } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../../shared/api';
-import { EmptyStateCard, ErrorAlert, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
+import { EmptyStateCard, ErrorAlert, LoginRequiredCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
 import type { OrderItem, PositionItem, SymbolItem, TickerItem } from '../../shared/domain';
 import { formatDateTime, formatSignedUsd, formatUsd } from '../../shared/format';
+import { useAuth } from '../../shared/auth';
 
 const { Paragraph, Text, Title } = Typography;
 
@@ -15,6 +16,7 @@ interface TradeState {
 }
 
 export function TradePage() {
+  const { session } = useAuth();
   const [state, setState] = useState<TradeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
@@ -30,8 +32,8 @@ export function TradePage() {
         const [symbols, tickers, orders, positions] = await Promise.all([
           api.market.getSymbols(),
           api.market.getTickers(),
-          api.orders.getOrders(),
-          api.positions.getPositions(),
+          session ? api.orders.getOrders() : Promise.resolve([]),
+          session ? api.positions.getPositions() : Promise.resolve([]),
         ]);
 
         if (active) {
@@ -52,7 +54,7 @@ export function TradePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [session]);
 
   const marketRows = useMemo(() => {
     if (!state) {
@@ -85,6 +87,12 @@ export function TradePage() {
 
       {loading ? <Spin size="large" /> : null}
       <ErrorAlert error={error} />
+      {!session ? (
+        <LoginRequiredCard
+          title="登录后开始交易"
+          description="行情与交易对可公开浏览，但订单、仓位以及后续下单/撤单操作都需要先连接钱包登录。"
+        />
+      ) : null}
 
       {state ? (
         <>

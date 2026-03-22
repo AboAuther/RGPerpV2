@@ -31,10 +31,25 @@ type WithdrawRequest struct {
 	FeeAmount       string
 	ToAddress       string
 	Status          string
+	RiskFlag        string
 	HoldLedgerTxID  string
 	BroadcastTxHash string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type WithdrawRiskInput struct {
+	UserID    uint64
+	ChainID   int64
+	Asset     string
+	Amount    string
+	FeeAmount string
+	ToAddress string
+}
+
+type WithdrawDecision struct {
+	Status   string
+	RiskFlag string
 }
 
 type DepositAddress struct {

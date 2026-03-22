@@ -28,8 +28,8 @@ const { Title, Paragraph, Text } = Typography;
 type IntroTextEffect = 'none' | 'shiny' | 'glitch' | 'proximity';
 
 const baseNavMenuItems: NonNullable<MenuProps['items']> = [
-  { key: '/portfolio', icon: <DashboardOutlined />, label: 'Portfolio' },
   { key: '/trade', icon: <FundOutlined />, label: 'Trade' },
+  { key: '/portfolio', icon: <DashboardOutlined />, label: 'Portfolio' },
   {
     key: '/wallet',
     icon: <WalletOutlined />,
@@ -87,9 +87,13 @@ const statusColorMap: Record<string, string> = {
   REORGED: 'error',
   REQUESTED: 'processing',
   HOLD: 'gold',
-  MANUAL_REVIEW: 'gold',
+  RISK_REVIEW: 'gold',
+  APPROVED: 'cyan',
   SIGNING: 'processing',
-  BROADCASTING: 'processing',
+  BROADCASTED: 'processing',
+  REJECTED: 'error',
+  CANCELED: 'default',
+  FAILED: 'error',
   COMPLETED: 'success',
   REFUNDED: 'default',
   TRIGGER_WAIT: 'gold',
@@ -233,7 +237,7 @@ export function AppShell() {
   return (
     <Layout className="app-shell">
       <Header className="app-shell-header rg-glass-card">
-        <button type="button" className="brand-block" onClick={() => navigate('/portfolio')} aria-label="前往首页">
+        <button type="button" className="brand-block" onClick={() => navigate('/')} aria-label="前往首页">
           <BrandLogo size={34} />
           <div>
             <Title level={4} style={{ margin: 0 }}>
@@ -259,7 +263,7 @@ export function AppShell() {
           <Text type="secondary" className="app-shell-identity">
             {session ? `${formatAddress(session.user.evm_address)} / ${session.user.status}` : '未登录'}
           </Text>
-          <Button onClick={signOut}>退出</Button>
+          {session ? <Button onClick={signOut}>退出</Button> : <Button type="primary" onClick={() => navigate('/login')}>登录</Button>}
         </Space>
       </Header>
       <Layout>
@@ -297,6 +301,18 @@ export function EmptyStateCard({
       {action}
     </Card>
   );
+}
+
+export function LoginRequiredCard({
+  title = '请先登录',
+  description = '当前页面允许浏览，但涉及账户、资金或个人历史的数据与操作仍需先连接钱包登录。',
+  action,
+}: {
+  title?: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  return <EmptyStateCard title={title} description={description} action={action} />;
 }
 
 export function BrandLogo({ size = 24 }: { size?: number }) {

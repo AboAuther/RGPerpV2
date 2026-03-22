@@ -45,8 +45,30 @@ func EnabledChains(cfg StaticConfig) []EnabledChain {
 
 	appendIfConfigured(ChainIDEthereum, "ethereum", cfg.Chains.Ethereum)
 	appendIfConfigured(ChainIDArbitrum, "arbitrum", cfg.Chains.Arbitrum)
-	appendIfConfigured(EffectiveBaseChainID(cfg.App.Env), "local", cfg.Chains.Base)
+	appendIfConfigured(EffectiveBaseChainID(cfg.App.Env), baseChainKey(cfg.App.Env), cfg.Chains.Base)
 	return out
+}
+
+func baseChainKey(appEnv string) string {
+	if appEnv == "review" || appEnv == "dev" {
+		return "local"
+	}
+	return "base"
+}
+
+func ChainDisplayName(chain EnabledChain) string {
+	switch chain.Key {
+	case "local":
+		return "Local Anvil"
+	case "ethereum":
+		return "Ethereum"
+	case "arbitrum":
+		return "Arbitrum"
+	case "base":
+		return "Base"
+	default:
+		return chain.Key
+	}
 }
 
 func EnabledChainConfirmations(cfg StaticConfig) map[int64]int {

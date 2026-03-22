@@ -1,4 +1,4 @@
-import { getChainOption } from './env';
+import type { SystemChainItem } from './domain';
 
 function toNumber(input: string | number | null | undefined): number {
   if (input == null) {
@@ -63,8 +63,8 @@ export function formatDateTime(input: string | undefined): string {
   }).format(date);
 }
 
-export function formatChainName(chainId: number): string {
-  return getChainOption(chainId)?.name ?? `Chain ${chainId}`;
+export function formatChainName(chainId: number, chains?: SystemChainItem[]): string {
+  return chains?.find((chain) => chain.chain_id === chainId)?.name ?? `Chain ${chainId}`;
 }
 
 export function parseAmount(input: string | undefined): number {

@@ -34,8 +34,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("open mysql: %v", err)
 	}
-	if err := db.Migrate(gormDB); err != nil {
-		log.Fatalf("migrate db: %v", err)
+	if err := waitForSchema(context.Background(), gormDB, 60*time.Second); err != nil {
+		log.Fatalf("wait schema: %v", err)
 	}
 
 	bootstrap := db.NewBootstrapRepository(gormDB)
@@ -115,6 +115,40 @@ func main() {
 			if err := syncAllChains(ctx, runner, chainRules); err != nil {
 				log.Printf("sync failed: %v", err)
 			}
+		}
+	}
+}
+
+func waitForSchema(ctx context.Context, gormDB *gorm.DB, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	requiredTables := []string{
+		"users",
+		"accounts",
+		"ledger_tx",
+		"ledger_entries",
+		"deposit_chain_txs",
+		"withdraw_requests",
+		"chain_cursors",
+	}
+
+	for {
+		ready := true
+		for _, table := range requiredTables {
+			if !gormDB.Migrator().HasTable(table) {
+				ready = false
+				break
+			}
+		}
+		if ready {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return context.DeadlineExceeded
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
 		}
 	}
 }

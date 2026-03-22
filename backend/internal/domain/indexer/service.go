@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"time"
@@ -145,12 +146,12 @@ func (s *Service) HandleDepositObserved(ctx context.Context, event DepositObserv
 	}
 	if event.UserID != 0 && event.UserID != depositAddress.UserID {
 		return s.publishAnomaly(ctx, "router_user_mismatch", event.TraceID, map[string]any{
-			"chain_id":         event.ChainID,
-			"router_address":   routerAddress,
-			"event_user_id":    event.UserID,
-			"address_user_id":  depositAddress.UserID,
-			"tx_hash":          event.TxHash,
-			"log_index":        event.LogIndex,
+			"chain_id":        event.ChainID,
+			"router_address":  routerAddress,
+			"event_user_id":   event.UserID,
+			"address_user_id": depositAddress.UserID,
+			"tx_hash":         event.TxHash,
+			"log_index":       event.LogIndex,
 		})
 	}
 
@@ -322,7 +323,7 @@ func (s *Service) HandleWithdrawExecuted(ctx context.Context, event WithdrawExec
 		switch withdraw.Status {
 		case walletdomain.StatusCompleted, walletdomain.StatusRefunded:
 			return nil
-		case walletdomain.StatusApproved:
+		case walletdomain.StatusApproved, walletdomain.StatusSigning:
 			if err := s.wallet.MarkWithdrawBroadcasted(txCtx, walletdomain.BroadcastWithdrawInput{
 				WithdrawID:     withdraw.WithdrawID,
 				TxHash:         event.TxHash,
@@ -753,6 +754,9 @@ func (r *Runner) SyncChain(ctx context.Context, chainID int64) error {
 	if _, ok := r.chainRules[chainID]; !ok {
 		return fmt.Errorf("%w: unsupported chain %d", errorsx.ErrInvalidArgument, chainID)
 	}
+	if err := r.ensureChainIdentity(ctx, chainID); err != nil {
+		return err
+	}
 	latestBlock, err := r.source.LatestBlockNumber(ctx, chainID)
 	if err != nil {
 		return err
@@ -763,10 +767,16 @@ func (r *Runner) SyncChain(ctx context.Context, chainID int64) error {
 	if err := r.syncDeposits(ctx, chainID, latestBlock); err != nil {
 		return err
 	}
+	if err := r.syncDepositReorgs(ctx, chainID, latestBlock); err != nil {
+		return err
+	}
 	if err := r.syncWithdraws(ctx, chainID, latestBlock); err != nil {
 		return err
 	}
 	if err := r.syncWithdrawFailures(ctx, chainID); err != nil {
+		return err
+	}
+	if err := r.syncStuckSigningWithdrawals(ctx, chainID); err != nil {
 		return err
 	}
 	return r.service.ReconcileDeposits(ctx, chainID, latestBlock, int(r.batchSize))
@@ -872,7 +882,94 @@ func (r *Runner) syncWithdrawFailures(ctx context.Context, chainID int64) error 
 	return nil
 }
 
+func (r *Runner) syncDepositReorgs(ctx context.Context, chainID int64, latestBlock int64) error {
+	pending, err := r.service.deposits.ListPendingByChain(ctx, chainID, []string{
+		walletdomain.StatusDetected,
+		walletdomain.StatusConfirming,
+		walletdomain.StatusCreditReady,
+	}, int(r.batchSize))
+	if err != nil {
+		return err
+	}
+	for _, deposit := range pending {
+		if latestBlock < deposit.BlockNumber || strings.TrimSpace(deposit.TxHash) == "" {
+			continue
+		}
+		receipt, err := r.source.GetReceiptStatus(ctx, chainID, deposit.TxHash)
+		if err != nil {
+			return err
+		}
+		if receipt.Found {
+			continue
+		}
+		if err := r.service.handleDepositRemoved(ctx, DepositObserved{
+			ChainID:    chainID,
+			TxHash:     deposit.TxHash,
+			LogIndex:   deposit.LogIndex,
+			ObservedAt: r.clock.Now(),
+			TraceID:    fmt.Sprintf("receipt:deposit:%s", deposit.DepositID),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) syncStuckSigningWithdrawals(ctx context.Context, chainID int64) error {
+	pending, err := r.service.withdraws.ListByChainStatuses(ctx, chainID, []string{walletdomain.StatusSigning}, int(r.batchSize))
+	if err != nil {
+		return err
+	}
+	deadline := r.clock.Now().Add(-30 * time.Second)
+	for _, withdraw := range pending {
+		if withdraw.BroadcastTxHash != "" || withdraw.UpdatedAt.After(deadline) {
+			continue
+		}
+		if err := r.service.withdraws.UpdateStatus(ctx, withdraw.WithdrawID, []string{walletdomain.StatusSigning}, walletdomain.StatusRiskReview); err != nil {
+			if errors.Is(err, errorsx.ErrConflict) {
+				continue
+			}
+			return err
+		}
+		if err := r.service.publishAnomaly(ctx, "withdraw_stuck_signing", fmt.Sprintf("withdraw:stuck:%s", withdraw.WithdrawID), map[string]any{
+			"chain_id":    chainID,
+			"withdraw_id": withdraw.WithdrawID,
+			"status":      walletdomain.StatusRiskReview,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) ensureChainIdentity(ctx context.Context, chainID int64) error {
+	hash, err := r.source.BlockHash(ctx, chainID, 0)
+	if err != nil {
+		return err
+	}
+	cursor, err := r.cursors.Get(ctx, chainID, CursorTypeChainIDHash)
+	if err != nil {
+		if !errors.Is(err, errorsx.ErrNotFound) {
+			return err
+		}
+		return r.cursors.Upsert(ctx, chainID, CursorTypeChainIDHash, hash, r.clock.Now())
+	}
+	if cursor.CursorValue == hash {
+		return nil
+	}
+	log.Printf("resetting indexer cursors after chain identity changed: chain_id=%d old=%s new=%s", chainID, cursor.CursorValue, hash)
+	for _, cursorType := range []string{CursorTypeRouterScan, CursorTypeDepositScan, CursorTypeWithdrawScan} {
+		if err := r.cursors.Upsert(ctx, chainID, cursorType, "0", r.clock.Now()); err != nil {
+			return err
+		}
+	}
+	return r.cursors.Upsert(ctx, chainID, CursorTypeChainIDHash, hash, r.clock.Now())
+}
+
 func (r *Runner) scanRange(ctx context.Context, chainID int64, cursorType string, latestBlock int64) (int64, int64, error) {
+	if latestBlock <= 0 {
+		return 0, -1, nil
+	}
 	cursor, err := r.cursors.Get(ctx, chainID, cursorType)
 	start := int64(0)
 	if err != nil && !errors.Is(err, errorsx.ErrNotFound) {
@@ -883,6 +980,17 @@ func (r *Runner) scanRange(ctx context.Context, chainID int64, cursorType string
 			return 0, 0, scanErr
 		}
 	}
+	if start > latestBlock {
+		log.Printf("resetting indexer cursor after chain height regression: chain_id=%d cursor_type=%s saved=%d latest=%d", chainID, cursorType, start, latestBlock)
+		if err := r.cursors.Upsert(ctx, chainID, cursorType, "0", r.clock.Now()); err != nil {
+			return 0, 0, err
+		}
+		start = 0
+	}
+	overlap := r.reorgWindow(chainID)
+	if start > 0 && overlap > 0 {
+		start = maxInt64(0, start-overlap)
+	}
 	fromBlock := start + 1
 	if fromBlock > latestBlock {
 		return 0, -1, nil
@@ -892,6 +1000,28 @@ func (r *Runner) scanRange(ctx context.Context, chainID int64, cursorType string
 		toBlock = maxBlock
 	}
 	return fromBlock, toBlock, nil
+}
+
+func (r *Runner) reorgWindow(chainID int64) int64 {
+	rule, ok := r.chainRules[chainID]
+	if !ok {
+		return 0
+	}
+	window := int64(rule.RequiredConfirmations)
+	if window < 2 {
+		window = 2
+	}
+	if window > 64 {
+		window = 64
+	}
+	return window
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type anomalyError struct {

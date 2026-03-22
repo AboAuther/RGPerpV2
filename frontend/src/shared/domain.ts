@@ -14,6 +14,19 @@ export interface ChainOption {
   confirmations: number;
 }
 
+export interface SystemChainItem {
+  chain_id: number;
+  key: string;
+  name: string;
+  asset: string;
+  confirmations: number;
+  local_testnet: boolean;
+  local_tools_enabled: boolean;
+  deposit_enabled: boolean;
+  withdraw_enabled: boolean;
+  usdc_address?: string | null;
+}
+
 export interface User {
   id: number;
   evm_address: string;
@@ -90,10 +103,14 @@ export interface WithdrawItem {
   status:
     | 'REQUESTED'
     | 'HOLD'
-    | 'MANUAL_REVIEW'
+    | 'RISK_REVIEW'
+    | 'APPROVED'
     | 'SIGNING'
-    | 'BROADCASTING'
+    | 'BROADCASTED'
     | 'CONFIRMING'
+    | 'REJECTED'
+    | 'CANCELED'
+    | 'FAILED'
     | 'COMPLETED'
     | 'REFUNDED';
   tx_hash?: string | null;
@@ -165,6 +182,9 @@ export interface PositionItem {
 export interface ExplorerEvent {
   event_id: string;
   event_type: string;
+  asset?: string | null;
+  amount?: string | null;
+  created_at: string;
   ledger_tx_id?: string | null;
   chain_tx_hash?: string | null;
   order_id?: string | null;
@@ -172,6 +192,21 @@ export interface ExplorerEvent {
   position_id?: string | null;
   address?: string | null;
   payload: Record<string, unknown>;
+}
+
+export interface AdminWithdrawReviewItem {
+  withdraw_id: string;
+  user_id: number;
+  user_address: string;
+  chain_id: number;
+  asset: string;
+  amount: string;
+  fee_amount: string;
+  to_address: string;
+  status: string;
+  risk_flag?: string | null;
+  tx_hash?: string | null;
+  created_at: string;
 }
 
 export interface FundingItem {

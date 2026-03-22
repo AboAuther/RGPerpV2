@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 )
 
@@ -18,6 +19,12 @@ func (f *fakeWithdrawApprover) ApproveWithdraw(_ context.Context, _ walletdomain
 	return nil
 }
 
+type fakeAdminWithdrawalReader struct{}
+
+func (fakeAdminWithdrawalReader) ListAdminWithdrawals(_ context.Context, _ int) ([]readmodel.AdminWithdrawReviewItem, error) {
+	return nil, nil
+}
+
 func TestAdminHandler_ApproveWithdrawal(t *testing.T) {
 	approver := &fakeWithdrawApprover{}
 	engine := NewEngine(
@@ -28,7 +35,7 @@ func TestAdminHandler_ApproveWithdrawal(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		NewAdminHandler(approver, []string{"0xabc"}),
+		NewAdminHandler(approver, fakeAdminWithdrawalReader{}, []string{"0xabc"}),
 	)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/withdrawals/wd_1/approve", nil)

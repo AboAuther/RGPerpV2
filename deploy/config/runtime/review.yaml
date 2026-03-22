@@ -13,9 +13,10 @@ wallet:
   deposit_confirmations:
     local: 1
   withdraw_fee_usdc: "1"
+  withdraw_circuit_mode: "NORMAL"
   withdraw_manual_review_threshold: "10000"
   withdraw_daily_limit_per_user: "50000"
-  hot_wallet_min_balance: "10000"
+  hot_wallet_min_balance: "0"
   hot_wallet_max_balance: "200000"
 hedge:
   enabled: true

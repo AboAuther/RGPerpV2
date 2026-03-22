@@ -64,6 +64,7 @@ type Cursor struct {
 
 type EventSource interface {
 	LatestBlockNumber(ctx context.Context, chainID int64) (int64, error)
+	BlockHash(ctx context.Context, chainID int64, blockNumber int64) (string, error)
 	ListRouterCreatedEvents(ctx context.Context, chainID int64, fromBlock int64, toBlock int64) ([]RouterCreated, error)
 	ListDepositEvents(ctx context.Context, chainID int64, fromBlock int64, toBlock int64) ([]DepositObserved, error)
 	ListWithdrawEvents(ctx context.Context, chainID int64, fromBlock int64, toBlock int64) ([]WithdrawExecuted, error)

@@ -2,18 +2,26 @@ import { Card, Space, Spin, Table, Typography } from 'antd';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
-import { ErrorAlert, PageIntro, StatusTag } from '../../shared/components';
+import { ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
 import type { FillItem, FundingItem, OrderItem, TransferItem } from '../../shared/domain';
 import { formatDateTime, formatSignedUsd, formatUsd } from '../../shared/format';
+import { useAuth } from '../../shared/auth';
 
 const { Text } = Typography;
 
 function useHistoryLoader<T>(loader: () => Promise<T[]>) {
+  const { session } = useAuth();
   const [data, setData] = useState<T[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
+    if (!session) {
+      setData([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
     let active = true;
 
     async function load() {
@@ -39,13 +47,13 @@ function useHistoryLoader<T>(loader: () => Promise<T[]>) {
     return () => {
       active = false;
     };
-  }, [loader]);
+  }, [loader, session]);
 
-  return { data, loading, error };
+  return { data, loading, error, authenticated: !!session };
 }
 
 export function OrdersHistoryPage() {
-  const { data, loading, error } = useHistoryLoader<OrderItem>(api.orders.getOrders);
+  const { data, loading, error, authenticated } = useHistoryLoader<OrderItem>(api.orders.getOrders);
 
   return (
     <HistoryPageScaffold
@@ -54,6 +62,7 @@ export function OrdersHistoryPage() {
       description="订单状态必须区分 ACCEPTED、PARTIALLY_FILLED、TRIGGER_WAIT、SYSTEM_CANCELED 等语义。"
       loading={loading}
       error={error}
+      authenticated={authenticated}
     >
       <Table
         rowKey="order_id"
@@ -75,7 +84,7 @@ export function OrdersHistoryPage() {
 }
 
 export function FillsHistoryPage() {
-  const { data, loading, error } = useHistoryLoader<FillItem>(api.fills.getFills);
+  const { data, loading, error, authenticated } = useHistoryLoader<FillItem>(api.fills.getFills);
 
   return (
     <HistoryPageScaffold
@@ -84,6 +93,7 @@ export function FillsHistoryPage() {
       description="成交记录是订单执行结果，不应被前端乐观推断。"
       loading={loading}
       error={error}
+      authenticated={authenticated}
     >
       <Table
         rowKey="fill_id"
@@ -103,7 +113,7 @@ export function FillsHistoryPage() {
 }
 
 export function FundingHistoryPage() {
-  const { data, loading, error } = useHistoryLoader<FundingItem>(api.funding.getHistory);
+  const { data, loading, error, authenticated } = useHistoryLoader<FundingItem>(api.funding.getHistory);
 
   return (
     <HistoryPageScaffold
@@ -112,6 +122,7 @@ export function FundingHistoryPage() {
       description="资金费历史是只读状态，实际扣收与返还以后端结算批次和账本为准。"
       loading={loading}
       error={error}
+      authenticated={authenticated}
     >
       <Table
         rowKey="funding_id"
@@ -131,7 +142,7 @@ export function FundingHistoryPage() {
 }
 
 export function TransfersHistoryPage() {
-  const { data, loading, error } = useHistoryLoader<TransferItem>(api.transfers.getHistory);
+  const { data, loading, error, authenticated } = useHistoryLoader<TransferItem>(api.transfers.getHistory);
 
   return (
     <HistoryPageScaffold
@@ -140,6 +151,7 @@ export function TransfersHistoryPage() {
       description="内部划转页面预留展示，实际资金变更依然以统一账本分录为准。"
       loading={loading}
       error={error}
+      authenticated={authenticated}
     >
       <Table
         rowKey="transfer_id"
@@ -164,6 +176,7 @@ function HistoryPageScaffold({
   description,
   loading,
   error,
+  authenticated,
   children,
 }: {
   eyebrow: string;
@@ -171,6 +184,7 @@ function HistoryPageScaffold({
   description: string;
   loading: boolean;
   error: unknown;
+  authenticated: boolean;
   children: ReactNode;
 }) {
   return (
@@ -179,6 +193,7 @@ function HistoryPageScaffold({
         <PageIntro eyebrow={eyebrow} title={title} description={description} titleEffect="shiny" descriptionEffect="proximity" />
         {loading ? <Spin size="large" /> : null}
         <ErrorAlert error={error} />
+        {!authenticated ? <LoginRequiredCard title={`登录后查看 ${title}`} description="历史页允许未登录进入，但订单、成交、资金费和内部转账都属于账户私有数据，需登录后才能查询。" /> : null}
         <Card className="table-card">{children}</Card>
       </Space>
     </div>
