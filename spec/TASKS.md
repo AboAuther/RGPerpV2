@@ -132,6 +132,50 @@
 - [ ] 限价单不以劣于用户价格成交
 - [ ] `reduce-only` 不会扩大风险
 
+### 里程碑 3 默认决议
+
+- [ ] 首期仅支持 `Cross Margin`
+- [ ] 首期仓位模式支持 `Hedge Mode`
+- [ ] 首期交易标的先以 `Crypto` 为 P0 闭环，`Commodities / Equities` 先完成元数据与扩展位
+- [ ] `Mark Price` 由多源 `Index Price` 派生，不直接使用最新成交价
+- [ ] 止盈止损默认以 `Mark Price` 触发
+- [ ] CFD 限价单遵循“不劣于用户限价成交”语义
+- [ ] 开仓单必须先冻结保证金与预估手续费，平仓 `reduce-only` 不得扩大风险
+- [ ] 订单、成交、仓位、账本、快照、outbox 必须在单事务内提交
+
+### 里程碑 3 当前执行清单
+
+- [ ] 冻结交易阶段账本账户语义：`USER_WALLET / USER_ORDER_MARGIN / USER_POSITION_MARGIN / SYSTEM_POOL / TRADING_FEE_ACCOUNT / ROUNDING_DIFF_ACCOUNT`
+- [ ] 补齐交易对种子配置结构：分类、精度、最小名义价值、杠杆、IMR、MMR、交易时段、价格源映射、手续费、滑点
+- [ ] 定义首批 P0 `Crypto` symbols 清单，并与 Binance / Hyperliquid 建立稳定映射
+- [ ] 实现市场数据摄取 worker，接入多源 ticker / orderbook / funding 输入
+- [ ] 实现行情健康度判定：新鲜度、偏离、源数量、熔断、`reduce-only`
+- [ ] 实现 `Index Price` 计算与持久化/缓存
+- [ ] 实现 `Mark Price` 计算与持久化/缓存
+- [ ] 实现 `Execution Price` 计算，纳入聚合深度与平台滑点
+- [ ] 明确订单状态机：`NEW / OPEN / PARTIALLY_FILLED / FILLED / CANCELED / REJECTED / EXPIRED / TRIGGERED`
+- [ ] 实现订单表、成交表、触发单表、仓位表、价格快照表的 GORM model 与迁移
+- [ ] 实现下单前校验：账户状态、symbol 状态、交易时段、价格精度、最小数量、最小名义价值、杠杆、限仓、净敞口、行情新鲜度、幂等
+- [ ] 实现开仓单冻结：`USER_WALLET -> USER_ORDER_MARGIN`
+- [ ] 实现撤单/拒单解冻：`USER_ORDER_MARGIN -> USER_WALLET`
+- [ ] 实现市价单执行路径
+- [ ] 实现限价单挂单与可成交判定
+- [ ] 实现止盈止损触发池与触发单转执行单
+- [ ] 实现 `reduce-only` 约束，确保不会因部分成交或仓位翻转扩大风险
+- [ ] 实现成交主事务：订单状态更新、fill 写入、仓位更新、账本分录、余额快照、outbox 同事务提交
+- [ ] 实现开仓账务模板：订单冻结转仓位保证金，交易手续费进入 `TRADING_FEE_ACCOUNT`
+- [ ] 实现平仓账务模板：`USER_POSITION_MARGIN -> USER_WALLET`，盈亏进出 `SYSTEM_POOL`，手续费进入 `TRADING_FEE_ACCOUNT`
+- [ ] 实现仓位均价、名义价值、未实现/已实现 PnL 更新
+- [ ] 实现权益、可用余额、风险率读模型
+- [ ] 为未来资金费率与清算预留仓位快照与价格快照结构
+- [ ] 实现交易相关 Explorer 事件：下单、成交、撤单、仓位变更、手续费分录
+- [ ] 实现交易页真实 API 接入：下单、撤单、订单列表、成交列表、仓位列表、账户概览
+- [ ] 实现 WebSocket 推送：账户、订单、成交、仓位、symbol 状态
+- [ ] 实现交易页错误状态：行情异常、`reduce-only`、symbol 暂停、风险拒单
+- [ ] 为交易域补齐 mock-friendly UT：执行价格、下单校验、并发冻结、重复请求、部分成交、撤单解冻、reduce-only、防超花
+- [ ] 补齐集成测试：充值后开仓、部分平仓、全平、撤单、重复下单幂等、并发双下单
+- [ ] 补齐前端 E2E：登录、充值、下单、查看仓位、平仓、Explorer 查询交易事件
+
 ## 里程碑 4：风险、强平及资金费率
 
 ### 目标
