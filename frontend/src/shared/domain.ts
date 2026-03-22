@@ -152,6 +152,20 @@ export interface OrderItem {
   reject_reason?: string | null;
 }
 
+export interface OrderCreateRequest {
+  client_order_id: string;
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  position_effect: 'OPEN' | 'REDUCE' | 'CLOSE';
+  type: 'MARKET' | 'LIMIT';
+  qty: string;
+  price?: string | null;
+  trigger_price?: string | null;
+  reduce_only: boolean;
+  time_in_force?: 'GTC' | 'GTD';
+  max_slippage_bps?: number;
+}
+
 export interface FillItem {
   fill_id: string;
   order_id: string;

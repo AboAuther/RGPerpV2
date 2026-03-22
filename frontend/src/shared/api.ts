@@ -12,6 +12,7 @@ import type {
   LoginResponse,
   AdminWithdrawReviewItem,
   OrderItem,
+  OrderCreateRequest,
   PositionItem,
   RiskSnapshot,
   SymbolItem,
@@ -178,6 +179,25 @@ export const api = {
   orders: {
     getOrders(): Promise<OrderItem[]> {
       return requestJson<OrderItem[]>('/api/v1/orders');
+    },
+    createOrder(input: OrderCreateRequest): Promise<OrderItem> {
+      return requestJson<OrderItem>('/api/v1/orders', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': input.client_order_id,
+        },
+      });
+    },
+    cancelOrder(orderId: string): Promise<{ status: string }> {
+      return requestJson<{ status: string }>(`/api/v1/orders/${orderId}/cancel`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('cancel'),
+        },
+      });
     },
   },
 

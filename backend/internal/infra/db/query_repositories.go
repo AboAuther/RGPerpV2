@@ -177,11 +177,18 @@ func (r *AccountQueryRepository) GetSummary(ctx context.Context, userID uint64) 
 	if err != nil {
 		return readmodel.AccountSummary{}, err
 	}
+	var positions []PositionModel
+	if err := DB(ctx, r.db).Where("user_id = ? AND status = ?", userID, "OPEN").Find(&positions).Error; err != nil {
+		return readmodel.AccountSummary{}, err
+	}
 
 	equity := decimalx.MustFromString("0")
 	available := decimalx.MustFromString("0")
 	initialMargin := decimalx.MustFromString("0")
 	maintenanceMargin := decimalx.MustFromString("0")
+	unrealizedPnL := decimalx.MustFromString("0")
+	orderHold := decimalx.MustFromString("0")
+	positionMarginBalance := decimalx.MustFromString("0")
 
 	for _, item := range balances {
 		value := decimalx.MustFromString(item.Balance)
@@ -189,22 +196,41 @@ func (r *AccountQueryRepository) GetSummary(ctx context.Context, userID uint64) 
 		switch item.AccountCode {
 		case "USER_WALLET":
 			available = value
-		case "USER_ORDER_MARGIN", "USER_POSITION_MARGIN":
-			initialMargin = initialMargin.Add(value)
-			maintenanceMargin = maintenanceMargin.Add(value)
+		case "USER_ORDER_MARGIN":
+			orderHold = orderHold.Add(value)
+		case "USER_POSITION_MARGIN":
+			positionMarginBalance = positionMarginBalance.Add(value)
 		}
 	}
 
+	for _, position := range positions {
+		initialMargin = initialMargin.Add(decimalx.MustFromString(position.InitialMargin))
+		maintenanceMargin = maintenanceMargin.Add(decimalx.MustFromString(position.MaintenanceMargin))
+		unrealizedPnL = unrealizedPnL.Add(decimalx.MustFromString(position.UnrealizedPnL))
+	}
+
+	equity = equity.Add(unrealizedPnL)
+	initialMargin = initialMargin.Add(orderHold)
+
 	marginRatio := "0"
-	if !equity.IsZero() {
-		marginRatio = maintenanceMargin.String()
+	if maintenanceMargin.GreaterThan(decimalx.MustFromString("0")) {
+		marginRatio = equity.Div(maintenanceMargin).String()
+	}
+	if !positionMarginBalance.IsZero() && initialMargin.IsZero() {
+		initialMargin = positionMarginBalance
+	}
+	if maintenanceMargin.IsZero() && !positionMarginBalance.IsZero() {
+		maintenanceMargin = positionMarginBalance
+		if equity.GreaterThan(decimalx.MustFromString("0")) {
+			marginRatio = equity.Div(maintenanceMargin).String()
+		}
 	}
 	return readmodel.AccountSummary{
 		Equity:                 equity.String(),
 		AvailableBalance:       available.String(),
 		TotalInitialMargin:     initialMargin.String(),
 		TotalMaintenanceMargin: maintenanceMargin.String(),
-		UnrealizedPnL:          "0",
+		UnrealizedPnL:          unrealizedPnL.String(),
 		MarginRatio:            marginRatio,
 	}, nil
 }
@@ -219,7 +245,7 @@ func (r *AccountQueryRepository) GetRisk(ctx context.Context, userID uint64) (re
 		RiskState:      "SAFE",
 		MarkPriceStale: false,
 		CanOpenRisk:    true,
-		Notes:          []string{"Milestone 2 阶段风险视图仅反映资金子账户，不包含仓位风险重算。"},
+		Notes:          []string{"当前风险视图基于账户子账户余额与仓位快照，订单与仓位资金均遵循统一账本模型。"},
 	}
 	if summary.Equity == "0" {
 		risk.RiskState = "WATCH"
@@ -229,8 +255,7 @@ func (r *AccountQueryRepository) GetRisk(ctx context.Context, userID uint64) (re
 }
 
 func (r *AccountQueryRepository) ListFunding(ctx context.Context, userID uint64) ([]readmodel.FundingItem, error) {
-	reviewRepo := NewReviewReadRepository()
-	return reviewRepo.ListFunding(ctx, userID)
+	return NewTradingReadRepository(r.db).ListFunding(ctx, userID)
 }
 
 func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint64) ([]readmodel.TransferItem, error) {

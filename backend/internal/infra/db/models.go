@@ -187,6 +187,171 @@ type WithdrawRequestModel struct {
 
 func (WithdrawRequestModel) TableName() string { return "withdraw_requests" }
 
+type SymbolModel struct {
+	ID                 uint64    `gorm:"primaryKey;autoIncrement"`
+	Symbol             string    `gorm:"column:symbol;size:64;uniqueIndex;not null"`
+	AssetClass         string    `gorm:"column:asset_class;size:32;not null"`
+	BaseAsset          string    `gorm:"column:base_asset;size:32;not null"`
+	QuoteAsset         string    `gorm:"column:quote_asset;size:32;not null"`
+	ContractMultiplier string    `gorm:"column:contract_multiplier;type:decimal(38,18);not null"`
+	TickSize           string    `gorm:"column:tick_size;type:decimal(38,18);not null"`
+	StepSize           string    `gorm:"column:step_size;type:decimal(38,18);not null"`
+	MinNotional        string    `gorm:"column:min_notional;type:decimal(38,18);not null"`
+	Status             string    `gorm:"column:status;size:32;not null"`
+	SessionPolicy      string    `gorm:"column:session_policy;size:32;not null"`
+	CreatedAt          time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt          time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (SymbolModel) TableName() string { return "symbols" }
+
+type SymbolMappingModel struct {
+	ID           uint64 `gorm:"primaryKey;autoIncrement"`
+	SymbolID     uint64 `gorm:"column:symbol_id;not null;uniqueIndex:uk_symbol_source"`
+	SourceName   string `gorm:"column:source_name;size:64;not null;uniqueIndex:uk_symbol_source"`
+	SourceSymbol string `gorm:"column:source_symbol;size:64;not null"`
+	PriceScale   string `gorm:"column:price_scale;type:decimal(38,18);not null"`
+	QtyScale     string `gorm:"column:qty_scale;type:decimal(38,18);not null"`
+	Status       string `gorm:"column:status;size:32;not null"`
+}
+
+func (SymbolMappingModel) TableName() string { return "symbol_mappings" }
+
+type RiskTierModel struct {
+	ID                 uint64    `gorm:"primaryKey;autoIncrement"`
+	SymbolID           uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_symbol_tier"`
+	TierLevel          int       `gorm:"column:tier_level;not null;uniqueIndex:uk_symbol_tier"`
+	MaxNotional        string    `gorm:"column:max_notional;type:decimal(38,18);not null"`
+	MaxLeverage        string    `gorm:"column:max_leverage;type:decimal(38,18);not null"`
+	IMR                string    `gorm:"column:imr;type:decimal(38,18);not null"`
+	MMR                string    `gorm:"column:mmr;type:decimal(38,18);not null"`
+	LiquidationFeeRate string    `gorm:"column:liquidation_fee_rate;type:decimal(38,18);not null"`
+	CreatedAt          time.Time `gorm:"column:created_at;not null"`
+}
+
+func (RiskTierModel) TableName() string { return "risk_tiers" }
+
+type MarketPriceSnapshotModel struct {
+	ID         uint64    `gorm:"primaryKey;autoIncrement"`
+	SymbolID   uint64    `gorm:"column:symbol_id;not null;index:idx_market_symbol_created"`
+	SourceName string    `gorm:"column:source_name;size:64;not null;index:idx_market_source_ts"`
+	Bid        string    `gorm:"column:bid;type:decimal(38,18);not null"`
+	Ask        string    `gorm:"column:ask;type:decimal(38,18);not null"`
+	Last       string    `gorm:"column:last;type:decimal(38,18);not null"`
+	Mid        string    `gorm:"column:mid;type:decimal(38,18);not null"`
+	SourceTS   time.Time `gorm:"column:source_ts;not null;index:idx_market_source_ts"`
+	ReceivedTS time.Time `gorm:"column:received_ts;not null"`
+	CreatedAt  time.Time `gorm:"column:created_at;not null;index:idx_market_symbol_created"`
+}
+
+func (MarketPriceSnapshotModel) TableName() string { return "market_price_snapshots" }
+
+type MarkPriceSnapshotModel struct {
+	ID          uint64    `gorm:"primaryKey;autoIncrement"`
+	SymbolID    uint64    `gorm:"column:symbol_id;not null;index:idx_mark_symbol_created"`
+	IndexPrice  string    `gorm:"column:index_price;type:decimal(38,18);not null"`
+	MarkPrice   string    `gorm:"column:mark_price;type:decimal(38,18);not null"`
+	CalcVersion int64     `gorm:"column:calc_version;not null"`
+	CreatedAt   time.Time `gorm:"column:created_at;not null;index:idx_mark_symbol_created"`
+}
+
+func (MarkPriceSnapshotModel) TableName() string { return "mark_price_snapshots" }
+
+type OrderModel struct {
+	ID             uint64    `gorm:"primaryKey;autoIncrement"`
+	OrderID        string    `gorm:"column:order_id;size:64;uniqueIndex;not null"`
+	ClientOrderID  string    `gorm:"column:client_order_id;size:128;not null;uniqueIndex:uk_orders_user_client,priority:2"`
+	UserID         uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_orders_user_client,priority:1;index"`
+	SymbolID       uint64    `gorm:"column:symbol_id;not null;index"`
+	Side           string    `gorm:"column:side;size:16;not null"`
+	PositionEffect string    `gorm:"column:position_effect;size:16;not null"`
+	Type           string    `gorm:"column:type;size:32;not null"`
+	TimeInForce    string    `gorm:"column:time_in_force;size:16;not null"`
+	Price          *string   `gorm:"column:price;type:decimal(38,18)"`
+	TriggerPrice   *string   `gorm:"column:trigger_price;type:decimal(38,18)"`
+	Qty            string    `gorm:"column:qty;type:decimal(38,18);not null"`
+	FilledQty      string    `gorm:"column:filled_qty;type:decimal(38,18);not null"`
+	AvgFillPrice   string    `gorm:"column:avg_fill_price;type:decimal(38,18);not null"`
+	ReduceOnly     bool      `gorm:"column:reduce_only;not null"`
+	MaxSlippageBps int       `gorm:"column:max_slippage_bps;not null"`
+	Status         string    `gorm:"column:status;size:32;not null;index"`
+	RejectReason   *string   `gorm:"column:reject_reason;size:255"`
+	FrozenMargin   string    `gorm:"column:frozen_margin;type:decimal(38,18);not null"`
+	CreatedAt      time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt      time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (OrderModel) TableName() string { return "orders" }
+
+type FillModel struct {
+	ID                       uint64    `gorm:"primaryKey;autoIncrement"`
+	FillID                   string    `gorm:"column:fill_id;size:64;uniqueIndex;not null"`
+	OrderID                  string    `gorm:"column:order_id;size:64;not null;index"`
+	UserID                   uint64    `gorm:"column:user_id;not null;index"`
+	SymbolID                 uint64    `gorm:"column:symbol_id;not null"`
+	Side                     string    `gorm:"column:side;size:16;not null"`
+	Qty                      string    `gorm:"column:qty;type:decimal(38,18);not null"`
+	Price                    string    `gorm:"column:price;type:decimal(38,18);not null"`
+	FeeAmount                string    `gorm:"column:fee_amount;type:decimal(38,18);not null"`
+	ExecutionPriceSnapshotID *uint64   `gorm:"column:execution_price_snapshot_id"`
+	LedgerTxID               string    `gorm:"column:ledger_tx_id;size:64;not null"`
+	CreatedAt                time.Time `gorm:"column:created_at;not null"`
+}
+
+func (FillModel) TableName() string { return "fills" }
+
+type PositionModel struct {
+	ID                uint64    `gorm:"primaryKey;autoIncrement"`
+	PositionID        string    `gorm:"column:position_id;size:64;uniqueIndex;not null"`
+	UserID            uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_positions_user_symbol_side,priority:1"`
+	SymbolID          uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_positions_user_symbol_side,priority:2"`
+	Side              string    `gorm:"column:side;size:16;not null;uniqueIndex:uk_positions_user_symbol_side,priority:3"`
+	Qty               string    `gorm:"column:qty;type:decimal(38,18);not null"`
+	AvgEntryPrice     string    `gorm:"column:avg_entry_price;type:decimal(38,18);not null"`
+	MarkPrice         string    `gorm:"column:mark_price;type:decimal(38,18);not null"`
+	Notional          string    `gorm:"column:notional;type:decimal(38,18);not null"`
+	InitialMargin     string    `gorm:"column:initial_margin;type:decimal(38,18);not null"`
+	MaintenanceMargin string    `gorm:"column:maintenance_margin;type:decimal(38,18);not null"`
+	RealizedPnL       string    `gorm:"column:realized_pnl;type:decimal(38,18);not null"`
+	UnrealizedPnL     string    `gorm:"column:unrealized_pnl;type:decimal(38,18);not null"`
+	FundingAccrual    string    `gorm:"column:funding_accrual;type:decimal(38,18);not null"`
+	LiquidationPrice  string    `gorm:"column:liquidation_price;type:decimal(38,18);not null"`
+	BankruptcyPrice   string    `gorm:"column:bankruptcy_price;type:decimal(38,18);not null"`
+	Status            string    `gorm:"column:status;size:32;not null"`
+	UpdatedAt         time.Time `gorm:"column:updated_at;not null"`
+	CreatedAt         time.Time `gorm:"column:created_at;not null"`
+}
+
+func (PositionModel) TableName() string { return "positions" }
+
+type FundingBatchModel struct {
+	ID              uint64    `gorm:"primaryKey;autoIncrement"`
+	FundingBatchID  string    `gorm:"column:funding_batch_id;size:64;uniqueIndex;not null"`
+	SymbolID        uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_funding_symbol_window,priority:1"`
+	TimeWindowStart time.Time `gorm:"column:time_window_start;not null;uniqueIndex:uk_funding_symbol_window,priority:2"`
+	TimeWindowEnd   time.Time `gorm:"column:time_window_end;not null;uniqueIndex:uk_funding_symbol_window,priority:3"`
+	NormalizedRate  string    `gorm:"column:normalized_rate;type:decimal(38,18);not null"`
+	SettlementPrice string    `gorm:"column:settlement_price;type:decimal(38,18);not null"`
+	Status          string    `gorm:"column:status;size:32;not null"`
+	CreatedAt       time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt       time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (FundingBatchModel) TableName() string { return "funding_batches" }
+
+type FundingBatchItemModel struct {
+	ID             uint64    `gorm:"primaryKey;autoIncrement"`
+	FundingBatchID string    `gorm:"column:funding_batch_id;size:64;not null;uniqueIndex:uk_batch_position,priority:1"`
+	PositionID     string    `gorm:"column:position_id;size:64;not null;uniqueIndex:uk_batch_position,priority:2"`
+	UserID         uint64    `gorm:"column:user_id;not null;index"`
+	FundingFee     string    `gorm:"column:funding_fee;type:decimal(38,18);not null"`
+	LedgerTxID     *string   `gorm:"column:ledger_tx_id;size:64"`
+	Status         string    `gorm:"column:status;size:32;not null"`
+	CreatedAt      time.Time `gorm:"column:created_at;not null"`
+}
+
+func (FundingBatchItemModel) TableName() string { return "funding_batch_items" }
+
 func Migrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&UserModel{},
@@ -202,5 +367,15 @@ func Migrate(db *gorm.DB) error {
 		&DepositAddressModel{},
 		&DepositChainTxModel{},
 		&WithdrawRequestModel{},
+		&SymbolModel{},
+		&SymbolMappingModel{},
+		&RiskTierModel{},
+		&MarketPriceSnapshotModel{},
+		&MarkPriceSnapshotModel{},
+		&OrderModel{},
+		&FillModel{},
+		&PositionModel{},
+		&FundingBatchModel{},
+		&FundingBatchItemModel{},
 	)
 }

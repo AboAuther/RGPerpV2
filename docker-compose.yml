@@ -107,5 +107,35 @@ services:
     volumes:
       - ./.local:/shared
 
+  market-data:
+    build:
+      context: .
+      dockerfile: deploy/docker/backend.Dockerfile
+    environment:
+      SERVICE_BIN: market-data
+      CHAIN_ENV_FILE: /shared/contracts.env
+      APP_ENV: dev
+      APP_PORT: 8082
+      LOG_LEVEL: debug
+      TZ: UTC
+      RUNTIME_CONFIG_PATH: /workspace/deploy/config/runtime/dev.yaml
+      MYSQL_DSN: root:root@tcp(mysql:3306)/rgperp?charset=utf8mb4&parseTime=True&loc=UTC
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      AUTH_DOMAIN: localhost
+      JWT_ACCESS_SECRET: local-access-secret
+      JWT_REFRESH_SECRET: local-refresh-secret
+    depends_on:
+      mysql:
+        condition: service_healthy
+      mysql-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./.local:/shared
+
 volumes:
   mysql_data:

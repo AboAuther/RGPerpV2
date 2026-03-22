@@ -31,7 +31,11 @@ const (
 
 type AccountResolver interface {
 	UserWalletAccountID(ctx context.Context, userID uint64, asset string) (uint64, error)
+	UserOrderMarginAccountID(ctx context.Context, userID uint64, asset string) (uint64, error)
+	UserPositionMarginAccountID(ctx context.Context, userID uint64, asset string) (uint64, error)
 	UserWithdrawHoldAccountID(ctx context.Context, userID uint64, asset string) (uint64, error)
+	SystemPoolAccountID(ctx context.Context, asset string) (uint64, error)
+	TradingFeeAccountID(ctx context.Context, asset string) (uint64, error)
 	DepositPendingAccountID(ctx context.Context, asset string) (uint64, error)
 	WithdrawInTransitAccountID(ctx context.Context, asset string) (uint64, error)
 	WithdrawFeeAccountID(ctx context.Context, asset string) (uint64, error)

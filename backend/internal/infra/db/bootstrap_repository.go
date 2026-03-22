@@ -4,7 +4,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/xiaobao/rgperp/backend/internal/config"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
+	marketdomain "github.com/xiaobao/rgperp/backend/internal/domain/market"
 	"gorm.io/gorm"
 )
 
@@ -19,9 +21,15 @@ func NewBootstrapRepository(db *gorm.DB) *BootstrapRepository {
 func (r *BootstrapRepository) EnsureSystemBootstrap(ctx context.Context) error {
 	now := time.Now().UTC()
 	systemAccounts := []AccountModel{
+		{AccountCode: "SYSTEM_POOL", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "TRADING_FEE_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "DEPOSIT_PENDING_CONFIRM", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "WITHDRAW_IN_TRANSIT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "WITHDRAW_FEE_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "FUNDING_POOL", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "PENALTY_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "INSURANCE_FUND", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "ROUNDING_DIFF_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "CUSTODY_HOT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "TEST_FAUCET_POOL", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 	}
@@ -33,6 +41,43 @@ func (r *BootstrapRepository) EnsureSystemBootstrap(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (r *BootstrapRepository) EnsureMarketBootstrap(ctx context.Context) error {
+	catalog := NewMarketCatalogRepository(r.db)
+	seeds := config.DefaultMarketSymbolSeeds()
+	symbols := make([]marketdomain.Symbol, 0, len(seeds))
+	for _, seed := range seeds {
+		symbols = append(symbols, marketdomain.Symbol{
+			Symbol:             seed.Symbol,
+			AssetClass:         seed.AssetClass,
+			BaseAsset:          seed.BaseAsset,
+			QuoteAsset:         seed.QuoteAsset,
+			ContractMultiplier: seed.ContractMultiplier,
+			TickSize:           seed.TickSize,
+			StepSize:           seed.StepSize,
+			MinNotional:        seed.MinNotional,
+			Status:             seed.Status,
+			SessionPolicy:      seed.SessionPolicy,
+			Mappings: []marketdomain.SymbolMapping{
+				{
+					SourceName:   "binance",
+					SourceSymbol: seed.BinanceSymbol,
+					PriceScale:   "1",
+					QtyScale:     "1",
+					Status:       "ACTIVE",
+				},
+				{
+					SourceName:   "hyperliquid",
+					SourceSymbol: seed.HyperliquidSymbol,
+					PriceScale:   "1",
+					QtyScale:     "1",
+					Status:       "ACTIVE",
+				},
+			},
+		})
+	}
+	return catalog.UpsertSymbols(ctx, symbols)
 }
 
 func (r *BootstrapRepository) EnsureUserBootstrap(ctx context.Context, user authdomain.User) error {

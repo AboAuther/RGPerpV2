@@ -165,8 +165,20 @@ func (stubAccounts) UserWalletAccountID(_ context.Context, userID uint64, _ stri
 func (stubAccounts) UserWithdrawHoldAccountID(_ context.Context, userID uint64, _ string) (uint64, error) {
 	return userID*10 + 2, nil
 }
+func (stubAccounts) UserOrderMarginAccountID(_ context.Context, userID uint64, _ string) (uint64, error) {
+	return userID*10 + 3, nil
+}
+func (stubAccounts) UserPositionMarginAccountID(_ context.Context, userID uint64, _ string) (uint64, error) {
+	return userID*10 + 4, nil
+}
 func (stubAccounts) DepositPendingAccountID(_ context.Context, _ string) (uint64, error) {
 	return 9001, nil
+}
+func (stubAccounts) SystemPoolAccountID(_ context.Context, _ string) (uint64, error) {
+	return 9000, nil
+}
+func (stubAccounts) TradingFeeAccountID(_ context.Context, _ string) (uint64, error) {
+	return 9006, nil
 }
 func (stubAccounts) WithdrawInTransitAccountID(_ context.Context, _ string) (uint64, error) {
 	return 9002, nil

@@ -10,12 +10,14 @@ import (
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
+	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	withdrawexecdomain "github.com/xiaobao/rgperp/backend/internal/domain/withdrawexec"
 	authinfra "github.com/xiaobao/rgperp/backend/internal/infra/auth"
 	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
 	"github.com/xiaobao/rgperp/backend/internal/infra/db"
+	marketcache "github.com/xiaobao/rgperp/backend/internal/infra/marketcache"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/clockx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
@@ -61,6 +63,13 @@ func main() {
 	if err := bootstrap.EnsureSystemBootstrap(context.Background()); err != nil {
 		log.Fatalf("ensure system bootstrap: %v", err)
 	}
+	if err := bootstrap.EnsureMarketBootstrap(context.Background()); err != nil {
+		log.Fatalf("ensure market bootstrap: %v", err)
+	}
+	latestMarketCache := marketcache.New(cfg.Redis.Addr, cfg.Redis.Password, cfg.Redis.DB)
+	if latestMarketCache != nil {
+		defer latestMarketCache.Close()
+	}
 
 	txManager := db.NewTxManager(gormDB)
 	userRepo := db.NewUserRepository(gormDB)
@@ -87,6 +96,26 @@ func main() {
 		db.NewLedgerRepository(gormDB),
 		decimalx.LedgerDecimalFactory{},
 	)
+	orderService, err := orderdomain.NewService(
+		orderdomain.ServiceConfig{
+			Asset:                 "USDC",
+			TakerFeeRate:          runtimeCfg.Market.TakerFeeRate,
+			MakerFeeRate:          runtimeCfg.Market.MakerFeeRate,
+			DefaultMaxSlippageBps: runtimeCfg.Market.DefaultMaxSlippageBps,
+			MaxMarketDataAge:      time.Duration(runtimeCfg.Market.MaxSourceAgeSec) * time.Second,
+		},
+		clockx.RealClock{},
+		&idgen.TimeBasedGenerator{},
+		txManager,
+		db.NewAccountResolver(gormDB),
+		db.NewBalanceRepository(gormDB),
+		ledgerService,
+		db.NewOrderExecutionRepository(gormDB, latestMarketCache),
+		db.NewOrderExecutionRepository(gormDB, latestMarketCache),
+	)
+	if err != nil {
+		log.Fatalf("create order service: %v", err)
+	}
 	confirmations := config.EnabledChainConfirmations(cfg)
 	depositAddressRepo := db.NewDepositAddressRepository(gormDB, confirmations)
 	walletQueryRepo := db.NewWalletQueryRepository(gormDB)
@@ -145,8 +174,9 @@ func main() {
 
 	verifier := &accessVerifierAdapter{verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret)}
 	authHandler := httptransport.NewAuthHandler(authService, cfg.Admin.Wallets)
-	reviewReadRepo := db.NewReviewReadRepository()
-	marketHandler := httptransport.NewMarketHandler(reviewReadRepo)
+	marketReadRepo := db.NewMarketReadRepository(gormDB, latestMarketCache, time.Duration(runtimeCfg.Market.MaxSourceAgeSec)*time.Second)
+	tradingReadRepo := db.NewTradingReadRepository(gormDB)
+	marketHandler := httptransport.NewMarketHandler(marketReadRepo)
 	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepository(gormDB), walletService, userRepo)
 	walletHandler := httptransport.NewWalletHandler(
 		db.NewWalletReadService(depositAddressRepo, walletQueryRepo, allocator),
@@ -155,7 +185,7 @@ func main() {
 	)
 	systemChains := buildSystemChains(enabledChains, cfg)
 	systemHandler := httptransport.NewSystemHandler(httptransport.NewStaticSystemReader(systemChains))
-	tradingHandler := httptransport.NewTradingHandler(reviewReadRepo)
+	tradingHandler := httptransport.NewTradingHandler(tradingReadRepo, orderService)
 	explorerHandler := httptransport.NewExplorerHandler(db.NewExplorerQueryRepository(gormDB), cfg.Admin.Wallets)
 	adminHandler := httptransport.NewAdminHandler(walletService, walletQueryRepo, cfg.Admin.Wallets)
 

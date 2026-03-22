@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/gorm"
@@ -363,11 +364,67 @@ type AccountResolver struct{ db *gorm.DB }
 
 func NewAccountResolver(db *gorm.DB) *AccountResolver { return &AccountResolver{db: db} }
 
+func (r *AccountResolver) ResolveTradeAccounts(ctx context.Context, userID uint64, asset string) (orderdomain.TradeAccounts, error) {
+	requiredUserCodes := map[string]func(*orderdomain.TradeAccounts, uint64){
+		"USER_WALLET":          func(a *orderdomain.TradeAccounts, id uint64) { a.UserWalletAccountID = id },
+		"USER_ORDER_MARGIN":    func(a *orderdomain.TradeAccounts, id uint64) { a.UserOrderMarginAccountID = id },
+		"USER_POSITION_MARGIN": func(a *orderdomain.TradeAccounts, id uint64) { a.UserPositionMarginAccountID = id },
+	}
+	requiredSystemCodes := map[string]func(*orderdomain.TradeAccounts, uint64){
+		"SYSTEM_POOL":         func(a *orderdomain.TradeAccounts, id uint64) { a.SystemPoolAccountID = id },
+		"TRADING_FEE_ACCOUNT": func(a *orderdomain.TradeAccounts, id uint64) { a.TradingFeeAccountID = id },
+	}
+
+	var models []AccountModel
+	if err := DB(ctx, r.db).
+		Where("asset = ? AND ((user_id = ? AND account_code IN ?) OR (user_id IS NULL AND account_code IN ?))",
+			asset,
+			userID,
+			keys(requiredUserCodes),
+			keys(requiredSystemCodes),
+		).
+		Find(&models).Error; err != nil {
+		return orderdomain.TradeAccounts{}, err
+	}
+
+	var accounts orderdomain.TradeAccounts
+	for _, model := range models {
+		if model.UserID != nil && *model.UserID == userID {
+			if assign, ok := requiredUserCodes[model.AccountCode]; ok {
+				assign(&accounts, model.ID)
+			}
+			continue
+		}
+		if model.UserID == nil {
+			if assign, ok := requiredSystemCodes[model.AccountCode]; ok {
+				assign(&accounts, model.ID)
+			}
+		}
+	}
+
+	if accounts.UserWalletAccountID == 0 || accounts.UserOrderMarginAccountID == 0 || accounts.UserPositionMarginAccountID == 0 || accounts.SystemPoolAccountID == 0 || accounts.TradingFeeAccountID == 0 {
+		return orderdomain.TradeAccounts{}, errorsx.ErrNotFound
+	}
+	return accounts, nil
+}
+
 func (r *AccountResolver) UserWalletAccountID(ctx context.Context, userID uint64, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, &userID, "USER_WALLET", asset)
 }
+func (r *AccountResolver) UserOrderMarginAccountID(ctx context.Context, userID uint64, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, &userID, "USER_ORDER_MARGIN", asset)
+}
+func (r *AccountResolver) UserPositionMarginAccountID(ctx context.Context, userID uint64, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, &userID, "USER_POSITION_MARGIN", asset)
+}
 func (r *AccountResolver) UserWithdrawHoldAccountID(ctx context.Context, userID uint64, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, &userID, "USER_WITHDRAW_HOLD", asset)
+}
+func (r *AccountResolver) SystemPoolAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "SYSTEM_POOL", asset)
+}
+func (r *AccountResolver) TradingFeeAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "TRADING_FEE_ACCOUNT", asset)
 }
 func (r *AccountResolver) DepositPendingAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "DEPOSIT_PENDING_CONFIRM", asset)
@@ -400,6 +457,14 @@ func (r *AccountResolver) lookupAccountID(ctx context.Context, userID *uint64, a
 		return 0, err
 	}
 	return model.ID, nil
+}
+
+func keys[T any](items map[string]T) []string {
+	out := make([]string, 0, len(items))
+	for key := range items {
+		out = append(out, key)
+	}
+	return out
 }
 
 func nullableString(value string) *string {

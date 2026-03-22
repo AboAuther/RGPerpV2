@@ -108,6 +108,8 @@ type TickerItem struct {
 	MarkPrice  string `json:"mark_price"`
 	BestBid    string `json:"best_bid"`
 	BestAsk    string `json:"best_ask"`
+	Status     string `json:"status"`
+	Stale      bool   `json:"stale"`
 	TS         string `json:"ts"`
 }
 

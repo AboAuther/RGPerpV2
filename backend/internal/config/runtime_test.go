@@ -19,6 +19,21 @@ auth:
   access_ttl_sec: 3600
   refresh_ttl_sec: 2592000
   max_failed_login_per_ip_per_hour: 60
+market:
+  poll_interval_ms: 2000
+  max_source_age_sec: 10
+  max_deviation_bps: "50"
+  min_healthy_sources: 1
+  mark_price_clamp_bps: "20"
+  taker_fee_rate: "0.0006"
+  maker_fee_rate: "0.0002"
+  default_max_slippage_bps: 100
+  source_weights:
+    binance: "0.5"
+    hyperliquid: "0.5"
+  source_health_enabled:
+    binance: true
+    hyperliquid: true
 wallet:
   deposit_confirmations:
     ethereum: 12
@@ -51,6 +66,9 @@ review:
 	}
 	if cfg.Auth.NonceTTLSec != 300 {
 		t.Fatalf("unexpected nonce ttl: %d", cfg.Auth.NonceTTLSec)
+	}
+	if cfg.Market.PollIntervalMS != 2000 {
+		t.Fatalf("unexpected market poll interval: %d", cfg.Market.PollIntervalMS)
 	}
 	if !cfg.Review.Faucet.Enabled {
 		t.Fatal("expected faucet enabled")

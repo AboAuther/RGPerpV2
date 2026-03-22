@@ -40,8 +40,24 @@ func (d Decimal) Sub(other Decimal) Decimal {
 	return Decimal{value: d.value.Sub(other.value)}
 }
 
+func (d Decimal) Mul(other Decimal) Decimal {
+	return Decimal{value: d.value.Mul(other.value)}
+}
+
+func (d Decimal) Div(other Decimal) Decimal {
+	return Decimal{value: d.value.Div(other.value)}
+}
+
+func (d Decimal) Mod(other Decimal) Decimal {
+	return Decimal{value: d.value.Mod(other.value)}
+}
+
 func (d Decimal) Neg() Decimal {
 	return Decimal{value: d.value.Neg()}
+}
+
+func (d Decimal) Abs() Decimal {
+	return Decimal{value: d.value.Abs()}
 }
 
 func (d Decimal) IsZero() bool {
@@ -58,6 +74,14 @@ func (d Decimal) GreaterThan(other Decimal) bool {
 
 func (d Decimal) GreaterThanOrEqual(other Decimal) bool {
 	return d.value.GreaterThanOrEqual(other.value)
+}
+
+func (d Decimal) LessThanOrEqual(other Decimal) bool {
+	return d.value.LessThanOrEqual(other.value)
+}
+
+func (d Decimal) Equal(other Decimal) bool {
+	return d.value.Equal(other.value)
 }
 
 type LedgerDecimalFactory struct{}

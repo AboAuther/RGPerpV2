@@ -9,7 +9,8 @@
     "dev:local": "sh ../deploy/scripts/start-frontend-local.sh",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:e2e:withdraw": "playwright test e2e/withdrawal.spec.ts"
+    "test:e2e:withdraw": "playwright test e2e/withdrawal.spec.ts",
+    "test:e2e:trade": "playwright test e2e/trade.spec.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
@@ -19,6 +20,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.1",
+    "react-tradingview-embed": "^3.0.6",
     "simple-icons": "^16.11.0",
     "three": "^0.183.2"
   },

@@ -12,6 +12,7 @@ type RuntimeConfigSnapshot struct {
 	Version int                 `yaml:"version"`
 	Global  GlobalRuntimeConfig `yaml:"global"`
 	Auth    AuthRuntimeConfig   `yaml:"auth"`
+	Market  MarketRuntimeConfig `yaml:"market"`
 	Wallet  WalletRuntimeConfig `yaml:"wallet"`
 	Hedge   HedgeRuntimeConfig  `yaml:"hedge"`
 	Review  ReviewRuntimeConfig `yaml:"review"`
@@ -29,6 +30,19 @@ type AuthRuntimeConfig struct {
 	AccessTTLSec               int `yaml:"access_ttl_sec"`
 	RefreshTTLSec              int `yaml:"refresh_ttl_sec"`
 	MaxFailedLoginPerIPPerHour int `yaml:"max_failed_login_per_ip_per_hour"`
+}
+
+type MarketRuntimeConfig struct {
+	PollIntervalMS        int               `yaml:"poll_interval_ms"`
+	MaxSourceAgeSec       int               `yaml:"max_source_age_sec"`
+	MaxDeviationBps       string            `yaml:"max_deviation_bps"`
+	MinHealthySources     int               `yaml:"min_healthy_sources"`
+	MarkPriceClampBps     string            `yaml:"mark_price_clamp_bps"`
+	TakerFeeRate          string            `yaml:"taker_fee_rate"`
+	MakerFeeRate          string            `yaml:"maker_fee_rate"`
+	DefaultMaxSlippageBps int               `yaml:"default_max_slippage_bps"`
+	SourceWeights         map[string]string `yaml:"source_weights"`
+	SourceHealthEnabled   map[string]bool   `yaml:"source_health_enabled"`
 }
 
 type WalletRuntimeConfig struct {
@@ -97,6 +111,33 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	}
 	if c.Auth.MaxFailedLoginPerIPPerHour <= 0 {
 		errs = append(errs, fmt.Errorf("%w: auth.max_failed_login_per_ip_per_hour must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.PollIntervalMS <= 0 {
+		errs = append(errs, fmt.Errorf("%w: market.poll_interval_ms must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.MaxSourceAgeSec <= 0 {
+		errs = append(errs, fmt.Errorf("%w: market.max_source_age_sec must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.MaxDeviationBps == "" {
+		errs = append(errs, fmt.Errorf("%w: market.max_deviation_bps is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.MinHealthySources <= 0 {
+		errs = append(errs, fmt.Errorf("%w: market.min_healthy_sources must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.MarkPriceClampBps == "" {
+		errs = append(errs, fmt.Errorf("%w: market.mark_price_clamp_bps is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.TakerFeeRate == "" {
+		errs = append(errs, fmt.Errorf("%w: market.taker_fee_rate is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.MakerFeeRate == "" {
+		errs = append(errs, fmt.Errorf("%w: market.maker_fee_rate is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Market.DefaultMaxSlippageBps <= 0 {
+		errs = append(errs, fmt.Errorf("%w: market.default_max_slippage_bps must be positive", errorsx.ErrInvalidArgument))
+	}
+	if len(c.Market.SourceWeights) == 0 {
+		errs = append(errs, fmt.Errorf("%w: market.source_weights is required", errorsx.ErrInvalidArgument))
 	}
 	if len(c.Wallet.DepositConfirmations) == 0 {
 		errs = append(errs, fmt.Errorf("%w: wallet.deposit_confirmations is required", errorsx.ErrInvalidArgument))

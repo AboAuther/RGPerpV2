@@ -13,14 +13,20 @@ COPY deploy /workspace/deploy
 WORKDIR /workspace/backend
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/api-server ./cmd/api-server
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/indexer ./cmd/indexer
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/market-data ./cmd/market-data
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/migrator ./cmd/migrator
 
 FROM debian:bookworm-slim
 
 WORKDIR /workspace
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /out/api-server /usr/local/bin/api-server
 COPY --from=builder /out/indexer /usr/local/bin/indexer
+COPY --from=builder /out/market-data /usr/local/bin/market-data
 COPY --from=builder /out/migrator /usr/local/bin/migrator
 COPY deploy /workspace/deploy
 
