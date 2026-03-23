@@ -65,7 +65,7 @@ export function ExplorerPage() {
         <PageIntro
           eyebrow="Explorer"
           title="Event Explorer"
-          description="Explorer 是读模型，不反向修改账本或订单源表。当前支持按事件 ID、链上 hash、ledger_tx_id 和地址检索。"
+          description="查询充值、提现、订单、成交和仓位相关事件。"
           titleEffect="shiny"
           descriptionEffect="proximity"
           extra={
@@ -83,7 +83,7 @@ export function ExplorerPage() {
             placeholder="搜索 event_type / asset / ledger_tx_id / chain_tx_hash / address"
           />
           <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Explorer 事件流只展示后端返回的读模型结果；查询失败会直接报错，不会自动伪造审计事件。
+            支持按事件类型、资产、交易哈希、订单号或地址搜索。
           </Paragraph>
         </Space>
       </Card>

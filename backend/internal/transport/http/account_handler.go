@@ -125,13 +125,18 @@ func (h *AccountHandler) transfer(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
+	userID := userIDFromContext(c)
+	idempotencyKey := c.GetHeader("Idempotency-Key")
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("transfer:%d:%s", userID, traceIDFromContext(c))
+	}
 	if err := h.transfers.Transfer(c.Request.Context(), walletdomain.TransferRequest{
-		TransferID: "trf_" + traceIDFromContext(c),
-		FromUserID: userIDFromContext(c),
-		ToUserID:   toUserID,
-		Asset:      req.Asset,
-		Amount:     req.Amount,
-		TraceID:    traceIDFromContext(c),
+		FromUserID:     userID,
+		ToUserID:       toUserID,
+		Asset:          req.Asset,
+		Amount:         req.Amount,
+		IdempotencyKey: idempotencyKey,
+		TraceID:        traceIDFromContext(c),
 	}); err != nil {
 		writeError(c, err)
 		return

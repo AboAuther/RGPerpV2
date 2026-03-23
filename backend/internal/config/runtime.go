@@ -9,13 +9,15 @@ import (
 )
 
 type RuntimeConfigSnapshot struct {
-	Version int                 `yaml:"version"`
-	Global  GlobalRuntimeConfig `yaml:"global"`
-	Auth    AuthRuntimeConfig   `yaml:"auth"`
-	Market  MarketRuntimeConfig `yaml:"market"`
-	Wallet  WalletRuntimeConfig `yaml:"wallet"`
-	Hedge   HedgeRuntimeConfig  `yaml:"hedge"`
-	Review  ReviewRuntimeConfig `yaml:"review"`
+	Version int                  `yaml:"version"`
+	Global  GlobalRuntimeConfig  `yaml:"global"`
+	Auth    AuthRuntimeConfig    `yaml:"auth"`
+	Market  MarketRuntimeConfig  `yaml:"market"`
+	Wallet  WalletRuntimeConfig  `yaml:"wallet"`
+	Risk    RiskRuntimeConfig    `yaml:"risk"`
+	Funding FundingRuntimeConfig `yaml:"funding"`
+	Hedge   HedgeRuntimeConfig   `yaml:"hedge"`
+	Review  ReviewRuntimeConfig  `yaml:"review"`
 }
 
 type GlobalRuntimeConfig struct {
@@ -34,6 +36,7 @@ type AuthRuntimeConfig struct {
 
 type MarketRuntimeConfig struct {
 	PollIntervalMS        int               `yaml:"poll_interval_ms"`
+	RestingExecutionBatch int               `yaml:"resting_execution_batch"`
 	MaxSourceAgeSec       int               `yaml:"max_source_age_sec"`
 	MaxDeviationBps       string            `yaml:"max_deviation_bps"`
 	MinHealthySources     int               `yaml:"min_healthy_sources"`
@@ -53,6 +56,25 @@ type WalletRuntimeConfig struct {
 	WithdrawDailyLimitPerUser     string         `yaml:"withdraw_daily_limit_per_user"`
 	HotWalletMinBalance           string         `yaml:"hot_wallet_min_balance"`
 	HotWalletMaxBalance           string         `yaml:"hot_wallet_max_balance"`
+}
+
+type RiskRuntimeConfig struct {
+	GlobalBufferRatio             string `yaml:"global_buffer_ratio"`
+	MarkPriceStaleSec             int    `yaml:"mark_price_stale_sec"`
+	ForceReduceOnlyOnStalePrice   bool   `yaml:"force_reduce_only_on_stale_price"`
+	LiquidationPenaltyRate        string `yaml:"liquidation_penalty_rate"`
+	LiquidationExtraSlippageBps   int    `yaml:"liquidation_extra_slippage_bps"`
+	MaxOpenOrdersPerUserPerSymbol int    `yaml:"max_open_orders_per_user_per_symbol"`
+	NetExposureHardLimit          string `yaml:"net_exposure_hard_limit"`
+	MaxExposureSlippageBps        int    `yaml:"max_exposure_slippage_bps"`
+}
+
+type FundingRuntimeConfig struct {
+	IntervalSec           int    `yaml:"interval_sec"`
+	SourcePollIntervalSec int    `yaml:"source_poll_interval_sec"`
+	CapRatePerHour        string `yaml:"cap_rate_per_hour"`
+	MinValidSourceCount   int    `yaml:"min_valid_source_count"`
+	DefaultModelCrypto    string `yaml:"default_model_crypto"`
 }
 
 type HedgeRuntimeConfig struct {
@@ -115,6 +137,9 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	if c.Market.PollIntervalMS <= 0 {
 		errs = append(errs, fmt.Errorf("%w: market.poll_interval_ms must be positive", errorsx.ErrInvalidArgument))
 	}
+	if c.Market.RestingExecutionBatch <= 0 {
+		errs = append(errs, fmt.Errorf("%w: market.resting_execution_batch must be positive", errorsx.ErrInvalidArgument))
+	}
 	if c.Market.MaxSourceAgeSec <= 0 {
 		errs = append(errs, fmt.Errorf("%w: market.max_source_age_sec must be positive", errorsx.ErrInvalidArgument))
 	}
@@ -156,6 +181,42 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	}
 	if c.Wallet.HotWalletMinBalance == "" || c.Wallet.HotWalletMaxBalance == "" {
 		errs = append(errs, fmt.Errorf("%w: wallet hot wallet balance thresholds are required", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.GlobalBufferRatio == "" {
+		errs = append(errs, fmt.Errorf("%w: risk.global_buffer_ratio is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.MarkPriceStaleSec <= 0 {
+		errs = append(errs, fmt.Errorf("%w: risk.mark_price_stale_sec must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.LiquidationPenaltyRate == "" {
+		errs = append(errs, fmt.Errorf("%w: risk.liquidation_penalty_rate is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.LiquidationExtraSlippageBps < 0 {
+		errs = append(errs, fmt.Errorf("%w: risk.liquidation_extra_slippage_bps must be zero or positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.MaxOpenOrdersPerUserPerSymbol <= 0 {
+		errs = append(errs, fmt.Errorf("%w: risk.max_open_orders_per_user_per_symbol must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.NetExposureHardLimit == "" {
+		errs = append(errs, fmt.Errorf("%w: risk.net_exposure_hard_limit is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Risk.MaxExposureSlippageBps < 0 {
+		errs = append(errs, fmt.Errorf("%w: risk.max_exposure_slippage_bps must be zero or positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Funding.IntervalSec <= 0 {
+		errs = append(errs, fmt.Errorf("%w: funding.interval_sec must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Funding.SourcePollIntervalSec <= 0 {
+		errs = append(errs, fmt.Errorf("%w: funding.source_poll_interval_sec must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Funding.CapRatePerHour == "" {
+		errs = append(errs, fmt.Errorf("%w: funding.cap_rate_per_hour is required", errorsx.ErrInvalidArgument))
+	}
+	if c.Funding.MinValidSourceCount <= 0 {
+		errs = append(errs, fmt.Errorf("%w: funding.min_valid_source_count must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.Funding.DefaultModelCrypto == "" {
+		errs = append(errs, fmt.Errorf("%w: funding.default_model_crypto is required", errorsx.ErrInvalidArgument))
 	}
 	if c.Hedge.SoftThresholdRatio == "" || c.Hedge.HardThresholdRatio == "" {
 		errs = append(errs, fmt.Errorf("%w: hedge threshold ratios are required", errorsx.ErrInvalidArgument))

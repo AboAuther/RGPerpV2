@@ -22,7 +22,7 @@ export function LoginPage() {
   const [connectedChainId, setConnectedChainId] = useState<number | null>(null);
   const [error, setError] = useState<unknown>(null);
 
-  const redirectTo = (location.state as { from?: string } | null)?.from || '/portfolio';
+  const redirectTo = (location.state as { from?: string } | null)?.from || '/trade';
 
   async function handleWalletLogin() {
     if (!window.ethereum) {
@@ -112,11 +112,11 @@ export function LoginPage() {
         <Card className="hero-card" bordered={false}>
           <Text className="page-intro-eyebrow">Wallet Auth</Text>
           <Title level={1} style={{ maxWidth: 680, marginTop: 0 }}>
-            直接通过 MetaMask 一键登录，登录挑战由后端签发并绑定当前链环境。
+            直接通过 MetaMask 一键登录，完成签名后即可进入账户与交易页面。
           </Title>
           <Paragraph className="page-intro-description page-intro-description--proximity" style={{ fontSize: 17, maxWidth: 760 }}>
             <VariableProximityText
-              text="登录只保留一条真实路径：连接钱包、请求挑战、签名验签。前端不保存资金真相，不复用 challenge，不再保留手工 nonce 或演示登录分支。"
+              text="连接钱包后即可完成挑战签名与登录，快速进入交易与账户页面。"
               className="page-intro-description-text"
             />
           </Paragraph>
@@ -125,19 +125,19 @@ export function LoginPage() {
             <div>
               <Text strong>地址来源</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                当前地址与链 ID 只从浏览器钱包读取，不允许手工伪造。
+                登录地址将直接读取当前钱包。
               </Paragraph>
             </div>
             <div>
               <Text strong>挑战消息</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                后端返回完整 message，前端仅负责签名，不自行拼装业务真相。
+                签名后即可完成身份验证。
               </Paragraph>
             </div>
             <div>
               <Text strong>会话保持</Text>
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                access token 仅保存在内存，刷新页面后需要重新登录。
+                登录成功后可继续访问账户与交易功能。
               </Paragraph>
             </div>
           </div>

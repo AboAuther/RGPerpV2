@@ -7,11 +7,15 @@ import (
 	"strconv"
 	"time"
 
+	posttradeapp "github.com/xiaobao/rgperp/backend/internal/app/posttrade"
+	runtimeconfigapp "github.com/xiaobao/rgperp/backend/internal/app/runtimeconfig"
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
+	liquidationdomain "github.com/xiaobao/rgperp/backend/internal/domain/liquidation"
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
+	riskdomain "github.com/xiaobao/rgperp/backend/internal/domain/risk"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	withdrawexecdomain "github.com/xiaobao/rgperp/backend/internal/domain/withdrawexec"
 	authinfra "github.com/xiaobao/rgperp/backend/internal/infra/auth"
@@ -44,6 +48,20 @@ func main() {
 	if err := db.Migrate(gormDB); err != nil {
 		log.Fatalf("migrate db: %v", err)
 	}
+	runtimeConfigRepo := db.NewRuntimeConfigRepository(gormDB)
+	if err := runtimeConfigRepo.SeedDefaultRuntimeConfig(context.Background(), runtimeCfg, "bootstrap", time.Now().UTC()); err != nil {
+		log.Fatalf("seed runtime config: %v", err)
+	}
+	runtimeStore, err := config.NewRuntimeConfigStore(runtimeCfg, runtimeConfigRepo)
+	if err != nil {
+		log.Fatalf("create runtime config store: %v", err)
+	}
+	if _, err := runtimeStore.Refresh(context.Background()); err != nil {
+		log.Fatalf("refresh runtime config: %v", err)
+	}
+	runtimeStore.StartPolling(context.Background(), 2*time.Second, func(err error) {
+		log.Printf("runtime config refresh failed: %v", err)
+	})
 
 	enabledChains := config.EnabledChains(cfg)
 	routerChains := make([]chaininfra.RouterAllocatorChainConfig, 0, len(enabledChains))
@@ -96,18 +114,21 @@ func main() {
 		db.NewLedgerRepository(gormDB),
 		decimalx.LedgerDecimalFactory{},
 	)
+	accountResolver := db.NewAccountResolver(gormDB)
 	orderService, err := orderdomain.NewService(
 		orderdomain.ServiceConfig{
-			Asset:                 "USDC",
-			TakerFeeRate:          runtimeCfg.Market.TakerFeeRate,
-			MakerFeeRate:          runtimeCfg.Market.MakerFeeRate,
-			DefaultMaxSlippageBps: runtimeCfg.Market.DefaultMaxSlippageBps,
-			MaxMarketDataAge:      time.Duration(runtimeCfg.Market.MaxSourceAgeSec) * time.Second,
+			Asset:                  "USDC",
+			TakerFeeRate:           runtimeCfg.Market.TakerFeeRate,
+			MakerFeeRate:           runtimeCfg.Market.MakerFeeRate,
+			DefaultMaxSlippageBps:  runtimeCfg.Market.DefaultMaxSlippageBps,
+			MaxMarketDataAge:       time.Duration(runtimeCfg.Market.MaxSourceAgeSec) * time.Second,
+			NetExposureHardLimit:   runtimeCfg.Risk.NetExposureHardLimit,
+			MaxExposureSlippageBps: runtimeCfg.Risk.MaxExposureSlippageBps,
 		},
 		clockx.RealClock{},
 		&idgen.TimeBasedGenerator{},
 		txManager,
-		db.NewAccountResolver(gormDB),
+		accountResolver,
 		db.NewBalanceRepository(gormDB),
 		ledgerService,
 		db.NewOrderExecutionRepository(gormDB, latestMarketCache),
@@ -116,9 +137,86 @@ func main() {
 	if err != nil {
 		log.Fatalf("create order service: %v", err)
 	}
+	serviceRuntimeProvider := runtimeconfigapp.NewServiceRuntimeProvider(runtimeStore)
+	orderService.SetRuntimeConfigProvider(serviceRuntimeProvider)
+	riskService, err := riskdomain.NewService(
+		riskdomain.ServiceConfig{
+			RiskBufferRatio:             runtimeCfg.Risk.GlobalBufferRatio,
+			HedgeEnabled:                runtimeCfg.Hedge.Enabled,
+			SoftThresholdRatio:          runtimeCfg.Hedge.SoftThresholdRatio,
+			HardThresholdRatio:          runtimeCfg.Hedge.HardThresholdRatio,
+			MarkPriceStaleSec:           runtimeCfg.Risk.MarkPriceStaleSec,
+			ForceReduceOnlyOnStalePrice: runtimeCfg.Risk.ForceReduceOnlyOnStalePrice,
+			TakerFeeRate:                runtimeCfg.Market.TakerFeeRate,
+		},
+		clockx.RealClock{},
+		&idgen.TimeBasedGenerator{},
+		txManager,
+		db.NewRiskRepository(gormDB),
+		db.NewRiskOutboxPublisher(gormDB),
+	)
+	if err != nil {
+		log.Fatalf("create risk service: %v", err)
+	}
+	riskService.SetRuntimeConfigProvider(serviceRuntimeProvider)
+	liquidationService, err := liquidationdomain.NewService(
+		liquidationdomain.ServiceConfig{
+			Asset:            "USDC",
+			PenaltyRate:      runtimeCfg.Risk.LiquidationPenaltyRate,
+			ExtraSlippageBps: runtimeCfg.Risk.LiquidationExtraSlippageBps,
+		},
+		clockx.RealClock{},
+		&idgen.TimeBasedGenerator{},
+		txManager,
+		db.NewLiquidationRepository(gormDB),
+		accountResolver,
+		ledgerService,
+		riskService,
+		db.NewLiquidationOutboxPublisher(gormDB),
+	)
+	if err != nil {
+		log.Fatalf("create liquidation service: %v", err)
+	}
+	liquidationService.SetRuntimeConfigProvider(serviceRuntimeProvider)
+	orderService.SetPostTradeRiskProcessor(posttradeapp.NewProcessor(riskService, liquidationService))
+	runtimeConfigService, err := runtimeconfigapp.NewService(runtimeCfg, clockx.RealClock{}, &idgen.TimeBasedGenerator{}, txManager, runtimeConfigRepo, runtimeStore)
+	if err != nil {
+		log.Fatalf("create runtime config service: %v", err)
+	}
 	confirmations := config.EnabledChainConfirmations(cfg)
 	depositAddressRepo := db.NewDepositAddressRepository(gormDB, confirmations)
-	walletQueryRepo := db.NewWalletQueryRepository(gormDB)
+	vaultBalanceChains := make([]chaininfra.VaultBalanceReaderChainConfig, 0, len(enabledChains))
+	for _, chain := range enabledChains {
+		if chain.RPCURL == "" || chain.VaultAddress == "" || chain.USDCAddress == "" {
+			continue
+		}
+		vaultBalanceChains = append(vaultBalanceChains, chaininfra.VaultBalanceReaderChainConfig{
+			ChainID:      chain.ChainID,
+			ChainKey:     chain.Key,
+			ChainName:    config.ChainDisplayName(chain),
+			Asset:        chain.Asset,
+			RPCURL:       chain.RPCURL,
+			VaultAddress: chain.VaultAddress,
+			TokenAddress: chain.USDCAddress,
+		})
+	}
+	var vaultBalanceReader *chaininfra.VaultBalanceReader
+	if len(vaultBalanceChains) > 0 {
+		reader, err := chaininfra.NewVaultBalanceReader(vaultBalanceChains)
+		if err != nil {
+			log.Fatalf("create vault balance reader: %v", err)
+		}
+		defer reader.Close()
+		vaultBalanceReader = reader
+	}
+	walletQueryRepo := db.NewWalletQueryRepositoryWithRiskConfig(
+		gormDB,
+		db.RiskMonitorConfig{
+			HardLimitNotional:      runtimeCfg.Risk.NetExposureHardLimit,
+			MaxExposureSlippageBps: runtimeCfg.Risk.MaxExposureSlippageBps,
+		},
+		vaultBalanceReader,
+	)
 	var localNativeFaucet *chaininfra.LocalNativeFaucet
 	if cfg.App.Env == "dev" && cfg.Review.LocalMinterPrivateKey != "" && cfg.Chains.Base.RPCURL != "" {
 		faucet, err := chaininfra.NewLocalNativeFaucet(cfg.Review.LocalMinterPrivateKey, []chaininfra.LocalNativeFaucetChainConfig{{
@@ -139,11 +237,12 @@ func main() {
 		txManager,
 		clockx.RealClock{},
 		&idgen.TimeBasedGenerator{},
-		db.NewAccountResolver(gormDB),
+		accountResolver,
 		db.NewBalanceRepository(gormDB),
 		depositAddressRepo,
 		allocator,
 	)
+	walletService.SetRuntimeConfigProvider(serviceRuntimeProvider)
 	if cfg.Review.LocalMinterPrivateKey != "" {
 		withdrawChains := make([]chaininfra.VaultWithdrawChainConfig, 0, len(enabledChains))
 		for _, chain := range enabledChains {
@@ -177,7 +276,7 @@ func main() {
 	marketReadRepo := db.NewMarketReadRepository(gormDB, latestMarketCache, time.Duration(runtimeCfg.Market.MaxSourceAgeSec)*time.Second)
 	tradingReadRepo := db.NewTradingReadRepository(gormDB)
 	marketHandler := httptransport.NewMarketHandler(marketReadRepo)
-	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepository(gormDB), walletService, userRepo)
+	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepositoryWithRuntime(gormDB, serviceRuntimeProvider), walletService, userRepo)
 	walletHandler := httptransport.NewWalletHandler(
 		db.NewWalletReadService(depositAddressRepo, walletQueryRepo, allocator),
 		walletService,
@@ -188,8 +287,10 @@ func main() {
 	tradingHandler := httptransport.NewTradingHandler(tradingReadRepo, orderService)
 	explorerHandler := httptransport.NewExplorerHandler(db.NewExplorerQueryRepository(gormDB), cfg.Admin.Wallets)
 	adminHandler := httptransport.NewAdminHandler(walletService, walletQueryRepo, cfg.Admin.Wallets)
+	adminHandler.SetRiskMutator(posttradeapp.NewProcessor(riskService, liquidationService))
+	adminHandler.SetConfigManager(adminRuntimeConfigManager{service: runtimeConfigService})
 
-	router := httptransport.NewEngine(verifier, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler, systemHandler)
+	router := httptransport.NewEngine(verifier, httpRuntimeConfigProvider{store: runtimeStore}, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler, systemHandler)
 
 	addr := ":" + strconv.Itoa(cfg.App.Port)
 	if err := router.Run(addr); err != nil {
@@ -221,6 +322,23 @@ func buildSystemChains(chains []config.EnabledChain, cfg config.StaticConfig) []
 	return items
 }
 
+type adminRuntimeConfigManager struct {
+	service *runtimeconfigapp.Service
+}
+
+func (m adminRuntimeConfigManager) GetRuntimeConfigView(ctx context.Context, limit int) (readmodel.RuntimeConfigView, error) {
+	return m.service.GetRuntimeConfigView(ctx, limit)
+}
+
+func (m adminRuntimeConfigManager) UpdateRuntimeConfig(ctx context.Context, input httptransport.AdminRuntimeConfigUpdateInput) (readmodel.RuntimeConfigView, error) {
+	return m.service.UpdateRuntimeConfig(ctx, runtimeconfigapp.UpdateInput{
+		OperatorID: input.OperatorID,
+		TraceID:    input.TraceID,
+		Reason:     input.Reason,
+		Values:     input.Values,
+	})
+}
+
 func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []config.EnabledChain) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -236,6 +354,20 @@ func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []con
 
 type accessVerifierAdapter struct {
 	verifier *authinfra.JWTVerifier
+}
+
+type httpRuntimeConfigProvider struct {
+	store *config.RuntimeConfigStore
+}
+
+func (p httpRuntimeConfigProvider) CurrentHTTPRuntimeConfig() httptransport.HTTPRuntimeConfig {
+	if p.store == nil {
+		return httptransport.HTTPRuntimeConfig{}
+	}
+	current := p.store.Current()
+	return httptransport.HTTPRuntimeConfig{
+		TraceHeaderRequired: current.Global.TraceHeaderRequired,
+	}
 }
 
 func (a *accessVerifierAdapter) VerifyAccessToken(token string) (httptransport.AccessClaims, error) {

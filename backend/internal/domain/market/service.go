@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
@@ -16,6 +17,18 @@ type Service struct {
 	catalog  CatalogRepository
 	snapshot SnapshotRepository
 	clients  map[string]SourceClient
+}
+
+type weightedQuote struct {
+	SourceName string
+	Bid        decimalx.Decimal
+	Ask        decimalx.Decimal
+	Mid        decimalx.Decimal
+	Weight     decimalx.Decimal
+	Volume     decimalx.Decimal
+	HasVolume  bool
+	SourceTS   time.Time
+	ReceivedTS time.Time
 }
 
 func NewService(cfg AggregationConfig, catalog CatalogRepository, snapshot SnapshotRepository, clients []SourceClient) (*Service, error) {
@@ -64,17 +77,27 @@ func (s *Service) SyncOnce(ctx context.Context, now time.Time) error {
 
 	fetchedQuotes := make(map[string]map[string]SourceQuote)
 	var fetchErrs []error
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for sourceName, requests := range requestsBySource {
 		if len(requests) == 0 {
 			continue
 		}
-		quotes, err := s.clients[sourceName].Fetch(ctx, requests)
-		if err != nil {
-			fetchErrs = append(fetchErrs, fmt.Errorf("%s fetch failed: %w", sourceName, err))
-			continue
-		}
-		fetchedQuotes[sourceName] = quotes
+		client := s.clients[sourceName]
+		wg.Add(1)
+		go func(sourceName string, requests []SourceSymbolRequest) {
+			defer wg.Done()
+			quotes, err := client.Fetch(ctx, requests)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				fetchErrs = append(fetchErrs, fmt.Errorf("%s fetch failed: %w", sourceName, err))
+				return
+			}
+			fetchedQuotes[sourceName] = quotes
+		}(sourceName, requests)
 	}
+	wg.Wait()
 
 	sourceSnapshots := make([]SourcePriceSnapshot, 0, len(symbols)*2)
 	aggregatedSnapshots := make([]AggregatedPrice, 0, len(symbols))
@@ -122,18 +145,8 @@ func (s *Service) SyncOnce(ctx context.Context, now time.Time) error {
 }
 
 func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes map[string]map[string]SourceQuote) (AggregatedPrice, []SourcePriceSnapshot, error) {
-	type acceptedQuote struct {
-		SourceName string
-		Bid        decimalx.Decimal
-		Ask        decimalx.Decimal
-		Mid        decimalx.Decimal
-		Weight     decimalx.Decimal
-		SourceTS   time.Time
-		ReceivedTS time.Time
-	}
-
 	rawSnapshots := make([]SourcePriceSnapshot, 0, len(symbol.Mappings))
-	candidates := make([]acceptedQuote, 0, len(symbol.Mappings))
+	candidates := make([]weightedQuote, 0, len(symbol.Mappings))
 	mids := make([]decimalx.Decimal, 0, len(symbol.Mappings))
 
 	for _, mapping := range symbol.Mappings {
@@ -148,10 +161,22 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 		if now.Sub(quote.SourceTS) > s.cfg.MaxSourceAge {
 			continue
 		}
-		scale := decimalx.MustFromString(mapping.PriceScale)
-		bid := decimalx.MustFromString(quote.Bid).Mul(scale)
-		ask := decimalx.MustFromString(quote.Ask).Mul(scale)
-		last := decimalx.MustFromString(quote.Last).Mul(scale)
+		scale, err := decimalx.NewFromString(mapping.PriceScale)
+		if err != nil {
+			continue
+		}
+		bid, ok := parseScaledQuoteValue(quote.Bid, scale)
+		if !ok {
+			continue
+		}
+		ask, ok := parseScaledQuoteValue(quote.Ask, scale)
+		if !ok {
+			continue
+		}
+		last, ok := parseScaledQuoteValue(quote.Last, scale)
+		if !ok {
+			continue
+		}
 		mid := midpoint(bid, ask, last)
 		if mid.IsZero() {
 			continue
@@ -172,12 +197,18 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 			continue
 		}
 		weight := decimalx.MustFromString(health.Weight)
-		candidates = append(candidates, acceptedQuote{
+		volume, hasVolume, err := parseQuoteVolume(quote.QuoteVolume)
+		if err != nil {
+			return AggregatedPrice{}, rawSnapshots, err
+		}
+		candidates = append(candidates, weightedQuote{
 			SourceName: mapping.SourceName,
 			Bid:        bid,
 			Ask:        ask,
 			Mid:        mid,
 			Weight:     weight,
+			Volume:     volume,
+			HasVolume:  hasVolume,
 			SourceTS:   quote.SourceTS,
 			ReceivedTS: quote.ReceivedTS,
 		})
@@ -190,7 +221,7 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 
 	median := medianDecimal(mids)
 	maxDeviation := decimalx.MustFromString(s.cfg.MaxDeviationBps)
-	accepted := make([]acceptedQuote, 0, len(candidates))
+	accepted := make([]weightedQuote, 0, len(candidates))
 	for _, candidate := range candidates {
 		if withinDeviationBps(candidate.Mid, median, maxDeviation) {
 			accepted = append(accepted, candidate)
@@ -204,9 +235,14 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 	indexAcc := decimalx.MustFromString("0")
 	bestBid := accepted[0].Bid
 	bestAsk := accepted[0].Ask
+	fallbackVolume := effectiveFallbackVolume(accepted)
 	for _, item := range accepted {
-		totalWeight = totalWeight.Add(item.Weight)
-		indexAcc = indexAcc.Add(item.Mid.Mul(item.Weight))
+		effectiveWeight := item.Weight.Mul(fallbackVolume)
+		if item.HasVolume && item.Volume.GreaterThan(decimalx.MustFromString("0")) {
+			effectiveWeight = item.Weight.Mul(item.Volume)
+		}
+		totalWeight = totalWeight.Add(effectiveWeight)
+		indexAcc = indexAcc.Add(item.Mid.Mul(effectiveWeight))
 		if item.Bid.GreaterThan(bestBid) {
 			bestBid = item.Bid
 		}
@@ -233,6 +269,14 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 	}, rawSnapshots, nil
 }
 
+func parseScaledQuoteValue(raw string, scale decimalx.Decimal) (decimalx.Decimal, bool) {
+	value, err := decimalx.NewFromString(raw)
+	if err != nil {
+		return decimalx.Decimal{}, false
+	}
+	return value.Mul(scale), true
+}
+
 func midpoint(bid decimalx.Decimal, ask decimalx.Decimal, last decimalx.Decimal) decimalx.Decimal {
 	zero := decimalx.MustFromString("0")
 	two := decimalx.MustFromString("2")
@@ -240,6 +284,36 @@ func midpoint(bid decimalx.Decimal, ask decimalx.Decimal, last decimalx.Decimal)
 		return bid.Add(ask).Div(two)
 	}
 	return last
+}
+
+func parseQuoteVolume(raw string) (decimalx.Decimal, bool, error) {
+	if raw == "" {
+		return decimalx.MustFromString("0"), false, nil
+	}
+	volume, err := decimalx.NewFromString(raw)
+	if err != nil {
+		return decimalx.Decimal{}, false, err
+	}
+	if !volume.GreaterThan(decimalx.MustFromString("0")) {
+		return decimalx.MustFromString("0"), false, nil
+	}
+	return volume, true, nil
+}
+
+func effectiveFallbackVolume(items []weightedQuote) decimalx.Decimal {
+	total := decimalx.MustFromString("0")
+	count := 0
+	for _, item := range items {
+		if !item.HasVolume || !item.Volume.GreaterThan(decimalx.MustFromString("0")) {
+			continue
+		}
+		total = total.Add(item.Volume)
+		count++
+	}
+	if count == 0 {
+		return decimalx.MustFromString("1")
+	}
+	return total.Div(decimalx.MustFromString(fmt.Sprintf("%d", count)))
 }
 
 func withinDeviationBps(value decimalx.Decimal, median decimalx.Decimal, limitBps decimalx.Decimal) bool {

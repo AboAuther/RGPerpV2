@@ -27,6 +27,7 @@ func TestSystemHandler_ListChains(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewSystemHandler(fakeSystemReader{items: []readmodel.SystemChainItem{{
 			ChainID:       31337,
 			Key:           "local",

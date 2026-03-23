@@ -103,6 +103,9 @@ func TestMarketSnapshotRepository_ApplyAggregatedStateRefreshesPositionsAndRunti
 	if position.MarkPrice != "110" || position.Notional != "220" || position.MaintenanceMargin != "11" || position.UnrealizedPnL != "20" {
 		t.Fatalf("unexpected refreshed position: %+v", position)
 	}
+	if position.LiquidationPrice == "0" || position.BankruptcyPrice == "0" {
+		t.Fatalf("expected write-side refresh to maintain display prices, got %+v", position)
+	}
 
 	var symbolOne SymbolModel
 	if err := db.Where("id = ?", 1).Take(&symbolOne).Error; err != nil {

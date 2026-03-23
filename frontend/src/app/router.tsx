@@ -3,12 +3,13 @@ import { AppShell } from '../shared/components';
 import { AdminOutlet } from '../shared/auth';
 import { AdminConfigsPage, AdminDashboardPage, AdminLiquidationsPage, AdminWithdrawalsPage } from '../pages/admin/AdminPages';
 import { ExplorerPage } from '../pages/explorer/ExplorerPage';
-import { FillsHistoryPage, FundingHistoryPage, OrdersHistoryPage, TransfersHistoryPage } from '../pages/history/HistoryPages';
+import { FillsHistoryPage, FundingHistoryPage, OrdersHistoryPage, PositionsHistoryPage, TransfersHistoryPage } from '../pages/history/HistoryPages';
 import { LandingPage } from '../pages/landing/LandingPage';
 import { LoginPage } from '../pages/login/LoginPage';
 import { PortfolioPage } from '../pages/portfolio/PortfolioPage';
 import { TradePage } from '../pages/trade/TradePage';
 import { DepositPage } from '../pages/wallet/DepositPage';
+import { TransferPage } from '../pages/wallet/TransferPage';
 import { WithdrawPage } from '../pages/wallet/WithdrawPage';
 
 export const router = createBrowserRouter([
@@ -26,9 +27,11 @@ export const router = createBrowserRouter([
       { path: '/trade', element: <TradePage /> },
       { path: '/portfolio', element: <PortfolioPage /> },
       { path: '/wallet/deposit', element: <DepositPage /> },
+      { path: '/wallet/transfer', element: <TransferPage /> },
       { path: '/wallet/withdraw', element: <WithdrawPage /> },
       { path: '/history/orders', element: <OrdersHistoryPage /> },
       { path: '/history/fills', element: <FillsHistoryPage /> },
+      { path: '/history/positions', element: <PositionsHistoryPage /> },
       { path: '/history/funding', element: <FundingHistoryPage /> },
       { path: '/history/transfers', element: <TransfersHistoryPage /> },
       { path: '/explorer', element: <ExplorerPage /> },

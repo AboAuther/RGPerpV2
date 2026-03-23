@@ -63,12 +63,13 @@ type DepositAddress struct {
 }
 
 type TransferRequest struct {
-	TransferID string
-	FromUserID uint64
-	ToUserID   uint64
-	Asset      string
-	Amount     string
-	TraceID    string
+	TransferID     string
+	FromUserID     uint64
+	ToUserID       uint64
+	Asset          string
+	Amount         string
+	IdempotencyKey string
+	TraceID        string
 }
 
 type DetectDepositInput struct {

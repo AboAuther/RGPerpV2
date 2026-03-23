@@ -3,17 +3,20 @@ package order
 import "time"
 
 const (
-	OrderTypeMarket = "MARKET"
-	OrderTypeLimit  = "LIMIT"
+	OrderTypeMarket           = "MARKET"
+	OrderTypeLimit            = "LIMIT"
+	OrderTypeStopMarket       = "STOP_MARKET"
+	OrderTypeTakeProfitMarket = "TAKE_PROFIT_MARKET"
 
 	PositionEffectOpen   = "OPEN"
 	PositionEffectReduce = "REDUCE"
 	PositionEffectClose  = "CLOSE"
 
-	OrderStatusResting  = "RESTING"
-	OrderStatusFilled   = "FILLED"
-	OrderStatusCanceled = "CANCELED"
-	OrderStatusRejected = "REJECTED"
+	OrderStatusTriggerWait = "TRIGGER_WAIT"
+	OrderStatusResting     = "RESTING"
+	OrderStatusFilled      = "FILLED"
+	OrderStatusCanceled    = "CANCELED"
+	OrderStatusRejected    = "REJECTED"
 
 	PositionSideLong     = "LONG"
 	PositionSideShort    = "SHORT"
@@ -46,27 +49,29 @@ type CancelOrderInput struct {
 }
 
 type Order struct {
-	OrderID        string
-	ClientOrderID  string
-	UserID         uint64
-	SymbolID       uint64
-	Symbol         string
-	Side           string
-	PositionEffect string
-	Type           string
-	TimeInForce    string
-	Price          *string
-	TriggerPrice   *string
-	Qty            string
-	FilledQty      string
-	AvgFillPrice   string
-	ReduceOnly     bool
-	MaxSlippageBps int
-	Status         string
-	RejectReason   *string
-	FrozenMargin   string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	OrderID             string
+	ClientOrderID       string
+	UserID              uint64
+	SymbolID            uint64
+	Symbol              string
+	Side                string
+	PositionEffect      string
+	Type                string
+	TimeInForce         string
+	Price               *string
+	TriggerPrice        *string
+	Qty                 string
+	FilledQty           string
+	AvgFillPrice        string
+	ReduceOnly          bool
+	MaxSlippageBps      int
+	Status              string
+	RejectReason        *string
+	FrozenInitialMargin string
+	FrozenFee           string
+	FrozenMargin        string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 type Fill struct {
@@ -80,6 +85,15 @@ type Fill struct {
 	FeeAmount  string
 	LedgerTxID string
 	CreatedAt  time.Time
+}
+
+type Event struct {
+	EventID       string
+	AggregateType string
+	AggregateID   string
+	EventType     string
+	Payload       any
+	CreatedAt     time.Time
 }
 
 type Position struct {
@@ -103,6 +117,20 @@ type Position struct {
 	UpdatedAt         time.Time
 }
 
+type SymbolExposure struct {
+	SymbolID uint64
+	LongQty  string
+	ShortQty string
+}
+
+type RiskTier struct {
+	TierLevel          int
+	MaxNotional        string
+	InitialMarginRate  string
+	MaintenanceRate    string
+	LiquidationFeeRate string
+}
+
 type TradableSymbol struct {
 	SymbolID              uint64
 	Symbol                string
@@ -117,5 +145,6 @@ type TradableSymbol struct {
 	BestAsk               string
 	InitialMarginRate     string
 	MaintenanceMarginRate string
+	RiskTiers             []RiskTier
 	SnapshotTS            time.Time
 }

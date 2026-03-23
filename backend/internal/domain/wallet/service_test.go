@@ -261,6 +261,14 @@ func (s stubWithdrawRiskEvaluator) Evaluate(_ context.Context, _ WithdrawRiskInp
 	return s.decision, nil
 }
 
+type stubRuntimeConfigProvider struct {
+	config RuntimeConfig
+}
+
+func (s stubRuntimeConfigProvider) CurrentWalletRuntimeConfig() RuntimeConfig {
+	return s.config
+}
+
 func TestConfirmDeposit_Success(t *testing.T) {
 	ledger := &stubLedger{}
 	deposits := &stubDepositRepo{deposit: DepositChainTx{
@@ -369,6 +377,36 @@ func TestRequestWithdraw_Success(t *testing.T) {
 	}
 	if wd.WithdrawID != "wd_1" || withdraws.created.WithdrawID != "wd_1" {
 		t.Fatalf("expected withdraw persisted")
+	}
+}
+
+func TestRequestWithdraw_ReadOnlyRejected(t *testing.T) {
+	svc := NewService(
+		&stubDepositRepo{},
+		&stubWithdrawRepo{},
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"wd_1", "ldg_1", "evt_1"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+	svc.SetRuntimeConfigProvider(stubRuntimeConfigProvider{config: RuntimeConfig{GlobalReadOnly: true}})
+
+	_, err := svc.RequestWithdraw(context.Background(), RequestWithdrawInput{
+		UserID:         7,
+		ChainID:        8453,
+		Asset:          "USDC",
+		Amount:         "100",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000001",
+		IdempotencyKey: "idem_1",
+		TraceID:        "trace_1",
+	})
+	if !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
 	}
 }
 
@@ -777,6 +815,33 @@ func TestGenerateDepositAddress_ReplacesInvalidStoredAddress(t *testing.T) {
 	}
 }
 
+func TestGenerateDepositAddress_ReadOnlyRejected(t *testing.T) {
+	svc := NewService(
+		&stubDepositRepo{},
+		&stubWithdrawRepo{},
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"addr_1"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+		stubAllocator{},
+	)
+	svc.SetRuntimeConfigProvider(stubRuntimeConfigProvider{config: RuntimeConfig{GlobalReadOnly: true}})
+
+	_, err := svc.GenerateDepositAddress(context.Background(), GenerateDepositAddressInput{
+		UserID:  7,
+		ChainID: 31337,
+		Asset:   "USDC",
+		TraceID: "trace_1",
+	})
+	if !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
+	}
+}
+
 type concurrentBalanceState struct {
 	mu       sync.Mutex
 	balances map[uint64]string
@@ -885,6 +950,35 @@ func TestRequestWithdraw_ConcurrentDoesNotOverspend(t *testing.T) {
 	}
 }
 
+func TestTransfer_ReadOnlyRejected(t *testing.T) {
+	svc := NewService(
+		&stubDepositRepo{},
+		&stubWithdrawRepo{},
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"ldg_1", "evt_1"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+	svc.SetRuntimeConfigProvider(stubRuntimeConfigProvider{config: RuntimeConfig{GlobalReadOnly: true}})
+
+	err := svc.Transfer(context.Background(), TransferRequest{
+		TransferID:     "trf_1",
+		FromUserID:     7,
+		ToUserID:       8,
+		Asset:          "USDC",
+		Amount:         "10",
+		IdempotencyKey: "transfer:7:idem_1",
+		TraceID:        "trace_1",
+	})
+	if !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected forbidden, got %v", err)
+	}
+}
+
 func TestTransfer_ConcurrentDoesNotOverspend(t *testing.T) {
 	sharedLock := &sync.Mutex{}
 	state := &concurrentBalanceState{balances: map[uint64]string{71: "100", 81: "0"}}
@@ -907,12 +1001,13 @@ func TestTransfer_ConcurrentDoesNotOverspend(t *testing.T) {
 		transferID := transferIDs[i]
 		go func(id string) {
 			err := svc.Transfer(context.Background(), TransferRequest{
-				TransferID: id,
-				FromUserID: 7,
-				ToUserID:   8,
-				Asset:      "USDC",
-				Amount:     "80",
-				TraceID:    "trace",
+				TransferID:     id,
+				FromUserID:     7,
+				ToUserID:       8,
+				Asset:          "USDC",
+				Amount:         "80",
+				IdempotencyKey: "transfer:7:" + id,
+				TraceID:        "trace",
 			})
 			results <- err
 		}(transferID)

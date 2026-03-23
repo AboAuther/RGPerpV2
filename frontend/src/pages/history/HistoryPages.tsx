@@ -3,12 +3,25 @@ import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { EmptyStateCard, ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
-import type { FillItem, FundingItem, OrderItem, TransferItem } from '../../shared/domain';
-import { formatDateTime, formatSignedUsd, formatUsd } from '../../shared/format';
+import type { FillItem, FundingItem, OrderItem, PositionItem, TransferItem } from '../../shared/domain';
+import { formatAddress, formatDateTime, formatDecimalAdaptive, formatSignedUsd, formatSignedUsdAdaptive, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 import { useAuth } from '../../shared/auth';
 
 const { Text } = Typography;
+
+function formatTransferDirection(direction: TransferItem['direction']): string {
+  switch (direction) {
+    case 'IN':
+      return '转入';
+    case 'OUT':
+      return '转出';
+    case 'SELF':
+      return '自转';
+    default:
+      return '未知';
+  }
+}
 
 function useHistoryLoader<T>(loader: () => Promise<T[]>) {
   const { session } = useAuth();
@@ -62,14 +75,14 @@ export function OrdersHistoryPage() {
     <HistoryPageScaffold
       eyebrow="History"
       title="Orders"
-      description="订单状态必须区分 ACCEPTED、PARTIALLY_FILLED、TRIGGER_WAIT、SYSTEM_CANCELED 等语义。"
+      description="查看订单时间、方向、数量、成交进度和状态。"
       loading={loading}
       refreshing={refreshing}
       error={error}
       authenticated={authenticated}
       onRefresh={reload}
       hasData={data.length > 0}
-      emptyDescription="当前账户还没有订单记录。等真实下单流接入后，这里会直接展示后端订单读模型。"
+      emptyDescription="当前账户还没有订单记录。"
     >
       <Table
         rowKey="order_id"
@@ -77,13 +90,13 @@ export function OrdersHistoryPage() {
         pagination={false}
         scroll={{ x: 980 }}
         columns={[
-          { title: 'Symbol', dataIndex: 'symbol' },
-          { title: 'Side', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
-          { title: 'Type', dataIndex: 'type' },
-          { title: 'Qty', dataIndex: 'qty', align: 'right' },
-          { title: 'Filled', dataIndex: 'filled_qty', align: 'right' },
-          { title: 'Avg Fill', dataIndex: 'avg_fill_price', align: 'right', render: (value: string) => formatUsd(value) },
-          { title: 'Status', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
+          { title: '交易对', dataIndex: 'symbol' },
+          { title: '方向', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
+          { title: '类型', dataIndex: 'type' },
+          { title: '数量', dataIndex: 'qty', align: 'right', render: (value: string) => formatDecimalAdaptive(value, 8) },
+          { title: '已成交', dataIndex: 'filled_qty', align: 'right', render: (value: string) => formatDecimalAdaptive(value, 8) },
+          { title: '成交均价', dataIndex: 'avg_fill_price', align: 'right', render: (value: string) => formatUsd(value, 8) },
+          { title: '状态', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
         ]}
       />
     </HistoryPageScaffold>
@@ -97,26 +110,63 @@ export function FillsHistoryPage() {
     <HistoryPageScaffold
       eyebrow="History"
       title="Fills"
-      description="成交记录是订单执行结果，不应被前端乐观推断。"
+      description="查看成交时间、价格、数量和手续费。"
       loading={loading}
       refreshing={refreshing}
       error={error}
       authenticated={authenticated}
       onRefresh={reload}
       hasData={data.length > 0}
-      emptyDescription="当前账户还没有成交记录。后续真实撮合或成交回放进入后，这里直接消费后端 fills 接口。"
+      emptyDescription="当前账户还没有成交记录。"
     >
       <Table
         rowKey="fill_id"
         dataSource={data}
         pagination={false}
         columns={[
-          { title: 'Time', dataIndex: 'created_at', render: (value: string) => formatDateTime(value) },
-          { title: 'Symbol', dataIndex: 'symbol' },
-          { title: 'Side', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
-          { title: 'Qty', dataIndex: 'qty', align: 'right' },
-          { title: 'Price', dataIndex: 'price', align: 'right', render: (value: string) => formatUsd(value) },
-          { title: 'Fee', dataIndex: 'fee_amount', align: 'right', render: (value: string) => formatUsd(value) },
+          { title: '时间', dataIndex: 'created_at', render: (value: string) => formatDateTime(value) },
+          { title: '交易对', dataIndex: 'symbol' },
+          { title: '方向', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
+          { title: '数量', dataIndex: 'qty', align: 'right', render: (value: string) => formatDecimalAdaptive(value, 8) },
+          { title: '价格', dataIndex: 'price', align: 'right', render: (value: string) => formatUsd(value, 8) },
+          { title: '手续费', dataIndex: 'fee_amount', align: 'right', render: (value: string) => formatUsd(value, 8) },
+        ]}
+      />
+    </HistoryPageScaffold>
+  );
+}
+
+export function PositionsHistoryPage() {
+  const { data, loading, refreshing, error, authenticated, reload } = useHistoryLoader<PositionItem>(api.positions.getPositions);
+
+  return (
+    <HistoryPageScaffold
+      eyebrow="History"
+      title="Positions"
+      description="查看各交易对的仓位、盈亏、资金费和状态。"
+      loading={loading}
+      refreshing={refreshing}
+      error={error}
+      authenticated={authenticated}
+      onRefresh={reload}
+      hasData={data.length > 0}
+      emptyDescription="当前账户还没有仓位记录。"
+    >
+      <Table
+        rowKey="position_id"
+        dataSource={data}
+        pagination={false}
+        scroll={{ x: 1180 }}
+        columns={[
+          { title: '交易对', dataIndex: 'symbol' },
+          { title: '方向', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
+          { title: '数量', dataIndex: 'qty', align: 'right', render: (value: string) => formatDecimalAdaptive(value, 8) },
+          { title: '开仓均价', dataIndex: 'avg_entry_price', align: 'right', render: (value: string) => formatUsd(value, 8) },
+          { title: '标记价格', dataIndex: 'mark_price', align: 'right', render: (value: string) => formatUsd(value, 8) },
+          { title: '未实现盈亏', dataIndex: 'unrealized_pnl', align: 'right', render: (value: string) => formatSignedUsdAdaptive(value, 8) },
+          { title: '已实现盈亏', dataIndex: 'realized_pnl', align: 'right', render: (value: string) => formatSignedUsdAdaptive(value, 8) },
+          { title: '资金费', dataIndex: 'funding_accrual', align: 'right', render: (value: string) => formatSignedUsdAdaptive(value, 8) },
+          { title: '状态', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
         ]}
       />
     </HistoryPageScaffold>
@@ -130,26 +180,26 @@ export function FundingHistoryPage() {
     <HistoryPageScaffold
       eyebrow="History"
       title="Funding"
-      description="资金费历史是只读状态，实际扣收与返还以后端结算批次和账本为准。"
+      description="查看资金费率结算记录与结算方向。"
       loading={loading}
       refreshing={refreshing}
       error={error}
       authenticated={authenticated}
       onRefresh={reload}
       hasData={data.length > 0}
-      emptyDescription="当前账户还没有资金费结算记录。等 funding batch 产出后，这里直接显示后端结算结果。"
+      emptyDescription="当前账户还没有资金费结算记录。"
     >
       <Table
         rowKey="funding_id"
         dataSource={data}
         pagination={false}
         columns={[
-          { title: 'Time', dataIndex: 'settled_at', render: (value: string) => formatDateTime(value) },
-          { title: 'Symbol', dataIndex: 'symbol' },
-          { title: 'Direction', dataIndex: 'direction', render: (value: string) => <StatusTag value={value} /> },
-          { title: 'Rate', dataIndex: 'rate', align: 'right' },
-          { title: 'Amount', dataIndex: 'amount', align: 'right', render: (value: string) => formatSignedUsd(value) },
-          { title: 'Batch', dataIndex: 'batch_id', render: (value: string) => <Text type="secondary">{value}</Text> },
+          { title: '时间', dataIndex: 'settled_at', render: (value: string) => formatDateTime(value) },
+          { title: '交易对', dataIndex: 'symbol' },
+          { title: '方向', dataIndex: 'direction', render: (value: string) => <StatusTag value={value} /> },
+          { title: '费率', dataIndex: 'rate', align: 'right' },
+          { title: '金额', dataIndex: 'amount', align: 'right', render: (value: string) => formatSignedUsd(value) },
+          { title: '批次', dataIndex: 'batch_id', render: (value: string) => <Text type="secondary">{value}</Text> },
         ]}
       />
     </HistoryPageScaffold>
@@ -163,26 +213,26 @@ export function TransfersHistoryPage() {
     <HistoryPageScaffold
       eyebrow="History"
       title="Transfers"
-      description="内部划转页面预留展示，实际资金变更依然以统一账本分录为准。"
+      description="查看账户内部划转记录。"
       loading={loading}
       refreshing={refreshing}
       error={error}
       authenticated={authenticated}
       onRefresh={reload}
       hasData={data.length > 0}
-      emptyDescription="当前账户还没有内部划转记录。下一步接入真实划转后，这里直接显示 `/api/v1/account/transfers` 返回值。"
+      emptyDescription="当前账户还没有内部划转记录。"
     >
       <Table
         rowKey="transfer_id"
         dataSource={data}
         pagination={false}
         columns={[
-          { title: 'Time', dataIndex: 'created_at', render: (value: string) => formatDateTime(value) },
-          { title: 'Asset', dataIndex: 'asset' },
-          { title: 'Amount', dataIndex: 'amount', align: 'right', render: (value: string) => formatUsd(value) },
-          { title: 'From', dataIndex: 'from_account' },
-          { title: 'To', dataIndex: 'to_account' },
-          { title: 'Status', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
+          { title: '时间', dataIndex: 'created_at', render: (value: string) => formatDateTime(value) },
+          { title: '方向', dataIndex: 'direction', render: (value: TransferItem['direction']) => formatTransferDirection(value) },
+          { title: '对手方地址', dataIndex: 'counterparty_address', render: (value: string) => (value ? formatAddress(value, 8) : '--') },
+          { title: '资产', dataIndex: 'asset' },
+          { title: '金额', dataIndex: 'amount', align: 'right', render: (value: string) => formatUsd(value, 8) },
+          { title: '状态', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
         ]}
       />
     </HistoryPageScaffold>

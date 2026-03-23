@@ -30,9 +30,14 @@ else
 fi
 
 sh "$ROOT_DIR/deploy/scripts/bootstrap-local-chain.sh"
-docker compose up -d --build mysql mysql-init redis rabbitmq api-server indexer market-data
+docker compose up -d mysql mysql-init redis rabbitmq
 
 echo
 echo "local dev stack is ready"
+echo "reset local state: sh $ROOT_DIR/deploy/scripts/reset-local-dev.sh"
 echo "frontend env: $ROOT_DIR/frontend/.env.local"
-echo "frontend start: cd $ROOT_DIR/frontend && pnpm dev"
+echo "api-server start: sh $ROOT_DIR/deploy/scripts/run-backend-local.sh api-server"
+echo "indexer start: sh $ROOT_DIR/deploy/scripts/run-backend-local.sh indexer"
+echo "market-data start: sh $ROOT_DIR/deploy/scripts/run-backend-local.sh market-data"
+echo "funding-worker start: sh $ROOT_DIR/deploy/scripts/run-backend-local.sh funding-worker"
+echo "frontend start: sh $ROOT_DIR/deploy/scripts/start-frontend-local.sh"

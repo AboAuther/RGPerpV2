@@ -225,13 +225,13 @@ export function DepositPage() {
 
   async function handleMintNative(chainId: number) {
     if (!session) {
-      message.warning('请先登录后再领取测试 ETH');
+      message.warning('请先登录后再获取 ETH');
       return;
     }
     try {
       setFundingNativeChain(chainId);
       await api.wallet.requestLocalNativeFaucet(chainId);
-      message.success('已发放测试 ETH，请在钱包中确认余额');
+      message.success('ETH 已发放，请在钱包中确认余额');
     } catch (mintError) {
       setError(mintError);
     } finally {
@@ -241,7 +241,7 @@ export function DepositPage() {
 
   async function handleMintUsdc(chainId: number, usdcAddress?: string | null) {
     if (!session) {
-      message.warning('请先登录后再领取测试 USDC');
+      message.warning('请先登录后再获取 USDC');
       return;
     }
     if (!usdcAddress) {
@@ -312,7 +312,7 @@ export function DepositPage() {
         <PageIntro
           eyebrow="Wallet"
           title="Deposit"
-          description="充值地址按链、按需生成。前端默认隐藏完整地址；只有用户主动生成并展开后才展示。所有链的到账判定一致，只有 CREDITED 才表示链下账本已入账。"
+          description="选择链后生成充值地址，并跟踪到账状态。"
           titleEffect="shiny"
           descriptionEffect="proximity"
           extra={
@@ -320,7 +320,7 @@ export function DepositPage() {
               <Select
                 value={selectedChain?.chain_id}
                 style={{ minWidth: 220 }}
-                placeholder={chains.length === 0 ? '后端未返回可用链' : '请选择链'}
+                placeholder={chains.length === 0 ? '暂无可用链' : '请选择链'}
                 options={chains.map((chain) => ({
                   label: `${chain.name} (${chain.chain_id})`,
                   value: chain.chain_id,
@@ -339,15 +339,15 @@ export function DepositPage() {
           showIcon
           type="info"
           message="充值状态说明"
-          description="DETECTED 表示已检测到链上转账，CONFIRMING 表示确认中，CREDITED 才代表账本已记账。本地链工具按钮只在后端明确返回 local_testnet/local_tools_enabled 时展示。"
+          description="DETECTED 表示已检测到链上转账，CONFIRMING 表示确认中，CREDITED 表示已到账。"
         />
 
         {loading || chainsLoading ? <Spin size="large" /> : null}
         <ErrorAlert error={chainsError || error} />
-        {!session ? <LoginRequiredCard title="登录后使用充值功能" description="充值页允许未登录浏览，但生成充值地址、领取测试资产和便捷充值都需要先登录。" /> : null}
+        {!session ? <LoginRequiredCard title="登录后使用充值功能" description="充值页允许未登录浏览，但生成充值地址和发起充值操作需要先登录。" /> : null}
 
         {!chainsLoading && chains.length === 0 ? (
-          <EmptyStateCard title="暂无可用充值链" description="后端当前未返回任何可用链配置，充值页不会自行伪造链列表或测试地址。" />
+          <EmptyStateCard title="暂无可用充值链" description="当前暂时没有可用的充值链，请稍后再试。" />
         ) : null}
 
         {selectedChain ? (
@@ -368,7 +368,7 @@ export function DepositPage() {
               <Text type="secondary">确认数要求: {selectedAddress?.confirmations ?? selectedChain.confirmations}</Text>
               {isLocalSelectedChain && selectedChain.local_tools_enabled ? (
                 <Space direction="vertical" size={6} style={{ maxWidth: 320 }}>
-                  <Text strong>本地链充值金额</Text>
+                  <Text strong>充值金额</Text>
                   <Input
                     value={depositAmount}
                     onChange={(event) => setDepositAmount(event.target.value)}
@@ -376,7 +376,7 @@ export function DepositPage() {
                     status={depositAmountError ? 'error' : ''}
                   />
                   <Text type={depositAmountError ? 'danger' : 'secondary'}>
-                    {depositAmountError || '便捷充值与测试 USDC mint 将使用该金额'}
+                    {depositAmountError || '快捷充值将使用该金额'}
                   </Text>
                 </Space>
               ) : null}
@@ -403,15 +403,15 @@ export function DepositPage() {
                 )}
               </Space>
               {!selectedChain.deposit_enabled ? (
-                <Text type="secondary">当前链未在后端启动配置中启用充值分配能力。</Text>
+                <Text type="secondary">当前链暂不支持充值。</Text>
               ) : null}
               {isLocalSelectedChain && selectedChain.local_tools_enabled ? (
                 <Space wrap>
                   <Button loading={fundingNativeChain === selectedChain.chain_id} onClick={() => void handleMintNative(selectedChain.chain_id)}>
-                    领取测试 ETH
+                    获取 ETH
                   </Button>
                   <Button loading={mintingChain === selectedChain.chain_id} onClick={() => void handleMintUsdc(selectedChain.chain_id, selectedChain.usdc_address)}>
-                    领取测试 USDC
+                    获取 USDC
                   </Button>
                   <Button
                     type="primary"
@@ -425,7 +425,7 @@ export function DepositPage() {
                 </Space>
               ) : null}
               <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                每条链的充值流程一致：用户获取该链充值地址后，可从任意交易所或钱包向该地址转账。前端只展示后端配置中真实可用的链，不再写死任何链、地址或测试资产。
+                获取充值地址后，可从支持该链的钱包或交易所向该地址转账。
               </Paragraph>
             </Space>
           </Card>

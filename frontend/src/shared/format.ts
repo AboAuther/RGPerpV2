@@ -8,13 +8,45 @@ function toNumber(input: string | number | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function formatUsd(input: string | number | null | undefined, digits = 2): string {
+function normalizeNumericInput(input: string | number | null | undefined): string {
+  if (input == null) {
+    return '0';
+  }
+  if (typeof input === 'string') {
+    const normalized = input.trim();
+    return normalized || '0';
+  }
+  if (!Number.isFinite(input)) {
+    return '0';
+  }
+  if (Number.isInteger(input)) {
+    return input.toString();
+  }
+  return input.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function resolveUsdFractionDigits(input: string | number | null | undefined, minimumDigits: number, maximumDigits: number): number {
+  const normalized = normalizeNumericInput(input);
+  const [, rawFraction = ''] = normalized.split('.');
+  const fraction = rawFraction.replace(/0+$/, '');
+  if (!fraction) {
+    return minimumDigits;
+  }
+  return Math.min(maximumDigits, Math.max(minimumDigits, fraction.length));
+}
+
+export function formatUsd(input: string | number | null | undefined, maximumDigits = 6): string {
+  const fractionDigits = resolveUsdFractionDigits(input, 2, maximumDigits);
   return new Intl.NumberFormat('zh-CN', {
     style: 'currency',
     currency: 'USD',
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: fractionDigits,
   }).format(toNumber(input));
+}
+
+export function formatUsdAdaptive(input: string | number | null | undefined, maxDigits = 6): string {
+  return formatUsd(input, maxDigits);
 }
 
 export function formatDecimal(input: string | number | null | undefined, digits = 4): string {
@@ -24,10 +56,24 @@ export function formatDecimal(input: string | number | null | undefined, digits 
   }).format(toNumber(input));
 }
 
-export function formatSignedUsd(input: string | number | null | undefined, digits = 2): string {
+export function formatDecimalAdaptive(input: string | number | null | undefined, maximumDigits = 8, minimumDigits = 0): string {
+  const fractionDigits = resolveUsdFractionDigits(input, minimumDigits, maximumDigits);
+  return new Intl.NumberFormat('zh-CN', {
+    minimumFractionDigits: minimumDigits,
+    maximumFractionDigits: fractionDigits,
+  }).format(toNumber(input));
+}
+
+export function formatSignedUsd(input: string | number | null | undefined, maximumDigits = 6): string {
   const value = toNumber(input);
   const prefix = value > 0 ? '+' : '';
-  return `${prefix}${formatUsd(value, digits)}`;
+  return `${prefix}${formatUsd(input, maximumDigits)}`;
+}
+
+export function formatSignedUsdAdaptive(input: string | number | null | undefined, maxDigits = 6): string {
+  const value = toNumber(input);
+  const prefix = value > 0 ? '+' : '';
+  return `${prefix}${formatUsdAdaptive(value, maxDigits)}`;
 }
 
 export function formatPercent(input: string | number | null | undefined, digits = 2): string {

@@ -63,6 +63,7 @@ func TestWalletHandler_CreateWithdrawal(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewWalletHandler(fakeWalletReader{}, mutator, nil),
 		nil,
 		nil,
@@ -93,6 +94,7 @@ func TestWalletHandler_GenerateDepositAddress(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewWalletHandler(fakeWalletReader{}, mutator, nil),
 		nil,
 		nil,
@@ -117,6 +119,7 @@ func TestWalletHandler_RequestLocalNativeFaucet(t *testing.T) {
 	tools := &fakeLocalChainSupport{}
 	engine := NewEngine(
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0x0000000000000000000000000000000000000001"}},
+		nil,
 		nil,
 		nil,
 		nil,

@@ -8,6 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type fakeHTTPRuntimeConfigProvider struct {
+	config HTTPRuntimeConfig
+}
+
+func (f fakeHTTPRuntimeConfigProvider) CurrentHTTPRuntimeConfig() HTTPRuntimeConfig {
+	return f.config
+}
+
 func TestCORSMiddleware_HandlesPreflight(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -33,5 +41,23 @@ func TestCORSMiddleware_HandlesPreflight(t *testing.T) {
 	}
 	if got := rec.Header().Get("Access-Control-Allow-Methods"); got == "" {
 		t.Fatalf("expected allow methods header")
+	}
+}
+
+func TestTraceMiddleware_RejectsMissingTraceHeaderWhenRequired(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	engine := gin.New()
+	engine.Use(TraceMiddleware(fakeHTTPRuntimeConfigProvider{config: HTTPRuntimeConfig{TraceHeaderRequired: true}}))
+	engine.POST("/api/v1/orders", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/orders", nil)
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
 	}
 }

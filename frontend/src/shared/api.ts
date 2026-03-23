@@ -13,11 +13,17 @@ import type {
   AdminWithdrawReviewItem,
   OrderItem,
   OrderCreateRequest,
+  LedgerOverview,
+  LedgerAuditReport,
+  RiskMonitorDashboard,
+  RuntimeConfigPatchRequest,
+  RuntimeConfigView,
   PositionItem,
   RiskSnapshot,
   SymbolItem,
   TickerItem,
   TransferItem,
+  TransferRequest,
   WithdrawItem,
   WithdrawRequest,
   SystemChainItem,
@@ -25,11 +31,13 @@ import type {
 
 export class ApiError extends Error {
   traceId?: string;
+  status?: number;
 
-  constructor(message: string, traceId?: string) {
+  constructor(message: string, traceId?: string, status?: number) {
     super(message);
     this.name = 'ApiError';
     this.traceId = traceId;
+    this.status = status;
   }
 }
 
@@ -48,6 +56,9 @@ function buildRequestHeaders(init?: RequestInit): Headers {
 
   if (!headers.has('Accept')) {
     headers.set('Accept', 'application/json');
+  }
+  if (!headers.has('X-Trace-Id')) {
+    headers.set('X-Trace-Id', buildTraceId());
   }
   if (init?.method && init.method !== 'GET' && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json');
@@ -73,12 +84,29 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new ApiError(parsed?.message || `Request failed with status ${response.status}`, parsed?.trace_id);
+    throw new ApiError(parsed?.message || `Request failed with status ${response.status}`, parsed?.trace_id, response.status);
   }
   if (!parsed) {
     throw new ApiError('接口返回为空');
   }
   return parsed.data;
+}
+
+async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
+  const response = await fetch(`${appConfig.apiBaseUrl.replace(/\/$/, '')}${path}`, {
+    ...init,
+    headers: buildRequestHeaders(init),
+  });
+  if (!response.ok) {
+    let parsed: ApiEnvelope<unknown> | null = null;
+    try {
+      parsed = (await response.json()) as ApiEnvelope<unknown>;
+    } catch {
+      parsed = null;
+    }
+    throw new ApiError(parsed?.message || `Request failed with status ${response.status}`, parsed?.trace_id, response.status);
+  }
+  return response.blob();
 }
 
 export function setApiAccessToken(token?: string) {
@@ -223,6 +251,48 @@ export const api = {
     getWithdrawals(): Promise<AdminWithdrawReviewItem[]> {
       return requestJson<AdminWithdrawReviewItem[]>('/api/v1/admin/withdrawals');
     },
+    getRiskMonitorDashboard(): Promise<RiskMonitorDashboard> {
+      return requestJson<RiskMonitorDashboard>('/api/v1/admin/risk/net-exposures');
+    },
+    getRuntimeConfig(limit = 20): Promise<RuntimeConfigView> {
+      return requestJson<RuntimeConfigView>(`/api/v1/admin/configs/runtime?limit=${limit}`);
+    },
+    updateRuntimeConfig(input: RuntimeConfigPatchRequest): Promise<RuntimeConfigView> {
+      return requestJson<RuntimeConfigView>('/api/v1/admin/configs/runtime', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('runtimecfg'),
+        },
+      });
+    },
+    getLedgerOverview(asset?: string): Promise<LedgerOverview> {
+      const params = asset ? `?asset=${encodeURIComponent(asset)}` : '';
+      return requestJson<LedgerOverview>(`/api/v1/admin/ledger/overview${params}`);
+    },
+    getLatestLedgerAudit(asset?: string): Promise<LedgerAuditReport> {
+      const params = asset ? `?asset=${encodeURIComponent(asset)}` : '';
+      return requestJson<LedgerAuditReport>(`/api/v1/admin/ledger/audits/latest${params}`);
+    },
+    runLedgerAudit(asset?: string): Promise<LedgerAuditReport> {
+      const params = asset ? `?asset=${encodeURIComponent(asset)}` : '';
+      return requestJson<LedgerAuditReport>(`/api/v1/admin/ledger/audits/run${params}`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('audit'),
+        },
+      });
+    },
+    downloadLatestLedgerAudit(format: 'json' | 'csv', asset?: string): Promise<Blob> {
+      const search = new URLSearchParams();
+      search.set('format', format);
+      if (asset) {
+        search.set('asset', asset);
+      }
+      return requestBlob(`/api/v1/admin/ledger/audits/latest/export?${search.toString()}`);
+    },
     approveWithdrawal(withdrawId: string): Promise<{ withdraw_id: string; status: string }> {
       return requestJson<{ withdraw_id: string; status: string }>(`/api/v1/admin/withdrawals/${withdrawId}/approve`, {
         method: 'POST',
@@ -243,6 +313,16 @@ export const api = {
   transfers: {
     getHistory(): Promise<TransferItem[]> {
       return requestJson<TransferItem[]>('/api/v1/account/transfers');
+    },
+    create(input: TransferRequest): Promise<void> {
+      return requestJson<void>('/api/v1/account/transfer', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('transfer'),
+        },
+      });
     },
   },
 };

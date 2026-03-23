@@ -93,6 +93,12 @@ export interface WithdrawRequest {
   to_address: string;
 }
 
+export interface TransferRequest {
+  to_address: string;
+  asset: string;
+  amount: string;
+}
+
 export interface WithdrawItem {
   withdraw_id: string;
   chain_id: number;
@@ -132,6 +138,8 @@ export interface TickerItem {
   mark_price: string;
   best_bid: string;
   best_ask: string;
+  status: string;
+  stale: boolean;
   ts: string;
 }
 
@@ -150,6 +158,7 @@ export interface OrderItem {
   reduce_only: boolean;
   status: string;
   reject_reason?: string | null;
+  created_at: string;
 }
 
 export interface OrderCreateRequest {
@@ -157,7 +166,7 @@ export interface OrderCreateRequest {
   symbol: string;
   side: 'BUY' | 'SELL';
   position_effect: 'OPEN' | 'REDUCE' | 'CLOSE';
-  type: 'MARKET' | 'LIMIT';
+  type: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
   qty: string;
   price?: string | null;
   trigger_price?: string | null;
@@ -223,6 +232,160 @@ export interface AdminWithdrawReviewItem {
   created_at: string;
 }
 
+export interface LedgerAssetOverview {
+  asset: string;
+  user_wallet: string;
+  user_order_margin: string;
+  user_position_margin: string;
+  user_withdraw_hold: string;
+  user_margin: string;
+  user_liability: string;
+  system_pool: string;
+  trading_fee_account: string;
+  withdraw_fee_account: string;
+  penalty_account: string;
+  funding_pool: string;
+  insurance_fund: string;
+  rounding_diff_account: string;
+  deposit_pending_confirm: string;
+  withdraw_in_transit: string;
+  sweep_in_transit: string;
+  custody_hot: string;
+  custody_warm: string;
+  custody_cold: string;
+  test_faucet_pool: string;
+  platform_revenue: string;
+  risk_buffer: string;
+  in_flight: string;
+  custody_mirror: string;
+  net_balance: string;
+}
+
+export interface LedgerOverview {
+  scope_asset: string;
+  generated_at: string;
+  notes: string[];
+  assets: LedgerAssetOverview[];
+}
+
+export interface LedgerChainBalance {
+  row_type: 'CHAIN' | 'TOTAL';
+  chain_id: number;
+  chain_key: string;
+  chain_name: string;
+  asset: string;
+  vault_address: string;
+  onchain_balance: string;
+  custody_mirror: string;
+  delta: string;
+  status: 'PASS' | 'FAIL';
+}
+
+export interface LedgerAuditCheck {
+  check_key: string;
+  label: string;
+  status: 'PASS' | 'FAIL';
+  value: string;
+  summary: string;
+  sample_refs?: string[];
+}
+
+export interface LedgerAuditReport {
+  audit_report_id: string;
+  scope_asset: string;
+  status: 'PASS' | 'FAIL';
+  executed_by: string;
+  started_at: string;
+  finished_at: string;
+  overview: LedgerAssetOverview[];
+  chain_balances?: LedgerChainBalance[];
+  checks: LedgerAuditCheck[];
+}
+
+export interface SymbolNetExposureItem {
+  symbol: string;
+  status: string;
+  mark_price: string;
+  long_qty: string;
+  short_qty: string;
+  net_qty: string;
+  net_notional: string;
+  hard_limit_notional: string;
+  utilization_ratio: string;
+  blocked_open_side?: 'BUY' | 'SELL' | null;
+  buy_adjustment_bps: number;
+  sell_adjustment_bps: number;
+}
+
+export interface RiskMonitorDashboard {
+  generated_at: string;
+  hard_limit_notional: string;
+  max_dynamic_slippage_bps: number;
+  items: SymbolNetExposureItem[];
+}
+
+export interface RuntimeConfigSnapshotView {
+  system_mode: string;
+  read_only: boolean;
+  reduce_only: boolean;
+  trace_header_required: boolean;
+  risk_global_buffer_ratio: string;
+  risk_mark_price_stale_sec: number;
+  risk_force_reduce_only_on_stale_price: boolean;
+  risk_liquidation_penalty_rate: string;
+  risk_liquidation_extra_slippage_bps: number;
+  risk_max_open_orders_per_user_per_symbol: number;
+  risk_net_exposure_hard_limit: string;
+  risk_max_exposure_slippage_bps: number;
+  hedge_enabled: boolean;
+  hedge_soft_threshold_ratio: string;
+  hedge_hard_threshold_ratio: string;
+}
+
+export interface RuntimeConfigHistoryItem {
+  config_key: string;
+  scope_type: string;
+  scope_value: string;
+  version: number;
+  value: unknown;
+  status: string;
+  created_by: string;
+  approved_by?: string | null;
+  reason: string;
+  effective_at: string;
+  created_at: string;
+}
+
+export interface RuntimeConfigView {
+  snapshot: RuntimeConfigSnapshotView;
+  generated_at: string;
+  history: RuntimeConfigHistoryItem[];
+}
+
+export interface RuntimeConfigPatchRequest {
+  reason: string;
+  global?: {
+    read_only?: boolean;
+    reduce_only?: boolean;
+    trace_header_required?: boolean;
+  };
+  risk?: {
+    global_buffer_ratio?: string;
+    mark_price_stale_sec?: number;
+    force_reduce_only_on_stale_price?: boolean;
+    liquidation_penalty_rate?: string;
+    liquidation_extra_slippage_bps?: number;
+    max_open_orders_per_user_per_symbol?: number;
+    net_exposure_hard_limit?: string;
+    max_exposure_slippage_bps?: number;
+  };
+  hedge?: {
+    enabled?: boolean;
+    soft_threshold_ratio?: string;
+    hard_threshold_ratio?: string;
+  };
+}
+
 export interface FundingItem {
   funding_id: string;
   symbol: string;
@@ -237,6 +400,8 @@ export interface TransferItem {
   transfer_id: string;
   asset: string;
   amount: string;
+  direction: 'IN' | 'OUT' | 'SELF' | 'UNKNOWN';
+  counterparty_address: string;
   from_account: string;
   to_account: string;
   status: string;

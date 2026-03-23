@@ -5,13 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
+	riskdomain "github.com/xiaobao/rgperp/backend/internal/domain/risk"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
+	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/exposurex"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -139,11 +144,20 @@ func (r *DepositAddressRepository) Upsert(ctx context.Context, address walletdom
 }
 
 type AccountQueryRepository struct {
-	db *gorm.DB
+	db      *gorm.DB
+	runtime RiskRuntimeConfigProvider
 }
 
 func NewAccountQueryRepository(db *gorm.DB) *AccountQueryRepository {
 	return &AccountQueryRepository{db: db}
+}
+
+type RiskRuntimeConfigProvider interface {
+	CurrentRiskRuntimeConfig() riskdomain.ServiceConfig
+}
+
+func NewAccountQueryRepositoryWithRuntime(db *gorm.DB, runtime RiskRuntimeConfigProvider) *AccountQueryRepository {
+	return &AccountQueryRepository{db: db, runtime: runtime}
 }
 
 func (r *AccountQueryRepository) ListBalances(ctx context.Context, userID uint64) ([]readmodel.BalanceItem, error) {
@@ -173,85 +187,139 @@ func (r *AccountQueryRepository) ListBalances(ctx context.Context, userID uint64
 }
 
 func (r *AccountQueryRepository) GetSummary(ctx context.Context, userID uint64) (readmodel.AccountSummary, error) {
-	balances, err := r.ListBalances(ctx, userID)
+	state, err := loadRiskAccountState(ctx, DB(ctx, r.db), userID, false)
 	if err != nil {
 		return readmodel.AccountSummary{}, err
 	}
-	var positions []PositionModel
-	if err := DB(ctx, r.db).Where("user_id = ? AND status = ?", userID, "OPEN").Find(&positions).Error; err != nil {
-		return readmodel.AccountSummary{}, err
-	}
-
-	equity := decimalx.MustFromString("0")
-	available := decimalx.MustFromString("0")
-	initialMargin := decimalx.MustFromString("0")
-	maintenanceMargin := decimalx.MustFromString("0")
-	unrealizedPnL := decimalx.MustFromString("0")
-	orderHold := decimalx.MustFromString("0")
-	positionMarginBalance := decimalx.MustFromString("0")
-
-	for _, item := range balances {
-		value := decimalx.MustFromString(item.Balance)
-		equity = equity.Add(value)
-		switch item.AccountCode {
-		case "USER_WALLET":
-			available = value
-		case "USER_ORDER_MARGIN":
-			orderHold = orderHold.Add(value)
-		case "USER_POSITION_MARGIN":
-			positionMarginBalance = positionMarginBalance.Add(value)
-		}
-	}
-
-	for _, position := range positions {
-		initialMargin = initialMargin.Add(decimalx.MustFromString(position.InitialMargin))
-		maintenanceMargin = maintenanceMargin.Add(decimalx.MustFromString(position.MaintenanceMargin))
-		unrealizedPnL = unrealizedPnL.Add(decimalx.MustFromString(position.UnrealizedPnL))
-	}
-
-	equity = equity.Add(unrealizedPnL)
-	initialMargin = initialMargin.Add(orderHold)
-
-	marginRatio := "0"
-	if maintenanceMargin.GreaterThan(decimalx.MustFromString("0")) {
-		marginRatio = equity.Div(maintenanceMargin).String()
-	}
-	if !positionMarginBalance.IsZero() && initialMargin.IsZero() {
-		initialMargin = positionMarginBalance
-	}
-	if maintenanceMargin.IsZero() && !positionMarginBalance.IsZero() {
-		maintenanceMargin = positionMarginBalance
-		if equity.GreaterThan(decimalx.MustFromString("0")) {
-			marginRatio = equity.Div(maintenanceMargin).String()
-		}
-	}
+	metrics := riskdomain.ComputeAccountMetrics(state, r.currentRiskConfig())
 	return readmodel.AccountSummary{
-		Equity:                 equity.String(),
-		AvailableBalance:       available.String(),
-		TotalInitialMargin:     initialMargin.String(),
-		TotalMaintenanceMargin: maintenanceMargin.String(),
-		UnrealizedPnL:          unrealizedPnL.String(),
-		MarginRatio:            marginRatio,
+		Equity:                 metrics.Equity,
+		AvailableBalance:       metrics.AvailableBalance,
+		TotalInitialMargin:     metrics.InitialMargin,
+		TotalMaintenanceMargin: metrics.MaintenanceMargin,
+		UnrealizedPnL:          metrics.UnrealizedPnL,
+		MarginRatio:            metrics.MarginRatio,
 	}, nil
 }
 
 func (r *AccountQueryRepository) GetRisk(ctx context.Context, userID uint64) (readmodel.RiskSnapshot, error) {
-	summary, err := r.GetSummary(ctx, userID)
-	if err != nil {
+	state, stateErr := loadRiskAccountState(ctx, DB(ctx, r.db), userID, false)
+	cfg := r.currentRiskConfig()
+	markIssue, markIssueNote := currentMarkPriceIssue(state.Positions, cfg, time.Now().UTC())
+	var latest RiskSnapshotModel
+	err := DB(ctx, r.db).
+		Order("id DESC").
+		Where("user_id = ?", userID).
+		First(&latest).Error
+	if err == nil {
+		riskState := "SAFE"
+		canOpenRisk := true
+		notes := []string{
+			fmt.Sprintf("最新风险快照权益=%s，维持保证金=%s，风险率=%s。", latest.Equity, latest.MaintenanceMargin, latest.MarginRatio),
+		}
+		switch latest.RiskLevel {
+		case "NO_NEW_RISK":
+			riskState = "NO_NEW_RISK"
+			canOpenRisk = false
+			notes = append(notes, "账户已进入 NO_NEW_RISK，禁止新增风险，仅允许减仓或补充保证金。")
+		case "LIQUIDATING":
+			riskState = "LIQUIDATING"
+			canOpenRisk = false
+			notes = append(notes, "账户已进入强平流程，禁止新增风险。")
+		case "SAFE":
+			notes = append(notes, "账户风险处于安全区间。")
+		default:
+			riskState = latest.RiskLevel
+		}
+		if markIssue {
+			canOpenRisk = false
+			notes = append(notes, markIssueNote)
+		}
+		return readmodel.RiskSnapshot{
+			AccountStatus:  "ACTIVE",
+			RiskState:      riskState,
+			MarkPriceStale: markIssue,
+			CanOpenRisk:    canOpenRisk,
+			Notes:          notes,
+		}, nil
+	}
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return readmodel.RiskSnapshot{}, err
 	}
+
+	if stateErr != nil {
+		if err != nil {
+			return readmodel.RiskSnapshot{}, err
+		}
+		return readmodel.RiskSnapshot{}, stateErr
+	}
+	metrics := riskdomain.ComputeAccountMetrics(state, cfg)
 	risk := readmodel.RiskSnapshot{
 		AccountStatus:  "ACTIVE",
-		RiskState:      "SAFE",
-		MarkPriceStale: false,
-		CanOpenRisk:    true,
-		Notes:          []string{"当前风险视图基于账户子账户余额与仓位快照，订单与仓位资金均遵循统一账本模型。"},
+		RiskState:      metrics.RiskLevel,
+		MarkPriceStale: markIssue,
+		CanOpenRisk:    !markIssue && metrics.RiskLevel == riskdomain.RiskLevelSafe,
+		Notes: []string{
+			fmt.Sprintf("当前风险视图权益=%s，维持保证金=%s，风险率=%s。", metrics.Equity, metrics.MaintenanceMargin, metrics.MarginRatio),
+		},
 	}
-	if summary.Equity == "0" {
-		risk.RiskState = "WATCH"
-		risk.Notes = append(risk.Notes, "账户权益为 0，新增风险应保持保守策略。")
+	if metrics.RiskLevel == riskdomain.RiskLevelNoNewRisk {
+		risk.Notes = append(risk.Notes, "账户已进入 NO_NEW_RISK，禁止新增风险，仅允许减仓或补充保证金。")
+	}
+	if metrics.RiskLevel == riskdomain.RiskLevelLiquidating {
+		risk.CanOpenRisk = false
+		risk.Notes = append(risk.Notes, "账户已进入强平流程，禁止新增风险。")
+	}
+	if metrics.RiskLevel == riskdomain.RiskLevelSafe {
+		risk.Notes = append(risk.Notes, "账户风险处于安全区间。")
+	}
+	if markIssue {
+		risk.CanOpenRisk = false
+		risk.Notes = append(risk.Notes, markIssueNote)
 	}
 	return risk, nil
+}
+
+func (r *AccountQueryRepository) currentRiskConfig() riskdomain.ServiceConfig {
+	if r == nil || r.runtime == nil {
+		return riskdomain.ServiceConfig{
+			RiskBufferRatio:             "0",
+			SoftThresholdRatio:          "0.2",
+			HardThresholdRatio:          "0.4",
+			TakerFeeRate:                "0",
+			ForceReduceOnlyOnStalePrice: true,
+		}
+	}
+	cfg := r.runtime.CurrentRiskRuntimeConfig()
+	if cfg.RiskBufferRatio == "" {
+		cfg.RiskBufferRatio = "0"
+	}
+	if cfg.SoftThresholdRatio == "" {
+		cfg.SoftThresholdRatio = "0.2"
+	}
+	if cfg.HardThresholdRatio == "" {
+		cfg.HardThresholdRatio = "0.4"
+	}
+	if cfg.TakerFeeRate == "" {
+		cfg.TakerFeeRate = "0"
+	}
+	return cfg
+}
+
+func currentMarkPriceIssue(positions []riskdomain.PositionExposure, cfg riskdomain.ServiceConfig, now time.Time) (bool, string) {
+	if len(positions) == 0 {
+		return false, ""
+	}
+	staleThreshold := time.Duration(cfg.MarkPriceStaleSec) * time.Second
+	for _, position := range positions {
+		if !decimalx.MustFromString(position.MarkPrice).GreaterThan(decimalx.MustFromString("0")) {
+			return true, fmt.Sprintf("当前 %s 的 MARK PRICE（标记价格） 无效，系统已禁止新增风险，仅允许 REDUCE_ONLY（只减仓）。", position.Symbol)
+		}
+		if staleThreshold > 0 && (position.MarkPriceUpdatedAt.IsZero() || now.Sub(position.MarkPriceUpdatedAt) > staleThreshold) && cfg.ForceReduceOnlyOnStalePrice {
+			return true, fmt.Sprintf("当前 %s 的 MARK PRICE（标记价格） 已过期，系统已禁止新增风险，仅允许 REDUCE_ONLY（只减仓）。", position.Symbol)
+		}
+	}
+	return false, ""
 }
 
 func (r *AccountQueryRepository) ListFunding(ctx context.Context, userID uint64) ([]readmodel.FundingItem, error) {
@@ -261,7 +329,18 @@ func (r *AccountQueryRepository) ListFunding(ctx context.Context, userID uint64)
 func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint64) ([]readmodel.TransferItem, error) {
 	var txs []LedgerTxModel
 	if err := DB(ctx, r.db).
-		Where("biz_type = ? AND operator_id = ?", "TRANSFER", fmt.Sprintf("%d", userID)).
+		Where(`
+			biz_type = ?
+			AND (
+				operator_id = ?
+				OR EXISTS (
+					SELECT 1
+					FROM ledger_entries
+					WHERE ledger_entries.ledger_tx_id = ledger_tx.ledger_tx_id
+						AND ledger_entries.user_id = ?
+				)
+			)
+		`, "TRANSFER", fmt.Sprintf("%d", userID), userID).
 		Order("created_at DESC").
 		Find(&txs).Error; err != nil {
 		return nil, err
@@ -269,25 +348,187 @@ func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint6
 
 	out := make([]readmodel.TransferItem, 0, len(txs))
 	for _, tx := range txs {
+		direction, counterpartyAddress, fromAccount, toAccount := describeTransferForUser(ctx, r.db, tx.LedgerTxID, userID)
 		out = append(out, readmodel.TransferItem{
-			TransferID:  tx.BizRefID,
-			Asset:       tx.Asset,
-			Amount:      extractPositiveTransferAmount(ctx, r.db, tx.LedgerTxID),
-			FromAccount: "USER_WALLET",
-			ToAccount:   "USER_WALLET",
-			Status:      tx.Status,
-			CreatedAt:   tx.CreatedAt.Format(time.RFC3339),
+			TransferID:          tx.BizRefID,
+			Asset:               tx.Asset,
+			Amount:              extractPositiveTransferAmount(ctx, r.db, tx.LedgerTxID),
+			Direction:           direction,
+			CounterpartyAddress: counterpartyAddress,
+			FromAccount:         fromAccount,
+			ToAccount:           toAccount,
+			Status:              tx.Status,
+			CreatedAt:           tx.CreatedAt.Format(time.RFC3339),
 		})
 	}
 	return out, nil
 }
 
 type WalletQueryRepository struct {
-	db *gorm.DB
+	db          *gorm.DB
+	riskMonitor RiskMonitorConfig
+	chainReader interface {
+		ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
+	}
 }
 
-func NewWalletQueryRepository(db *gorm.DB) *WalletQueryRepository {
-	return &WalletQueryRepository{db: db}
+type RiskMonitorConfig struct {
+	HardLimitNotional      string
+	MaxExposureSlippageBps int
+}
+
+func NewWalletQueryRepository(db *gorm.DB, chainReaders ...interface {
+	ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
+}) *WalletQueryRepository {
+	var chainReader interface {
+		ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
+	}
+	if len(chainReaders) > 0 {
+		chainReader = chainReaders[0]
+	}
+	return &WalletQueryRepository{db: db, chainReader: chainReader}
+}
+
+func NewWalletQueryRepositoryWithRiskConfig(db *gorm.DB, riskCfg RiskMonitorConfig, chainReaders ...interface {
+	ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
+}) *WalletQueryRepository {
+	repo := NewWalletQueryRepository(db, chainReaders...)
+	repo.riskMonitor = riskCfg
+	return repo
+}
+
+func (r *WalletQueryRepository) GetRiskMonitorDashboard(ctx context.Context) (readmodel.RiskMonitorDashboard, error) {
+	var symbolRows []struct {
+		ID                 uint64 `gorm:"column:id"`
+		Symbol             string `gorm:"column:symbol"`
+		Status             string `gorm:"column:status"`
+		ContractMultiplier string `gorm:"column:contract_multiplier"`
+	}
+	if err := DB(ctx, r.db).
+		Table("symbols").
+		Select("id, symbol, status, contract_multiplier").
+		Where("status IN ?", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).
+		Order("symbol ASC").
+		Scan(&symbolRows).Error; err != nil {
+		return readmodel.RiskMonitorDashboard{}, err
+	}
+
+	var markRows []struct {
+		SymbolID  uint64 `gorm:"column:symbol_id"`
+		MarkPrice string `gorm:"column:mark_price"`
+	}
+	if err := DB(ctx, r.db).Raw(`
+SELECT m1.symbol_id, m1.mark_price
+FROM mark_price_snapshots m1
+JOIN (
+  SELECT symbol_id, MAX(id) AS max_id
+  FROM mark_price_snapshots
+  GROUP BY symbol_id
+) latest ON latest.max_id = m1.id
+`).Scan(&markRows).Error; err != nil {
+		return readmodel.RiskMonitorDashboard{}, err
+	}
+	marksBySymbol := make(map[uint64]string, len(markRows))
+	for _, row := range markRows {
+		marksBySymbol[row.SymbolID] = row.MarkPrice
+	}
+
+	var positionRows []struct {
+		SymbolID uint64 `gorm:"column:symbol_id"`
+		Side     string `gorm:"column:side"`
+		Qty      string `gorm:"column:qty"`
+	}
+	if err := DB(ctx, r.db).
+		Table("positions").
+		Select("symbol_id, side, qty").
+		Where("status = ?", "OPEN").
+		Scan(&positionRows).Error; err != nil {
+		return readmodel.RiskMonitorDashboard{}, err
+	}
+	exposuresBySymbol := make(map[uint64]struct {
+		LongQty  string
+		ShortQty string
+	}, len(symbolRows))
+	for _, row := range positionRows {
+		current := exposuresBySymbol[row.SymbolID]
+		if current.LongQty == "" {
+			current.LongQty = "0"
+		}
+		if current.ShortQty == "" {
+			current.ShortQty = "0"
+		}
+		if row.Side == "LONG" {
+			current.LongQty = decimalAdd(current.LongQty, row.Qty)
+		} else {
+			current.ShortQty = decimalAdd(current.ShortQty, row.Qty)
+		}
+		exposuresBySymbol[row.SymbolID] = current
+	}
+
+	limit := r.riskMonitor.HardLimitNotional
+	if strings.TrimSpace(limit) == "" {
+		limit = "0"
+	}
+	items := make([]readmodel.SymbolNetExposureItem, 0, len(symbolRows))
+	for _, symbol := range symbolRows {
+		exposure := exposuresBySymbol[symbol.ID]
+		longQty := exposure.LongQty
+		shortQty := exposure.ShortQty
+		if longQty == "" {
+			longQty = "0"
+		}
+		if shortQty == "" {
+			shortQty = "0"
+		}
+		markPrice := marksBySymbol[symbol.ID]
+		if markPrice == "" {
+			markPrice = "0"
+		}
+		netQty := exposurex.SignedNetQty(longQty, shortQty)
+		netNotional := exposurex.SignedNetNotional(longQty, shortQty, markPrice, symbol.ContractMultiplier)
+		utilizationRatio := "0"
+		limitDecimal := decimalx.MustFromString(limit)
+		if limitDecimal.GreaterThan(decimalx.MustFromString("0")) {
+			utilizationRatio = netNotional.Abs().Div(limitDecimal).String()
+		}
+		var blockedOpenSide *string
+		if limitDecimal.GreaterThan(decimalx.MustFromString("0")) && netNotional.Abs().GreaterThanOrEqual(limitDecimal) {
+			side := "BUY"
+			if netQty.LessThan(decimalx.MustFromString("0")) {
+				side = "SELL"
+			}
+			blockedOpenSide = &side
+		}
+		items = append(items, readmodel.SymbolNetExposureItem{
+			Symbol:            symbol.Symbol,
+			Status:            symbol.Status,
+			MarkPrice:         markPrice,
+			LongQty:           longQty,
+			ShortQty:          shortQty,
+			NetQty:            netQty.String(),
+			NetNotional:       netNotional.String(),
+			HardLimitNotional: limit,
+			UtilizationRatio:  utilizationRatio,
+			BlockedOpenSide:   blockedOpenSide,
+			BuyAdjustmentBps:  exposurex.DirectionAdjustmentBps(netNotional, "BUY", limit, r.riskMonitor.MaxExposureSlippageBps),
+			SellAdjustmentBps: exposurex.DirectionAdjustmentBps(netNotional, "SELL", limit, r.riskMonitor.MaxExposureSlippageBps),
+		})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		left := decimalx.MustFromString(items[i].UtilizationRatio).Abs()
+		right := decimalx.MustFromString(items[j].UtilizationRatio).Abs()
+		if left.Equal(right) {
+			return items[i].Symbol < items[j].Symbol
+		}
+		return left.GreaterThan(right)
+	})
+
+	return readmodel.RiskMonitorDashboard{
+		GeneratedAt:           time.Now().UTC().Format(time.RFC3339),
+		HardLimitNotional:     limit,
+		MaxDynamicSlippageBps: r.riskMonitor.MaxExposureSlippageBps,
+		Items:                 items,
+	}, nil
 }
 
 type WalletReadService struct {
@@ -451,13 +692,27 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 	}
 	var rows []struct {
 		OutboxEventModel
-		Asset    string
-		BizType  string
-		BizRefID string
+		Asset          string
+		BizType        string
+		BizRefID       string
+		OrderUserID    *uint64
+		FillUserID     *uint64
+		PositionUserID *uint64
 	}
 	query := DB(ctx, r.db).Table("outbox_events").
-		Select("outbox_events.*, ledger_tx.asset, ledger_tx.biz_type, ledger_tx.biz_ref_id").
-		Joins("JOIN ledger_tx ON ledger_tx.ledger_tx_id = outbox_events.aggregate_id")
+		Select(`
+			outbox_events.*,
+			ledger_tx.asset,
+			ledger_tx.biz_type,
+			ledger_tx.biz_ref_id,
+			orders.user_id AS order_user_id,
+			fills.user_id AS fill_user_id,
+			positions.user_id AS position_user_id
+		`).
+		Joins("LEFT JOIN ledger_tx ON outbox_events.aggregate_type = 'ledger_tx' AND ledger_tx.ledger_tx_id = outbox_events.aggregate_id").
+		Joins("LEFT JOIN orders ON outbox_events.aggregate_type = 'order' AND orders.order_id = outbox_events.aggregate_id").
+		Joins("LEFT JOIN fills ON outbox_events.aggregate_type = 'fill' AND fills.fill_id = outbox_events.aggregate_id").
+		Joins("LEFT JOIN positions ON outbox_events.aggregate_type = 'position' AND positions.position_id = outbox_events.aggregate_id")
 	if !isAdmin {
 		query = query.Where(`
 			(
@@ -477,9 +732,24 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 			)
 			OR
 			(
-				ledger_tx.biz_type = 'TRANSFER' AND ledger_tx.operator_id = ?
+				ledger_tx.biz_type = 'TRANSFER'
+				AND (
+					ledger_tx.operator_id = ?
+					OR EXISTS (
+						SELECT 1
+						FROM ledger_entries le
+						WHERE le.ledger_tx_id = ledger_tx.ledger_tx_id
+							AND le.user_id = ?
+					)
+				)
 			)
-		`, userID, userID, fmt.Sprintf("%d", userID))
+			OR
+			(outbox_events.aggregate_type = 'order' AND orders.user_id = ?)
+			OR
+			(outbox_events.aggregate_type = 'fill' AND fills.user_id = ?)
+			OR
+			(outbox_events.aggregate_type = 'position' AND positions.user_id = ?)
+		`, userID, userID, fmt.Sprintf("%d", userID), userID, userID, userID, userID)
 	}
 	if err := query.Order("outbox_events.created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
@@ -488,10 +758,27 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 	for _, row := range rows {
 		payload := map[string]any{}
 		_ = json.Unmarshal([]byte(row.PayloadJSON), &payload)
-		ledgerTxID := row.AggregateID
+		ledgerTxID := ""
+		if row.AggregateType == "ledger_tx" {
+			ledgerTxID = row.AggregateID
+		} else {
+			ledgerTxID = payloadString(payload, "ledger_tx_id")
+		}
+		orderID := payloadString(payload, "order_id")
+		if row.AggregateType == "order" {
+			orderID = row.AggregateID
+		}
+		fillID := payloadString(payload, "fill_id")
+		if row.AggregateType == "fill" {
+			fillID = row.AggregateID
+		}
+		positionID := payloadString(payload, "position_id")
+		if row.AggregateType == "position" {
+			positionID = row.AggregateID
+		}
 		chainTxHash := payloadString(payload, "tx_hash")
 		address := payloadString(payload, "router_address", "to_address", "address")
-		amount := payloadString(payload, "amount")
+		amount := payloadString(payload, "amount", "fee_amount")
 		if chainTxHash == "" || address == "" {
 			fallbackTxHash, fallbackAddress := r.lookupExplorerChainRefs(ctx, row.BizType, row.BizRefID)
 			if chainTxHash == "" {
@@ -505,14 +792,20 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 			amount = r.lookupExplorerAmount(ctx, row.BizType, row.BizRefID, ledgerTxID)
 		}
 		asset := row.Asset
+		if asset == "" {
+			asset = payloadString(payload, "asset")
+		}
 		items = append(items, readmodel.ExplorerEvent{
 			EventID:     row.EventID,
 			EventType:   row.EventType,
 			Asset:       optionalStringPtr(asset),
 			Amount:      optionalStringPtr(amount),
 			CreatedAt:   row.CreatedAt.Format(time.RFC3339),
-			LedgerTxID:  &ledgerTxID,
+			LedgerTxID:  optionalStringPtr(ledgerTxID),
 			ChainTxHash: optionalStringPtr(chainTxHash),
+			OrderID:     optionalStringPtr(orderID),
+			FillID:      optionalStringPtr(fillID),
+			PositionID:  optionalStringPtr(positionID),
 			Address:     optionalStringPtr(address),
 			Payload:     payload,
 		})
@@ -589,6 +882,93 @@ func extractPositiveTransferAmount(ctx context.Context, db *gorm.DB, ledgerTxID 
 		}
 	}
 	return "0"
+}
+
+type transferEntryDescriptor struct {
+	UserID      *uint64
+	AccountCode string
+	Amount      string
+	EVMAddress  *string
+}
+
+func describeTransferForUser(ctx context.Context, db *gorm.DB, ledgerTxID string, userID uint64) (direction string, counterpartyAddress string, fromAccount string, toAccount string) {
+	var rows []transferEntryDescriptor
+	if err := DB(ctx, db).
+		Table("ledger_entries").
+		Select("ledger_entries.user_id, accounts.account_code, ledger_entries.amount, users.evm_address").
+		Joins("JOIN accounts ON accounts.id = ledger_entries.account_id").
+		Joins("LEFT JOIN users ON users.id = ledger_entries.user_id").
+		Where("ledger_entries.ledger_tx_id = ?", ledgerTxID).
+		Order("ledger_entries.id ASC").
+		Scan(&rows).Error; err != nil {
+		return "UNKNOWN", "", "USER_WALLET", "USER_WALLET"
+	}
+
+	var sender transferEntryDescriptor
+	var receiver transferEntryDescriptor
+	for _, row := range rows {
+		amount := decimalx.MustFromString(row.Amount)
+		if amount.LessThan(decimalx.MustFromString("0")) {
+			sender = row
+			fromAccount = row.AccountCode
+		}
+		if amount.GreaterThan(decimalx.MustFromString("0")) {
+			receiver = row
+			toAccount = row.AccountCode
+		}
+	}
+	if fromAccount == "" {
+		fromAccount = "USER_WALLET"
+	}
+	if toAccount == "" {
+		toAccount = "USER_WALLET"
+	}
+
+	senderID := uint64(0)
+	if sender.UserID != nil {
+		senderID = *sender.UserID
+	}
+	receiverID := uint64(0)
+	if receiver.UserID != nil {
+		receiverID = *receiver.UserID
+	}
+
+	switch {
+	case senderID == userID && receiverID == userID:
+		if sender.EVMAddress != nil {
+			counterpartyAddress = *sender.EVMAddress
+		}
+		if counterpartyAddress == "" && senderID != 0 {
+			counterpartyAddress = lookupUserEVMAddress(ctx, db, senderID)
+		}
+		return "SELF", counterpartyAddress, fromAccount, toAccount
+	case senderID == userID:
+		if receiver.EVMAddress != nil {
+			counterpartyAddress = *receiver.EVMAddress
+		}
+		if counterpartyAddress == "" && receiverID != 0 {
+			counterpartyAddress = lookupUserEVMAddress(ctx, db, receiverID)
+		}
+		return "OUT", counterpartyAddress, fromAccount, toAccount
+	case receiverID == userID:
+		if sender.EVMAddress != nil {
+			counterpartyAddress = *sender.EVMAddress
+		}
+		if counterpartyAddress == "" && senderID != 0 {
+			counterpartyAddress = lookupUserEVMAddress(ctx, db, senderID)
+		}
+		return "IN", counterpartyAddress, fromAccount, toAccount
+	default:
+		return "UNKNOWN", "", fromAccount, toAccount
+	}
+}
+
+func lookupUserEVMAddress(ctx context.Context, db *gorm.DB, userID uint64) string {
+	var user UserModel
+	if err := DB(ctx, db).Where("id = ?", userID).First(&user).Error; err != nil {
+		return ""
+	}
+	return user.EVMAddress
 }
 
 func requiredConfirmations(chainID int64) int {

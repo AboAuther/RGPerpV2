@@ -13,6 +13,7 @@ type MarketSymbolSeed struct {
 	SessionPolicy      string
 	BinanceSymbol      string
 	HyperliquidSymbol  string
+	CoinbaseSymbol     string
 }
 
 func DefaultMarketSymbolSeeds() []MarketSymbolSeed {
@@ -36,7 +37,7 @@ func DefaultMarketSymbolSeeds() []MarketSymbolSeed {
 		}
 		tickSize, stepSize := defaultSymbolPrecision(base)
 		seeds = append(seeds, MarketSymbolSeed{
-			Symbol:             base + "-PERP",
+			Symbol:             base + "-USDC",
 			AssetClass:         "CRYPTO",
 			BaseAsset:          base,
 			QuoteAsset:         "USDC",
@@ -48,6 +49,7 @@ func DefaultMarketSymbolSeeds() []MarketSymbolSeed {
 			SessionPolicy:      "ALWAYS_OPEN",
 			BinanceSymbol:      binance,
 			HyperliquidSymbol:  hyperliquid,
+			CoinbaseSymbol:     defaultCoinbaseSymbol(base),
 		})
 	}
 	return seeds
@@ -63,5 +65,14 @@ func defaultSymbolPrecision(base string) (tickSize string, stepSize string) {
 		return "0.01", "0.001"
 	default:
 		return "0.0001", "0.001"
+	}
+}
+
+func defaultCoinbaseSymbol(base string) string {
+	switch base {
+	case "BTC", "ETH", "SOL", "ADA", "AVAX", "BCH", "DOGE", "LINK", "LTC", "NEAR", "UNI", "XRP":
+		return base + "-USD"
+	default:
+		return ""
 	}
 }

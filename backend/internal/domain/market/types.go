@@ -31,6 +31,7 @@ type SourceQuote struct {
 	Bid          string
 	Ask          string
 	Last         string
+	QuoteVolume  string
 	SourceTS     time.Time
 	ReceivedTS   time.Time
 }

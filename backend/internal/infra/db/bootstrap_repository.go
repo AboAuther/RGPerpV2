@@ -29,6 +29,8 @@ func (r *BootstrapRepository) EnsureSystemBootstrap(ctx context.Context) error {
 		{AccountCode: "FUNDING_POOL", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "PENALTY_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "INSURANCE_FUND", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "HEDGE_COLLATERAL_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{AccountCode: "HEDGE_PNL_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "ROUNDING_DIFF_ACCOUNT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "CUSTODY_HOT", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
 		{AccountCode: "TEST_FAUCET_POOL", AccountType: "SYSTEM", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
@@ -48,6 +50,31 @@ func (r *BootstrapRepository) EnsureMarketBootstrap(ctx context.Context) error {
 	seeds := config.DefaultMarketSymbolSeeds()
 	symbols := make([]marketdomain.Symbol, 0, len(seeds))
 	for _, seed := range seeds {
+		mappings := []marketdomain.SymbolMapping{
+			{
+				SourceName:   "binance",
+				SourceSymbol: seed.BinanceSymbol,
+				PriceScale:   "1",
+				QtyScale:     "1",
+				Status:       "ACTIVE",
+			},
+			{
+				SourceName:   "hyperliquid",
+				SourceSymbol: seed.HyperliquidSymbol,
+				PriceScale:   "1",
+				QtyScale:     "1",
+				Status:       "ACTIVE",
+			},
+		}
+		if seed.CoinbaseSymbol != "" {
+			mappings = append(mappings, marketdomain.SymbolMapping{
+				SourceName:   "coinbase",
+				SourceSymbol: seed.CoinbaseSymbol,
+				PriceScale:   "1",
+				QtyScale:     "1",
+				Status:       "ACTIVE",
+			})
+		}
 		symbols = append(symbols, marketdomain.Symbol{
 			Symbol:             seed.Symbol,
 			AssetClass:         seed.AssetClass,
@@ -59,22 +86,7 @@ func (r *BootstrapRepository) EnsureMarketBootstrap(ctx context.Context) error {
 			MinNotional:        seed.MinNotional,
 			Status:             seed.Status,
 			SessionPolicy:      seed.SessionPolicy,
-			Mappings: []marketdomain.SymbolMapping{
-				{
-					SourceName:   "binance",
-					SourceSymbol: seed.BinanceSymbol,
-					PriceScale:   "1",
-					QtyScale:     "1",
-					Status:       "ACTIVE",
-				},
-				{
-					SourceName:   "hyperliquid",
-					SourceSymbol: seed.HyperliquidSymbol,
-					PriceScale:   "1",
-					QtyScale:     "1",
-					Status:       "ACTIVE",
-				},
-			},
+			Mappings:           mappings,
 		})
 	}
 	return catalog.UpsertSymbols(ctx, symbols)

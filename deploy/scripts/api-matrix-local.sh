@@ -14,8 +14,15 @@ if [[ -f "$CHAIN_ENV_FILE" ]]; then
   set +a
 fi
 
+BASE_RPC_URL="${BASE_RPC_URL_HOST:-${BASE_RPC_URL:-http://127.0.0.1:8545}}"
+if [[ "${BASE_RPC_URL}" == "http://host.docker.internal:8545" ]]; then
+  BASE_RPC_URL="http://127.0.0.1:8545"
+fi
+
 : "${LOCAL_ANVIL_ADMIN_PRIVATE_KEY:?LOCAL_ANVIL_ADMIN_PRIVATE_KEY is required}"
 : "${LOCAL_ANVIL_ADMIN_ADDRESS:?LOCAL_ANVIL_ADMIN_ADDRESS is required}"
+: "${BASE_USDC_ADDRESS:?BASE_USDC_ADDRESS is required}"
+: "${BASE_RPC_URL:?BASE_RPC_URL is required}"
 
 USER_ADDRESS="$(cast wallet address --private-key "$USER_PRIVATE_KEY")"
 
@@ -120,20 +127,20 @@ do
   assert_ok "$path" "$payload"
 done
 
-deposit_addresses_payload="$(request_json GET '/api/v1/wallet/deposit-addresses' '' -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_deposit_addresses_$(date +%s)")"
-assert_ok '/api/v1/wallet/deposit-addresses' "$deposit_addresses_payload"
-deposit_address="$(printf '%s' "$deposit_addresses_payload" | jq -r '.data[0].address')"
+deposit_addresses_payload="$(request_json POST "/api/v1/wallet/deposit-addresses/${LOCAL_CHAIN_ID}/generate" '' -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_deposit_addresses_$(date +%s)")"
+assert_ok '/api/v1/wallet/deposit-addresses/:chainId/generate' "$deposit_addresses_payload"
+deposit_address="$(printf '%s' "$deposit_addresses_payload" | jq -r '.data.address')"
 
 deposits_before_payload="$(request_json GET '/api/v1/wallet/deposits' '' -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_deposits_before_$(date +%s)")"
 previous_tx_hash="$(printf '%s' "$deposits_before_payload" | jq -r '.data[0].tx_hash // ""')"
 
-mint_payload="$(request_json POST '/api/v1/review/faucet' "{\"address\":\"${deposit_address}\",\"chain_id\":${LOCAL_CHAIN_ID}}" -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_mint_$(date +%s)")"
-assert_ok '/api/v1/review/faucet' "$mint_payload"
+cast send "$BASE_USDC_ADDRESS" "mint(address,uint256)" "$deposit_address" "20000000000" --rpc-url "$BASE_RPC_URL" --private-key "$LOCAL_ANVIL_ADMIN_PRIVATE_KEY" >/dev/null
+cast send "$deposit_address" "forward()" --rpc-url "$BASE_RPC_URL" --private-key "$LOCAL_ANVIL_ADMIN_PRIVATE_KEY" >/dev/null
 
 credited_deposit_payload="$(wait_for_credited_deposit "$USER_TOKEN" "$previous_tx_hash")"
 assert_ok 'credited deposit after mint' "$credited_deposit_payload"
 
-withdraw_payload="$(request_json POST '/api/v1/wallet/withdrawals' "{\"chain_id\":${LOCAL_CHAIN_ID},\"asset\":\"USDC\",\"amount\":\"10\",\"to_address\":\"0x0000000000000000000000000000000000000001\"}" -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_withdraw_$(date +%s)" -H "Idempotency-Key: matrix_withdraw_${LOCAL_CHAIN_ID}_$(date +%s)")"
+withdraw_payload="$(request_json POST '/api/v1/wallet/withdrawals' "{\"chain_id\":${LOCAL_CHAIN_ID},\"asset\":\"USDC\",\"amount\":\"10001\",\"to_address\":\"0x0000000000000000000000000000000000000001\"}" -H "Authorization: Bearer ${USER_TOKEN}" -H "X-Trace-Id: matrix_withdraw_$(date +%s)" -H "Idempotency-Key: matrix_withdraw_${LOCAL_CHAIN_ID}_$(date +%s)")"
 assert_ok '/api/v1/wallet/withdrawals' "$withdraw_payload"
 withdraw_id="$(printf '%s' "$withdraw_payload" | jq -r '.data.withdraw_id')"
 

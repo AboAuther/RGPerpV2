@@ -60,6 +60,10 @@ func (d Decimal) Abs() Decimal {
 	return Decimal{value: d.value.Abs()}
 }
 
+func (d Decimal) IntPart() int64 {
+	return d.value.IntPart()
+}
+
 func (d Decimal) IsZero() bool {
 	return d.value.IsZero()
 }

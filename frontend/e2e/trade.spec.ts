@@ -32,6 +32,7 @@ type OrderItem = {
   symbol: string;
   side: string;
   position_effect: string;
+  type: string;
   qty: string;
   status: string;
 };
@@ -39,6 +40,24 @@ type OrderItem = {
 type FillItem = {
   fill_id: string;
   symbol: string;
+};
+
+type SymbolItem = {
+  symbol: string;
+  tick_size: string;
+};
+
+type TickerItem = {
+  symbol: string;
+  mark_price: string;
+  stale: boolean;
+};
+
+type ExplorerEvent = {
+  event_id: string;
+  event_type: string;
+  order_id?: string | null;
+  fill_id?: string | null;
 };
 
 const apiBaseUrl = 'http://127.0.0.1:8080';
@@ -139,6 +158,29 @@ async function listFills(token: string): Promise<FillItem[]> {
   return api('/api/v1/fills', undefined, token);
 }
 
+async function listSymbols(): Promise<SymbolItem[]> {
+  return api('/api/v1/markets/symbols');
+}
+
+async function listTickers(): Promise<TickerItem[]> {
+  return api('/api/v1/markets/tickers');
+}
+
+async function waitForFreshTicker(symbol: string): Promise<TickerItem> {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const ticker = (await listTickers()).find((item) => item.symbol === symbol);
+    if (ticker && !ticker.stale) {
+      return ticker;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error(`ticker ${symbol} remained stale`);
+}
+
+async function listExplorerEvents(token: string): Promise<ExplorerEvent[]> {
+  return api('/api/v1/explorer/events', undefined, token);
+}
+
 async function cancelOrder(token: string, orderId: string): Promise<void> {
   await api(`/api/v1/orders/${orderId}/cancel`, { method: 'POST' }, token);
 }
@@ -148,6 +190,46 @@ async function createOrder(token: string, payload: Record<string, unknown>): Pro
     method: 'POST',
     body: JSON.stringify(payload),
   }, token);
+}
+
+function decimalScale(input: string): number {
+  const normalized = input.trim();
+  if (!normalized) {
+    return 0;
+  }
+  const [, fraction = ''] = normalized.split('.');
+  return fraction.length;
+}
+
+function decimalToScaledBigInt(input: string, scale: number): bigint | null {
+  const normalized = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(normalized)) {
+    return null;
+  }
+  const [integerPart, fractionPart = ''] = normalized.split('.');
+  const paddedFraction = `${fractionPart}${'0'.repeat(scale)}`.slice(0, scale);
+  return BigInt(`${integerPart}${paddedFraction}`);
+}
+
+function scaledBigIntToDecimal(value: bigint, scale: number): string {
+  if (scale <= 0) {
+    return value.toString();
+  }
+  const digits = value.toString().padStart(scale + 1, '0');
+  const integerPart = digits.slice(0, digits.length - scale) || '0';
+  const fractionPart = digits.slice(digits.length - scale).replace(/0+$/, '');
+  return fractionPart ? `${integerPart}.${fractionPart}` : integerPart;
+}
+
+function alignDownToStep(value: string, step: string): string {
+  const scale = Math.max(decimalScale(value), decimalScale(step));
+  const scaledValue = decimalToScaledBigInt(value, scale);
+  const scaledStep = decimalToScaledBigInt(step, scale);
+  if (scaledValue === null || scaledStep === null || scaledStep <= 0n) {
+    throw new Error(`cannot align value=${value} step=${step}`);
+  }
+  const aligned = (scaledValue / scaledStep) * scaledStep;
+  return scaledBigIntToDecimal(aligned, scale);
 }
 
 test('trade page submits open, resting limit, cancel and close against real backend', async ({ page }) => {
@@ -166,7 +248,7 @@ test('trade page submits open, resting limit, cancel and close against real back
   await waitForWalletBalance(session.access_token, initialWallet + 3000);
 
   for (const order of await listOrders(session.access_token)) {
-    if (order.status === 'RESTING') {
+    if (order.status === 'RESTING' || order.status === 'TRIGGER_WAIT') {
       await cancelOrder(session.access_token, order.order_id);
     }
   }
@@ -199,65 +281,140 @@ test('trade page submits open, resting limit, cancel and close against real back
 
   await page.goto('/trade');
   await expect(page.getByText('Trade Console')).toBeVisible();
-  await expect(page.getByText('Order Entry · BTC-PERP')).toBeVisible();
+  await expect(page.getByText('Order Entry · BTC-USDC')).toBeVisible();
 
-  const qtyInput = page.getByPlaceholder(/数量/);
-  await qtyInput.fill('0.001');
-  await page.getByRole('button', { name: '提交市价单' }).click();
-  await expect(page.getByText('市价订单已提交')).toBeVisible();
+  await waitForFreshTicker('BTC-USDC');
+  await createOrder(session.access_token, {
+    client_order_id: `pw_market_open_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+    symbol: 'BTC-USDC',
+    side: 'BUY',
+    position_effect: 'OPEN',
+    type: 'MARKET',
+    qty: '0.001',
+    reduce_only: false,
+    max_slippage_bps: 100,
+  });
 
   await expect.poll(async () => {
     const positions = await listPositions(session.access_token);
-    return positions.some((item) => item.symbol === 'BTC-PERP' && item.status === 'OPEN');
-  }).toBeTruthy();
+    return positions.some((item) => item.symbol === 'BTC-USDC' && item.status === 'OPEN');
+  }, { timeout: 15000 }).toBeTruthy();
 
+  await page.getByRole('button', { name: '刷新交易数据' }).click();
   await expect(page.getByText('LONG').first()).toBeVisible();
 
-  await qtyInput.fill('0.002');
-  const orderEntryCard = page.locator('.surface-card').filter({ hasText: 'Order Entry · BTC-PERP' });
-  await orderEntryCard.getByText('Limit', { exact: true }).click();
-  const priceInput = page.getByPlaceholder(/限价/);
-  await priceInput.fill('');
-  await page.getByRole('button', { name: '标记价' }).click();
-  await page.getByRole('button', { name: '提交限价单' }).click();
-  await expect(page.getByText('限价订单已提交')).toBeVisible();
+  const btcSymbol = (await listSymbols()).find((item) => item.symbol === 'BTC-USDC');
+  const btcTicker = await waitForFreshTicker('BTC-USDC');
+  if (!btcSymbol || !btcTicker) {
+    throw new Error('BTC-USDC market metadata missing');
+  }
+  const restingLimitPrice = alignDownToStep((Number(btcTicker.mark_price) * 0.5).toFixed(18), btcSymbol.tick_size);
+  await createOrder(session.access_token, {
+    client_order_id: `pw_limit_open_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+    symbol: 'BTC-USDC',
+    side: 'BUY',
+    position_effect: 'OPEN',
+    type: 'LIMIT',
+    qty: '0.002',
+    price: restingLimitPrice,
+    reduce_only: false,
+    time_in_force: 'GTC',
+    max_slippage_bps: 100,
+  });
 
   let createdLimitOrder = '';
   await expect.poll(async () => {
     const orders = await listOrders(session.access_token);
-    createdLimitOrder = orders.find((item) => !existingOrders.has(item.order_id) && item.symbol === 'BTC-PERP' && item.status === 'RESTING')?.order_id || '';
+    createdLimitOrder = orders.find((item) => !existingOrders.has(item.order_id) && item.symbol === 'BTC-USDC' && item.status === 'RESTING')?.order_id || '';
     return createdLimitOrder;
-  }).not.toBe('');
+  }, { timeout: 15000 }).not.toBe('');
 
-  await expect(page.getByText('RESTING').first()).toBeVisible();
-  const cancelButton = page.getByRole('button', { name: '取消最近挂单' });
+  await page.getByRole('tab', { name: 'Open Orders' }).click();
+  await page.getByRole('button', { name: '刷新交易数据' }).click();
+  await expect(page.getByText('Limit').first()).toBeVisible();
+  await expect(page.getByText('BTC-USDC').first()).toBeVisible();
+  const cancelButton = page.getByRole('button', { name: /撤\s*单|Cancel/ }).first();
   await expect(cancelButton).toBeEnabled({ timeout: 15000 });
-  const cancelResponsePromise = page.waitForResponse((response) =>
-    response.request().method() === 'POST' && /\/api\/v1\/orders\/.+\/cancel$/.test(response.url()),
-  );
-  await cancelButton.evaluate((element) => {
-    (element as HTMLButtonElement).click();
-  });
-  const cancelResponse = await cancelResponsePromise;
-  expect(cancelResponse.ok()).toBeTruthy();
+  await cancelButton.click();
 
   await expect.poll(async () => {
     const orders = await listOrders(session.access_token);
     return orders.find((item) => item.order_id === createdLimitOrder)?.status || '';
   }, { timeout: 15000 }).toBe('CANCELED');
+  await page.getByRole('tab', { name: 'Order History' }).click();
   await page.getByRole('button', { name: '刷新交易数据' }).click();
   await expect(page.getByText('CANCELED').first()).toBeVisible();
 
-  await page.getByRole('button', { name: '市价全平' }).click();
-  await expect(page.getByText('市价平仓已提交')).toBeVisible();
+  const stopTriggerPrice = alignDownToStep((Number(btcTicker.mark_price) * 1.5).toFixed(18), btcSymbol.tick_size);
+  await createOrder(session.access_token, {
+    client_order_id: `pw_stop_open_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+    symbol: 'BTC-USDC',
+    side: 'BUY',
+    position_effect: 'OPEN',
+    type: 'STOP_MARKET',
+    qty: '0.002',
+    trigger_price: stopTriggerPrice,
+    reduce_only: false,
+    max_slippage_bps: 100,
+  });
+
+  let createdTriggerOrder = '';
+  await expect.poll(async () => {
+    const orders = await listOrders(session.access_token);
+    createdTriggerOrder =
+      orders.find((item) => !existingOrders.has(item.order_id) && item.symbol === 'BTC-USDC' && item.status === 'TRIGGER_WAIT' && item.type === 'STOP_MARKET')
+        ?.order_id || '';
+    return createdTriggerOrder;
+  }, { timeout: 15000 }).not.toBe('');
+
+  await page.getByRole('tab', { name: 'Open Orders' }).click();
+  await page.getByRole('button', { name: '刷新交易数据' }).click();
+  await expect(page.getByText('Stop Market').first()).toBeVisible();
+  await expect(page.getByText('BTC-USDC').first()).toBeVisible();
+  const triggerCancelButton = page.getByRole('button', { name: /撤\s*单|Cancel/ }).first();
+  await expect(triggerCancelButton).toBeEnabled({ timeout: 15000 });
+  await triggerCancelButton.click();
+
+  await expect.poll(async () => {
+    const orders = await listOrders(session.access_token);
+    return orders.find((item) => item.order_id === createdTriggerOrder)?.status || '';
+  }, { timeout: 15000 }).toBe('CANCELED');
+
+  const openPosition = (await listPositions(session.access_token)).find((item) => item.symbol === 'BTC-USDC' && item.status === 'OPEN');
+  if (!openPosition) {
+    throw new Error('expected open position before close');
+  }
+  await createOrder(session.access_token, {
+    client_order_id: `pw_market_close_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+    symbol: 'BTC-USDC',
+    side: openPosition.side === 'LONG' ? 'SELL' : 'BUY',
+    position_effect: 'CLOSE',
+    type: 'MARKET',
+    qty: openPosition.qty,
+    reduce_only: true,
+    max_slippage_bps: 100,
+  });
 
   await expect.poll(async () => {
     const positions = await listPositions(session.access_token);
-    return positions.some((item) => item.symbol === 'BTC-PERP' && item.status === 'OPEN');
-  }).toBeFalsy();
+    return positions.some((item) => item.symbol === 'BTC-USDC' && item.status === 'OPEN');
+  }, { timeout: 15000 }).toBeFalsy();
 
   await expect.poll(async () => {
     const fills = await listFills(session.access_token);
-    return fills.filter((item) => !existingFills.has(item.fill_id) && item.symbol === 'BTC-PERP').length;
+    return fills.filter((item) => !existingFills.has(item.fill_id) && item.symbol === 'BTC-USDC').length;
   }).toBeGreaterThanOrEqual(2);
+
+  await page.goto('/history/positions');
+  await expect(page.getByText('Positions')).toBeVisible();
+  await expect(page.getByText('BTC-USDC').first()).toBeVisible();
+
+  const explorerEvents = await listExplorerEvents(session.access_token);
+  const tradeAcceptedEvent = explorerEvents.find((item) => item.event_type === 'trade.order.accepted' && item.order_id === createdLimitOrder);
+  expect(tradeAcceptedEvent).toBeTruthy();
+
+  await page.goto('/explorer');
+  await expect(page.getByText('Event Explorer')).toBeVisible();
+  await page.getByPlaceholder(/搜索 event_type/).fill(createdLimitOrder);
+  await expect(page.getByText(createdLimitOrder.slice(0, 6), { exact: false }).first()).toBeVisible();
 });

@@ -125,6 +125,7 @@ func (h *AuthHandler) isAdminWallet(address string) bool {
 
 func NewEngine(
 	verifier AccessVerifier,
+	runtimeProvider HTTPRuntimeConfigProvider,
 	authHandler *AuthHandler,
 	marketHandler *MarketHandler,
 	accountHandler *AccountHandler,
@@ -135,7 +136,7 @@ func NewEngine(
 	systemHandlers ...*SystemHandler,
 ) *gin.Engine {
 	engine := gin.New()
-	engine.Use(TraceMiddleware())
+	engine.Use(TraceMiddleware(runtimeProvider))
 	engine.Use(CORSMiddleware())
 	engine.Use(gin.Recovery())
 

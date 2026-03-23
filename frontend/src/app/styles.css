@@ -528,6 +528,18 @@ a {
   line-height: 1.2;
 }
 
+.trade-quote-stat__value.is-up {
+  color: #2ec9b0 !important;
+}
+
+.trade-quote-stat__value.is-down {
+  color: #ff6b81 !important;
+}
+
+.trade-quote-stat__value.is-flat {
+  color: #edf6ff !important;
+}
+
 .trade-quote-stat--reserved {
   opacity: 0.9;
 }
@@ -584,6 +596,24 @@ a {
   align-items: center;
 }
 
+.trade-order-entry-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.trade-order-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trade-order-slider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .trade-position-block + .trade-position-block {
   padding-top: 12px;
   border-top: 1px solid rgba(110, 151, 184, 0.08);
@@ -599,6 +629,160 @@ a {
 .trade-order-summary {
   border-color: rgba(110, 151, 184, 0.12) !important;
   background: rgba(10, 24, 33, 0.72) !important;
+}
+
+.trade-order-summary .ant-descriptions-row > th,
+.trade-order-summary .ant-descriptions-row > td {
+  padding-bottom: 10px;
+}
+
+.trade-order-summary .ant-descriptions-item-label {
+  color: #8ca3b8 !important;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.trade-order-summary .ant-descriptions-item-content {
+  color: #edf6ff !important;
+  font-weight: 600;
+}
+
+.trade-activity-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.trade-activity-summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 1px solid rgba(110, 151, 184, 0.1);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(10, 24, 33, 0.72) 0%, rgba(10, 24, 33, 0.52) 100%);
+}
+
+.trade-activity-summary__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 760px;
+}
+
+.trade-account-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.trade-account-overview__stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.trade-account-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(110, 151, 184, 0.1);
+  background: rgba(10, 24, 33, 0.72);
+}
+
+.trade-account-stat__label {
+  color: #8ca3b8 !important;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.trade-account-stat__value {
+  color: #edf6ff !important;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.trade-activity-tabs .ant-tabs-nav {
+  margin-bottom: 12px !important;
+}
+
+.trade-activity-tabs .ant-tabs-tab {
+  padding: 10px 0 !important;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.trade-activity-tabs .ant-tabs-tab + .ant-tabs-tab {
+  margin-left: 24px !important;
+}
+
+.trade-activity-tabs .ant-tabs-ink-bar {
+  background: linear-gradient(90deg, #2ec9b0 0%, #5ce1ff 100%);
+  height: 3px !important;
+  border-radius: 999px;
+}
+
+.trade-activity-tabs .ant-table-wrapper {
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.trade-activity-tabs .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+
+.admin-ledger-breakdown-table .ant-table-thead > tr > th,
+.admin-ledger-breakdown-table .ant-table-tbody > tr > td {
+  white-space: nowrap;
+}
+
+.admin-ledger-breakdown-table .ant-table-thead > tr > th {
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.admin-ledger-breakdown-table__value {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.rg-side-segmented {
+  padding: 4px;
+  border-radius: 14px;
+}
+
+.rg-side-segmented .ant-segmented-item {
+  transition: background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.rg-side-segmented .ant-segmented-item-label {
+  font-weight: 600;
+}
+
+.rg-side-segmented--long .ant-segmented-item-selected {
+  background: linear-gradient(135deg, rgba(46, 201, 176, 0.92) 0%, rgba(24, 181, 133, 0.96) 100%);
+  box-shadow: 0 8px 20px rgba(24, 181, 133, 0.24);
+}
+
+.rg-side-segmented--long .ant-segmented-item-selected .ant-segmented-item-label {
+  color: #041915;
+}
+
+.rg-side-segmented--short .ant-segmented-item-selected {
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.95) 0%, rgba(232, 76, 88, 0.96) 100%);
+  box-shadow: 0 8px 20px rgba(232, 76, 88, 0.22);
+}
+
+.rg-side-segmented--short .ant-segmented-item-selected .ant-segmented-item-label {
+  color: #1f0a0d;
 }
 
 @keyframes landingShine {
@@ -681,6 +865,10 @@ a {
   .trade-chart-title {
     flex-wrap: wrap;
   }
+
+  .trade-account-overview__stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 768px) {
@@ -750,5 +938,13 @@ a {
 
   .trade-chart-wrap {
     min-height: 540px;
+  }
+
+  .trade-activity-summary {
+    flex-direction: column;
+  }
+
+  .trade-account-overview__stats {
+    grid-template-columns: 1fr;
   }
 }

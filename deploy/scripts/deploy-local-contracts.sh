@@ -85,7 +85,9 @@ VAULT_ADDRESS="$(deploy_contract src/Vault.sol:Vault --constructor-args "$ADMIN_
 FACTORY_ADDRESS="$(deploy_contract src/DepositRouterFactory.sol:DepositRouterFactory --constructor-args "$ADMIN_ADDRESS" "$VAULT_ADDRESS" "$MOCK_USDC_ADDRESS")"
 
 cast send "$VAULT_ADDRESS" "setTokenAllowed(address,bool)" "$MOCK_USDC_ADDRESS" true --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" >/dev/null
-cast send "$MOCK_USDC_ADDRESS" "mint(address,uint256)" "$VAULT_ADDRESS" "1000000000000" --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" >/dev/null
+# Intentionally do not pre-fund the vault here.
+# Local test scripts may mint to user/router explicitly, but bootstrap must not create
+# hidden platform assets that bypass the ledger model.
 
 cat > "${OUTPUT_FILE}.tmp" <<EOF
 export BASE_RPC_URL=$OUTPUT_HOST_RPC_URL

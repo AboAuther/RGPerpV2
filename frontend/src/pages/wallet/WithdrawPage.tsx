@@ -161,7 +161,7 @@ export function WithdrawPage() {
           showIcon
           type="warning"
           message="提现状态说明"
-          description="HOLD 表示资金已从 USER_WALLET 冻结到 USER_WITHDRAW_HOLD；APPROVED 仅表示审核通过，资金仍未上链；只有进入 BROADCASTED / CONFIRMING / COMPLETED，才表示链上提现已开始推进。"
+          description="HOLD 表示申请已提交并等待处理；APPROVED 表示审核通过；BROADCASTED / CONFIRMING / COMPLETED 表示提现已进入链上处理阶段。"
         />
 
         {loading || chainsLoading ? <Spin size="large" /> : null}
@@ -176,7 +176,7 @@ export function WithdrawPage() {
                   <Text strong>{selectedAsset} 可提现余额: {formatUsd(availableBalance)}</Text>
                   <Text type="secondary">已冻结待处理: {formatUsd(withdrawHoldBalance)}</Text>
                   {chains.length === 0 ? (
-                    <EmptyStateCard title="暂无可提现链" description="后端当前未返回任何可用链配置，提现表单不会自行伪造链列表。" />
+                    <EmptyStateCard title="暂无可提现链" description="当前暂时没有可用的提现链，请稍后再试。" />
                   ) : null}
                   <Form form={form} layout="vertical" initialValues={{ asset: 'USDC' }} onFinish={handleSubmit}>
                     <Form.Item label="链" name="chain_id" rules={[{ required: true, message: '请选择链' }]}>
@@ -189,7 +189,7 @@ export function WithdrawPage() {
                         disabled={chains.length === 0}
                       />
                     </Form.Item>
-                    <Text type="secondary">链列表完全以后端启动配置返回为准；未启用提现能力的链会在下拉框中禁用。</Text>
+                    <Text type="secondary">仅支持当前可用的提现链，暂不可用的链会显示为禁用。</Text>
 
                     <Form.Item
                       label="资产"
@@ -284,16 +284,16 @@ export function WithdrawPage() {
               <Card className="surface-card" title="Rules">
                 <Space direction="vertical" size={12}>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    提现手续费、单笔限额、日限额和人工审核阈值以后端配置与服务端校验为准，前端不再写死展示数字。
+                    提现会根据链路状态、金额和风控规则进入自动处理或人工审核流程。
                   </Paragraph>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    当前表单只做 UX 校验：资产白名单、余额上限、精度和地址格式会先在前端拦截，但最终可提现性仍以后端为准。
+                    提交前请确认链、资产、金额和目标地址正确无误。
                   </Paragraph>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    `APPROVED` 与 `USER_WITHDRAW_HOLD` 可以同时存在：前者是审核状态，后者是资金账本位置；此时资金仍在平台内部冻结态。
+                    审核通过后，提现会继续进入广播与确认阶段。
                   </Paragraph>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    若提现失败，最终状态应回到 `REFUNDED`，而不是停留在模糊的“处理中”。
+                    如遇链路拥堵或异常，到账时间可能延长。
                   </Paragraph>
                 </Space>
               </Card>

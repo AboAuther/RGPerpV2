@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"time"
 
+	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
 	marketdomain "github.com/xiaobao/rgperp/backend/internal/domain/market"
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	marketcache "github.com/xiaobao/rgperp/backend/internal/infra/marketcache"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/positionrisk"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -254,13 +256,9 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 		symbolByID[symbol.ID] = symbol
 	}
 
-	var tiers []RiskTierModel
-	if err := tx.Where("symbol_id IN ? AND tier_level = 1", symbolIDs).Find(&tiers).Error; err != nil {
+	tierBySymbolID, err := loadRiskTiersBySymbol(context.Background(), tx, symbolIDs)
+	if err != nil {
 		return err
-	}
-	tierBySymbolID := make(map[uint64]RiskTierModel, len(tiers))
-	for _, tier := range tiers {
-		tierBySymbolID[tier.SymbolID] = tier
 	}
 
 	var positions []PositionModel
@@ -279,8 +277,8 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 		if !ok {
 			return fmt.Errorf("symbol metadata missing for symbol_id=%d", position.SymbolID)
 		}
-		tier, ok := tierBySymbolID[position.SymbolID]
-		if !ok {
+		tiers, ok := tierBySymbolID[position.SymbolID]
+		if !ok || len(tiers) == 0 {
 			return fmt.Errorf("risk tier missing for symbol_id=%d", position.SymbolID)
 		}
 
@@ -293,8 +291,21 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 			sign = decimalx.MustFromString("-1")
 		}
 		notional := qty.Mul(mark).Mul(multiplier)
+		tier, err := selectRiskTierByNotional(tiers, notional)
+		if err != nil {
+			return err
+		}
 		unrealized := sign.Mul(qty).Mul(mark.Sub(entry)).Mul(multiplier)
 		maintenance := notional.Mul(decimalx.MustFromString(tier.MMR))
+		liquidationPrice, bankruptcyPrice := positionrisk.ComputeDisplayPrices(
+			position.Side,
+			position.Qty,
+			position.AvgEntryPrice,
+			position.InitialMargin,
+			tier.MMR,
+			tier.LiquidationFeeRate,
+			symbol.ContractMultiplier,
+		)
 
 		if err := tx.Model(&PositionModel{}).
 			Where("id = ?", position.ID).
@@ -303,6 +314,8 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 				"notional":           notional.String(),
 				"maintenance_margin": maintenance.String(),
 				"unrealized_pnl":     unrealized.String(),
+				"liquidation_price":  liquidationPrice,
+				"bankruptcy_price":   bankruptcyPrice,
 				"updated_at":         snapshot.CreatedAt,
 			}).Error; err != nil {
 			return err
@@ -459,13 +472,9 @@ func (r *MarketSnapshotRepository) refreshLatestCache(ctx context.Context, snaps
 		symbolByID[symbol.ID] = symbol
 	}
 
-	var tiers []RiskTierModel
-	if err := r.db.Where("symbol_id IN ? AND tier_level = 1", symbolIDs).Find(&tiers).Error; err != nil {
+	tierBySymbol, err := loadRiskTiersBySymbol(ctx, r.db.WithContext(ctx), symbolIDs)
+	if err != nil {
 		return
-	}
-	tierBySymbol := make(map[uint64]RiskTierModel, len(tiers))
-	for _, tier := range tiers {
-		tierBySymbol[tier.SymbolID] = tier
 	}
 
 	var markRows []MarkPriceSnapshotModel
@@ -510,10 +519,11 @@ JOIN (
 		if !ok {
 			continue
 		}
-		tier, ok := tierBySymbol[symbol.ID]
-		if !ok {
+		tiers, ok := tierBySymbol[symbol.ID]
+		if !ok || len(tiers) == 0 {
 			continue
 		}
+		tier := tiers[0]
 		bestBid, bestAsk := deriveBestBidAsk(rawBySymbol[symbol.ID])
 		cacheSnapshots = append(cacheSnapshots, marketcache.Snapshot{
 			SymbolID:              symbol.ID,
@@ -594,6 +604,7 @@ func (r *TradingReadRepository) ListOrders(ctx context.Context, userID uint64) (
 			ReduceOnly:     row.ReduceOnly,
 			Status:         row.Status,
 			RejectReason:   row.RejectReason,
+			CreatedAt:      row.CreatedAt.Format(time.RFC3339),
 		})
 	}
 	return out, nil
@@ -643,6 +654,7 @@ func (r *TradingReadRepository) ListPositions(ctx context.Context, userID uint64
 		Scan(&rows).Error; err != nil {
 		return nil, err
 	}
+
 	out := make([]readmodel.PositionItem, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, readmodel.PositionItem{
@@ -677,7 +689,7 @@ func (r *TradingReadRepository) ListFunding(ctx context.Context, userID uint64) 
 		Joins("JOIN funding_batches ON funding_batches.funding_batch_id = funding_batch_items.funding_batch_id").
 		Joins("JOIN positions ON positions.position_id = funding_batch_items.position_id").
 		Joins("JOIN symbols ON symbols.id = positions.symbol_id").
-		Where("funding_batch_items.user_id = ?", userID).
+		Where("funding_batch_items.user_id = ? AND funding_batch_items.status = ?", userID, fundingdomain.ItemStatusApplied).
 		Order("funding_batch_items.created_at DESC").
 		Scan(&rows).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

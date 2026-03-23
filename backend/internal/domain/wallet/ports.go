@@ -57,3 +57,11 @@ type DepositAddressAllocator interface {
 type WithdrawRiskEvaluator interface {
 	Evaluate(ctx context.Context, input WithdrawRiskInput) (WithdrawDecision, error)
 }
+
+type RuntimeConfig struct {
+	GlobalReadOnly bool
+}
+
+type RuntimeConfigProvider interface {
+	CurrentWalletRuntimeConfig() RuntimeConfig
+}

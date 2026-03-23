@@ -1,6 +1,7 @@
 package httptransport
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -26,15 +27,35 @@ type AccessClaims struct {
 	SessionID string
 }
 
-func TraceMiddleware() gin.HandlerFunc {
+type HTTPRuntimeConfig struct {
+	TraceHeaderRequired bool
+}
+
+type HTTPRuntimeConfigProvider interface {
+	CurrentHTTPRuntimeConfig() HTTPRuntimeConfig
+}
+
+func TraceMiddleware(provider HTTPRuntimeConfigProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		traceID := strings.TrimSpace(c.GetHeader("X-Trace-Id"))
+		if traceID == "" && traceHeaderRequired(provider) && c.Request.Method != http.MethodOptions && c.FullPath() != "/healthz" && c.Request.URL.Path != "/healthz" {
+			writeError(c, fmt.Errorf("%w: X-Trace-Id header is required", errorsx.ErrInvalidArgument))
+			c.Abort()
+			return
+		}
 		if traceID == "" {
 			traceID = defaultTraceIDLabel
 		}
 		c.Set(contextKeyTraceID, traceID)
 		c.Next()
 	}
+}
+
+func traceHeaderRequired(provider HTTPRuntimeConfigProvider) bool {
+	if provider == nil {
+		return false
+	}
+	return provider.CurrentHTTPRuntimeConfig().TraceHeaderRequired
 }
 
 func CORSMiddleware() gin.HandlerFunc {

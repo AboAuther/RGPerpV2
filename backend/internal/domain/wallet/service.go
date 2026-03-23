@@ -56,6 +56,7 @@ type Service struct {
 	addresses       DepositAddressRepository
 	allocator       DepositAddressAllocator
 	riskEvaluator   WithdrawRiskEvaluator
+	runtime         RuntimeConfigProvider
 }
 
 func NewService(
@@ -92,6 +93,10 @@ func NewService(
 
 func (s *Service) SetWithdrawRiskEvaluator(evaluator WithdrawRiskEvaluator) {
 	s.riskEvaluator = evaluator
+}
+
+func (s *Service) SetRuntimeConfigProvider(provider RuntimeConfigProvider) {
+	s.runtime = provider
 }
 
 func (s *Service) DetectDeposit(ctx context.Context, input DetectDepositInput) (DepositChainTx, error) {
@@ -284,6 +289,9 @@ func (s *Service) ReverseDeposit(ctx context.Context, input ReverseDepositInput)
 }
 
 func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInput) (WithdrawRequest, error) {
+	if err := s.ensureWritable(); err != nil {
+		return WithdrawRequest{}, err
+	}
 	if _, err := authx.NormalizeEVMAddress(input.ToAddress); err != nil {
 		return WithdrawRequest{}, err
 	}
@@ -380,6 +388,9 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 }
 
 func (s *Service) ApproveWithdraw(ctx context.Context, input ApproveWithdrawInput) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
 	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
 	if err != nil {
 		return err
@@ -391,6 +402,9 @@ func (s *Service) ApproveWithdraw(ctx context.Context, input ApproveWithdrawInpu
 }
 
 func (s *Service) GenerateDepositAddress(ctx context.Context, input GenerateDepositAddressInput) (DepositAddress, error) {
+	if err := s.ensureWritable(); err != nil {
+		return DepositAddress{}, err
+	}
 	if input.UserID == 0 || input.ChainID <= 0 {
 		return DepositAddress{}, fmt.Errorf("%w: invalid deposit address request", errorsx.ErrInvalidArgument)
 	}
@@ -656,8 +670,14 @@ func (s *Service) RefundWithdraw(ctx context.Context, input RefundWithdrawInput)
 }
 
 func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
-	if req.FromUserID == 0 || req.ToUserID == 0 || req.Asset == "" || req.Amount == "" {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
+	if req.FromUserID == 0 || req.ToUserID == 0 || req.Asset == "" || req.Amount == "" || req.IdempotencyKey == "" {
 		return fmt.Errorf("%w: invalid transfer request", errorsx.ErrInvalidArgument)
+	}
+	if req.TransferID == "" {
+		req.TransferID = s.idgen.NewID("trf")
 	}
 	if err := ensurePositiveAmount(req.Amount); err != nil {
 		return err
@@ -681,7 +701,7 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 				BizType:        "TRANSFER",
 				BizRefID:       req.TransferID,
 				Asset:          req.Asset,
-				IdempotencyKey: req.TransferID,
+				IdempotencyKey: req.IdempotencyKey,
 				OperatorType:   "user",
 				OperatorID:     fmt.Sprintf("%d", req.FromUserID),
 				TraceID:        req.TraceID,
@@ -689,8 +709,8 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 				CreatedAt:      s.clock.Now(),
 			},
 			Entries: []ledgerdomain.LedgerEntry{
-				{AccountID: toWalletID, Asset: req.Asset, Amount: req.Amount, EntryType: "TRANSFER_IN"},
-				{AccountID: fromWalletID, Asset: req.Asset, Amount: negate(req.Amount), EntryType: "TRANSFER_OUT"},
+				{AccountID: toWalletID, UserID: &req.ToUserID, Asset: req.Asset, Amount: req.Amount, EntryType: "TRANSFER_IN"},
+				{AccountID: fromWalletID, UserID: &req.FromUserID, Asset: req.Asset, Amount: negate(req.Amount), EntryType: "TRANSFER_OUT"},
 			},
 		})
 	})
@@ -742,6 +762,20 @@ func (s *Service) ensureSufficientBalance(ctx context.Context, accountID uint64,
 		return fmt.Errorf("%w: insufficient available balance", errorsx.ErrForbidden)
 	}
 	return nil
+}
+
+func (s *Service) ensureWritable() error {
+	if s.currentRuntimeConfig().GlobalReadOnly {
+		return fmt.Errorf("%w: system is in read-only mode", errorsx.ErrForbidden)
+	}
+	return nil
+}
+
+func (s *Service) currentRuntimeConfig() RuntimeConfig {
+	if s == nil || s.runtime == nil {
+		return RuntimeConfig{}
+	}
+	return s.runtime.CurrentWalletRuntimeConfig()
 }
 
 func ensurePositiveAmount(raw string) error {

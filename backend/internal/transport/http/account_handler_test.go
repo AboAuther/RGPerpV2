@@ -58,6 +58,7 @@ func TestAccountHandler_GetSummary(t *testing.T) {
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
 		nil,
 		nil,
+		nil,
 		NewAccountHandler(fakeAccountReader{}, &fakeTransferUseCase{}, fakeTransferResolver{}),
 		nil,
 		nil,
@@ -82,6 +83,7 @@ func TestAccountHandler_Transfer(t *testing.T) {
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
 		nil,
 		nil,
+		nil,
 		NewAccountHandler(fakeAccountReader{}, transferUC, fakeTransferResolver{}),
 		nil,
 		nil,
@@ -94,6 +96,7 @@ func TestAccountHandler_Transfer(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer token")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Trace-Id", "trace_1")
+	req.Header.Set("Idempotency-Key", "idem_transfer_1")
 	resp := httptest.NewRecorder()
 	engine.ServeHTTP(resp, req)
 
@@ -102,5 +105,8 @@ func TestAccountHandler_Transfer(t *testing.T) {
 	}
 	if transferUC.req.ToUserID != 88 || transferUC.req.FromUserID != 7 {
 		t.Fatalf("unexpected transfer request: %+v", transferUC.req)
+	}
+	if transferUC.req.IdempotencyKey != "idem_transfer_1" {
+		t.Fatalf("unexpected idempotency key: %+v", transferUC.req)
 	}
 }

@@ -57,6 +57,7 @@ func TestTradingHandler_CreateOrder(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		nil,
 		NewTradingHandler(fakeTradingReader{}, mutator),
 		nil,
 		nil,
@@ -83,6 +84,7 @@ func TestTradingHandler_CancelOrder(t *testing.T) {
 	mutator := &fakeTradingMutator{}
 	engine := NewEngine(
 		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
+		nil,
 		nil,
 		nil,
 		nil,

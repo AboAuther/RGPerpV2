@@ -52,16 +52,16 @@ export default memo(KlineChart);
 
 function mapTradingViewSymbol(symbol: string) {
   switch (symbol) {
-    case 'BTC-PERP':
+    case 'BTC-USDC':
       return 'BINANCE:BTCUSDT.P';
-    case 'ETH-PERP':
+    case 'ETH-USDC':
       return 'BINANCE:ETHUSDT.P';
-    case 'SOL-PERP':
+    case 'SOL-USDC':
       return 'BINANCE:SOLUSDT.P';
-    case 'XAUUSD-PERP':
+    case 'XAUUSD-USDC':
       return 'OANDA:XAUUSD';
     default: {
-      const normalized = symbol.replace(/-PERP$/i, '').toUpperCase();
+      const normalized = symbol.replace(/-(USDC|PERP)$/i, '').toUpperCase();
       if (/^[A-Z0-9]+$/.test(normalized)) {
         return `BINANCE:${normalized}USDT.P`;
       }

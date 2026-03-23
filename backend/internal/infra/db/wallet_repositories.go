@@ -5,6 +5,8 @@ import (
 	"errors"
 	"time"
 
+	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
+	liquidationdomain "github.com/xiaobao/rgperp/backend/internal/domain/liquidation"
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
@@ -408,6 +410,44 @@ func (r *AccountResolver) ResolveTradeAccounts(ctx context.Context, userID uint6
 	return accounts, nil
 }
 
+func (r *AccountResolver) ResolveLiquidationAccounts(ctx context.Context, userID uint64, asset string) (liquidationdomain.Accounts, error) {
+	tradeAccounts, err := r.ResolveTradeAccounts(ctx, userID, asset)
+	if err != nil {
+		return liquidationdomain.Accounts{}, err
+	}
+	penaltyAccountID, err := r.lookupAccountID(ctx, nil, "PENALTY_ACCOUNT", asset)
+	if err != nil {
+		return liquidationdomain.Accounts{}, err
+	}
+	insuranceFundAccountID, err := r.lookupAccountID(ctx, nil, "INSURANCE_FUND", asset)
+	if err != nil {
+		return liquidationdomain.Accounts{}, err
+	}
+	return liquidationdomain.Accounts{
+		UserWalletAccountID:         tradeAccounts.UserWalletAccountID,
+		UserOrderMarginAccountID:    tradeAccounts.UserOrderMarginAccountID,
+		UserPositionMarginAccountID: tradeAccounts.UserPositionMarginAccountID,
+		SystemPoolAccountID:         tradeAccounts.SystemPoolAccountID,
+		PenaltyAccountID:            penaltyAccountID,
+		InsuranceFundAccountID:      insuranceFundAccountID,
+	}, nil
+}
+
+func (r *AccountResolver) ResolveFundingAccounts(ctx context.Context, userID uint64, asset string) (fundingdomain.FundingAccounts, error) {
+	userPositionMarginAccountID, err := r.UserPositionMarginAccountID(ctx, userID, asset)
+	if err != nil {
+		return fundingdomain.FundingAccounts{}, err
+	}
+	fundingPoolAccountID, err := r.FundingPoolAccountID(ctx, asset)
+	if err != nil {
+		return fundingdomain.FundingAccounts{}, err
+	}
+	return fundingdomain.FundingAccounts{
+		UserPositionMarginAccountID: userPositionMarginAccountID,
+		FundingPoolAccountID:        fundingPoolAccountID,
+	}, nil
+}
+
 func (r *AccountResolver) UserWalletAccountID(ctx context.Context, userID uint64, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, &userID, "USER_WALLET", asset)
 }
@@ -425,6 +465,9 @@ func (r *AccountResolver) SystemPoolAccountID(ctx context.Context, asset string)
 }
 func (r *AccountResolver) TradingFeeAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "TRADING_FEE_ACCOUNT", asset)
+}
+func (r *AccountResolver) FundingPoolAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "FUNDING_POOL", asset)
 }
 func (r *AccountResolver) DepositPendingAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "DEPOSIT_PENDING_CONFIRM", asset)

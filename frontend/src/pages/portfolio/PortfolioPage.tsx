@@ -2,8 +2,8 @@ import { Alert, Button, Card, Col, Row, Space, Spin, Table, Typography } from 'a
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, LoginRequiredCard, MetricCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
-import type { AccountSummary, BalanceItem, PositionItem, RiskSnapshot } from '../../shared/domain';
-import { formatAddress, formatDecimal, formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
+import type { AccountSummary, BalanceItem, RiskSnapshot } from '../../shared/domain';
+import { formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 import { useAuth } from '../../shared/auth';
 
@@ -12,7 +12,6 @@ const { Paragraph, Text } = Typography;
 interface PortfolioState {
   summary: AccountSummary;
   balances: BalanceItem[];
-  positions: PositionItem[];
   risk: RiskSnapshot;
 }
 
@@ -32,13 +31,12 @@ export function PortfolioPage() {
     setError(null);
 
     try {
-      const [summary, balances, positions, risk] = await Promise.all([
+      const [summary, balances, risk] = await Promise.all([
         api.account.getSummary(),
         api.account.getBalances(),
-        api.positions.getPositions(),
         api.account.getRisk(),
       ]);
-      setState({ summary, balances, positions, risk });
+      setState({ summary, balances, risk });
     } catch (loadError) {
       setError(loadError);
     } finally {
@@ -72,7 +70,7 @@ export function PortfolioPage() {
         <PageIntro
           eyebrow="Account"
           title="Portfolio Overview"
-          description="权益、可用余额、保证金和风险提示以后端返回为准。页面在手动刷新、窗口重新聚焦和网络恢复后会重新拉取关键账户数据。"
+          description="查看账户权益、可用余额、保证金占用、风险状态和持仓概览。"
           titleEffect="shiny"
           descriptionEffect="proximity"
           extra={
@@ -174,47 +172,18 @@ export function PortfolioPage() {
             right={
               <Card className="table-card" title="Risk Notes">
                 <Space direction="vertical" size={10}>
-                  <Text strong>关键约束</Text>
+                  <Text strong>风险提示</Text>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    行情延迟、账户清算中、symbol reduce-only 时，前端只能展示并锁定高风险动作，不能自行放行。
+                    当风险率升高、行情延迟或交易状态受限时，请优先关注保证金和仓位变化。
                   </Paragraph>
-                  <Text strong>前端边界</Text>
+                  <Text strong>建议操作</Text>
                   <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                    当前读模型不直连数据库，不持有账本或仓位真相；刷新后重新拉取接口数据。
+                    如需降低风险，可减少仓位、补充保证金，或等待行情恢复稳定后再操作。
                   </Paragraph>
                 </Space>
               </Card>
             }
           />
-
-          <Card className="table-card" title="Open Positions">
-            <Table
-              rowKey="position_id"
-              dataSource={state.positions}
-              scroll={{ x: 880 }}
-              pagination={false}
-              columns={[
-                { title: 'Symbol', dataIndex: 'symbol', width: 120 },
-                { title: 'Side', dataIndex: 'side', width: 90, render: (value: string) => <StatusTag value={value} /> },
-                { title: 'Qty', dataIndex: 'qty', align: 'right', render: (value: string) => formatDecimal(value, 4) },
-                { title: 'Entry', dataIndex: 'avg_entry_price', align: 'right', render: (value: string) => formatUsd(value) },
-                { title: 'Mark', dataIndex: 'mark_price', align: 'right', render: (value: string) => formatUsd(value) },
-                { title: 'uPnL', dataIndex: 'unrealized_pnl', align: 'right', render: (value: string) => formatSignedUsd(value) },
-                {
-                  title: 'Liquidation',
-                  dataIndex: 'liquidation_price',
-                  align: 'right',
-                  render: (value: string) => formatUsd(value),
-                },
-                { title: 'Status', dataIndex: 'status', render: (value: string) => <StatusTag value={value} /> },
-                {
-                  title: 'Position ID',
-                  dataIndex: 'position_id',
-                  render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text>,
-                },
-              ]}
-            />
-          </Card>
         </>
       ) : null}
       </Space>

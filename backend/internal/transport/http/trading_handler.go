@@ -3,6 +3,7 @@ package httptransport
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
@@ -100,6 +101,7 @@ func (h *TradingHandler) createOrder(c *gin.Context) {
 		ReduceOnly:     order.ReduceOnly,
 		Status:         order.Status,
 		RejectReason:   order.RejectReason,
+		CreatedAt:      order.CreatedAt.Format(time.RFC3339),
 	})
 }
 

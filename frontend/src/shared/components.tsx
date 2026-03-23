@@ -8,6 +8,7 @@ import {
   LockOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
+  SwapOutlined,
   WalletOutlined,
 } from '@ant-design/icons';
 import { Alert, Button, Card, Col, Layout, Menu, Row, Space, Tag, Typography } from 'antd';
@@ -36,6 +37,7 @@ const baseNavMenuItems: NonNullable<MenuProps['items']> = [
     label: 'Wallet',
     children: [
       { key: '/wallet/deposit', icon: <WalletOutlined />, label: 'Deposit' },
+      { key: '/wallet/transfer', icon: <SwapOutlined />, label: 'Transfer' },
       { key: '/wallet/withdraw', icon: <DollarOutlined />, label: 'Withdraw' },
     ],
   },
@@ -46,6 +48,7 @@ const baseNavMenuItems: NonNullable<MenuProps['items']> = [
     children: [
       { key: '/history/orders', label: 'Orders' },
       { key: '/history/fills', label: 'Fills' },
+      { key: '/history/positions', label: 'Positions' },
       { key: '/history/funding', label: 'Funding' },
       { key: '/history/transfers', label: 'Transfers' },
     ],
@@ -67,6 +70,9 @@ const adminNavItem: NonNullable<MenuProps['items']>[number] = {
 
 const statusColorMap: Record<string, string> = {
   ACTIVE: 'success',
+  PASS: 'success',
+  FAIL: 'error',
+  WARN: 'warning',
   BUY: 'cyan',
   SELL: 'volcano',
   LONG: 'cyan',
@@ -305,7 +311,7 @@ export function EmptyStateCard({
 
 export function LoginRequiredCard({
   title = '请先登录',
-  description = '当前页面允许浏览，但涉及账户、资金或个人历史的数据与操作仍需先连接钱包登录。',
+  description = '登录后即可查看您的账户数据并使用相关功能。',
   action,
 }: {
   title?: string;

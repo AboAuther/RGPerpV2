@@ -116,6 +116,24 @@ CREATE TABLE IF NOT EXISTS account_balance_snapshots (
   UNIQUE KEY uk_abs_account_asset (account_id, asset)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS ledger_audit_reports (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  audit_report_id VARCHAR(64) NOT NULL,
+  scope_asset VARCHAR(32) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  executed_by VARCHAR(64) NOT NULL,
+  overview_json JSON NOT NULL,
+  chain_balances_json JSON NULL,
+  checks_json JSON NOT NULL,
+  started_at DATETIME(3) NOT NULL,
+  finished_at DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_ledger_audit_reports_report_id (audit_report_id),
+  KEY idx_ledger_audit_reports_scope_created (scope_asset, created_at),
+  KEY idx_ledger_audit_reports_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS outbox_events (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   event_id VARCHAR(64) NOT NULL,
@@ -311,6 +329,8 @@ CREATE TABLE IF NOT EXISTS orders (
   max_slippage_bps INT NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL,
   reject_reason VARCHAR(255) NULL,
+  frozen_initial_margin DECIMAL(38,18) NOT NULL DEFAULT 0,
+  frozen_fee DECIMAL(38,18) NOT NULL DEFAULT 0,
   frozen_margin DECIMAL(38,18) NOT NULL DEFAULT 0,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -390,6 +410,15 @@ CREATE TABLE IF NOT EXISTS liquidations (
   penalty_amount DECIMAL(38,18) NOT NULL DEFAULT 0,
   insurance_fund_used DECIMAL(38,18) NOT NULL DEFAULT 0,
   bankrupt_amount DECIMAL(38,18) NOT NULL DEFAULT 0,
+  abort_reason VARCHAR(64) NULL,
+  pre_account_snapshot_json JSON NULL,
+  post_account_snapshot_json JSON NULL,
+  pre_positions_snapshot_json JSON NULL,
+  post_positions_snapshot_json JSON NULL,
+  released_orders_json JSON NULL,
+  price_snapshot_json JSON NULL,
+  config_snapshot_json JSON NULL,
+  settlement_snapshot_json JSON NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
@@ -423,6 +452,20 @@ CREATE TABLE IF NOT EXISTS funding_batches (
   PRIMARY KEY (id),
   UNIQUE KEY uk_funding_batches_batch_id (funding_batch_id),
   UNIQUE KEY uk_funding_batches_symbol_window (symbol_id, time_window_start, time_window_end)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS funding_rate_snapshots (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  symbol_id BIGINT UNSIGNED NOT NULL,
+  source_name VARCHAR(64) NOT NULL,
+  source_symbol VARCHAR(64) NOT NULL,
+  funding_rate DECIMAL(38,18) NOT NULL,
+  interval_seconds INT NOT NULL,
+  source_ts DATETIME(3) NOT NULL,
+  received_ts DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_funding_rate_snapshots_symbol_source_created (symbol_id, source_name, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS funding_batch_items (
