@@ -520,6 +520,99 @@ func TestHandleWithdrawExecuted_BackfillsBroadcastAndCompletes(t *testing.T) {
 	}
 }
 
+func TestHandleWithdrawExecuted_RejectsMismatchedDestination(t *testing.T) {
+	deposits := newMemoryDeposits()
+	withdraws := newMemoryWithdraws()
+	withdraws.items["wd_1"] = walletdomain.WithdrawRequest{
+		WithdrawID: "wd_1", UserID: 7, ChainID: 8453, Asset: "USDC", Amount: "100", FeeAmount: "1",
+		ToAddress: "0x00000000000000000000000000000000000000ee", Status: walletdomain.StatusApproved,
+	}
+	pub := &publisher{}
+	wallet := &fakeWallet{deposits: deposits, withdraws: withdraws}
+	svc, err := NewService(
+		wallet,
+		deposits,
+		withdraws,
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		pub,
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		[]ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	err = svc.HandleWithdrawExecuted(context.Background(), WithdrawExecuted{
+		ChainID:      8453,
+		WithdrawID:   "wd_1",
+		TxHash:       "0xwd",
+		LogIndex:     1,
+		BlockNumber:  100,
+		VaultAddress: "0x00000000000000000000000000000000000000bb",
+		TokenAddress: "0x00000000000000000000000000000000000000cc",
+		ToAddress:    "0x00000000000000000000000000000000000000aa",
+		Amount:       "99",
+		Operator:     "0x00000000000000000000000000000000000000ff",
+		TraceID:      "trace_2",
+	})
+	if err != nil {
+		t.Fatalf("handle withdraw executed: %v", err)
+	}
+	if wallet.broadcastCalls != 0 || wallet.completeCalls != 0 {
+		t.Fatalf("expected no wallet mutation, got broadcast=%d complete=%d", wallet.broadcastCalls, wallet.completeCalls)
+	}
+	if withdraws.items["wd_1"].Status != walletdomain.StatusApproved {
+		t.Fatalf("expected status to remain approved, got %s", withdraws.items["wd_1"].Status)
+	}
+	if len(pub.events) != 1 || pub.events[0].EventType != "wallet.indexer.anomaly" {
+		t.Fatalf("expected anomaly event, got %#v", pub.events)
+	}
+}
+
+func TestHandleWithdrawFailed_FromApprovedRefundsWithoutTransitReversal(t *testing.T) {
+	deposits := newMemoryDeposits()
+	withdraws := newMemoryWithdraws()
+	withdraws.items["wd_1"] = walletdomain.WithdrawRequest{
+		WithdrawID: "wd_1", UserID: 7, ChainID: 8453, Asset: "USDC", Amount: "100", FeeAmount: "1",
+		ToAddress: "0x00000000000000000000000000000000000000ee", Status: walletdomain.StatusApproved,
+	}
+	pub := &publisher{}
+	wallet := &fakeWallet{deposits: deposits, withdraws: withdraws}
+	svc, err := NewService(
+		wallet,
+		deposits,
+		withdraws,
+		addressResolver{items: map[string]walletdomain.DepositAddress{}},
+		pub,
+		passthroughTxManager{},
+		fakeClock{now: time.Unix(100, 0).UTC()},
+		&fakeIDGen{},
+		[]ChainRule{{ChainID: 8453, Asset: "USDC", RequiredConfirmations: 20, VaultAddress: "0x00000000000000000000000000000000000000bb", TokenAddress: "0x00000000000000000000000000000000000000cc"}},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	err = svc.HandleWithdrawFailed(context.Background(), WithdrawFailed{
+		ChainID:    8453,
+		WithdrawID: "wd_1",
+		TxHash:     "0xwd",
+		Reason:     "receipt_status_failed",
+		TraceID:    "trace_3",
+	})
+	if err != nil {
+		t.Fatalf("handle withdraw failed: %v", err)
+	}
+	if wallet.refundCalls != 1 {
+		t.Fatalf("expected refund call")
+	}
+	if withdraws.items["wd_1"].Status != walletdomain.StatusRefunded {
+		t.Fatalf("expected refunded status, got %s", withdraws.items["wd_1"].Status)
+	}
+}
+
 func TestHandleWithdrawFailed_RefundsFailedWithdraw(t *testing.T) {
 	deposits := newMemoryDeposits()
 	withdraws := newMemoryWithdraws()

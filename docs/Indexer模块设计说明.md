@@ -65,6 +65,11 @@ Indexer 不直接修改：
 
 `WithdrawExecuted` -> 若本地仍在 `APPROVED`，先 `MarkWithdrawBroadcasted` 回补广播账务 -> `CompleteWithdraw`
 
+补充说明：
+
+- `SIGNING + broadcast_nonce` 表示该提现已经在数据库中预留 nonce；
+- 若发送结果不确定，Indexer 不应把这类提现直接回退到可重新分配 nonce 的状态，而应等待链上事件回补或异常对账。
+
 ### 4.4 提现失败
 
 链上失败 / receipt failed -> `withdraw_requests.status = FAILED` -> 发布 `wallet.withdraw.failed` -> `RefundWithdraw`

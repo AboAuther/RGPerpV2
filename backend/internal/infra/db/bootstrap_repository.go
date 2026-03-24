@@ -10,6 +10,11 @@ import (
 	"gorm.io/gorm"
 )
 
+var removedDefaultSymbols = []string{
+	"AAPL-USDC",
+	"NVDA-USDC",
+}
+
 type BootstrapRepository struct {
 	db *gorm.DB
 }
@@ -50,26 +55,38 @@ func (r *BootstrapRepository) EnsureMarketBootstrap(ctx context.Context) error {
 	seeds := config.DefaultMarketSymbolSeeds()
 	symbols := make([]marketdomain.Symbol, 0, len(seeds))
 	for _, seed := range seeds {
-		mappings := []marketdomain.SymbolMapping{
-			{
+		mappings := make([]marketdomain.SymbolMapping, 0, 4)
+		if seed.BinanceSymbol != "" {
+			mappings = append(mappings, marketdomain.SymbolMapping{
 				SourceName:   "binance",
 				SourceSymbol: seed.BinanceSymbol,
 				PriceScale:   "1",
 				QtyScale:     "1",
 				Status:       "ACTIVE",
-			},
-			{
+			})
+		}
+		if seed.HyperliquidSymbol != "" {
+			mappings = append(mappings, marketdomain.SymbolMapping{
 				SourceName:   "hyperliquid",
 				SourceSymbol: seed.HyperliquidSymbol,
 				PriceScale:   "1",
 				QtyScale:     "1",
 				Status:       "ACTIVE",
-			},
+			})
 		}
 		if seed.CoinbaseSymbol != "" {
 			mappings = append(mappings, marketdomain.SymbolMapping{
 				SourceName:   "coinbase",
 				SourceSymbol: seed.CoinbaseSymbol,
+				PriceScale:   "1",
+				QtyScale:     "1",
+				Status:       "ACTIVE",
+			})
+		}
+		if seed.TwelveDataSymbol != "" {
+			mappings = append(mappings, marketdomain.SymbolMapping{
+				SourceName:   "twelvedata",
+				SourceSymbol: seed.TwelveDataSymbol,
 				PriceScale:   "1",
 				QtyScale:     "1",
 				Status:       "ACTIVE",
@@ -84,12 +101,34 @@ func (r *BootstrapRepository) EnsureMarketBootstrap(ctx context.Context) error {
 			TickSize:           seed.TickSize,
 			StepSize:           seed.StepSize,
 			MinNotional:        seed.MinNotional,
+			MaxLeverage:        seed.MaxLeverage,
 			Status:             seed.Status,
 			SessionPolicy:      seed.SessionPolicy,
 			Mappings:           mappings,
 		})
 	}
-	return catalog.UpsertSymbols(ctx, symbols)
+	if err := catalog.UpsertSymbols(ctx, symbols); err != nil {
+		return err
+	}
+	return r.decommissionRemovedDefaultSymbols(ctx)
+}
+
+func (r *BootstrapRepository) decommissionRemovedDefaultSymbols(ctx context.Context) error {
+	if len(removedDefaultSymbols) == 0 {
+		return nil
+	}
+	if err := DB(ctx, r.db).
+		Model(&SymbolModel{}).
+		Where("symbol IN ?", removedDefaultSymbols).
+		Update("status", "DELISTED").Error; err != nil {
+		return err
+	}
+	return DB(ctx, r.db).
+		Model(&SymbolMappingModel{}).
+		Where("symbol_id IN (?)",
+			DB(ctx, r.db).Model(&SymbolModel{}).Select("id").Where("symbol IN ?", removedDefaultSymbols),
+		).
+		Update("status", "INACTIVE").Error
 }
 
 func (r *BootstrapRepository) EnsureUserBootstrap(ctx context.Context, user authdomain.User) error {

@@ -7,9 +7,14 @@ import (
 
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
+	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 )
+
+func uint64Ptr(value uint64) *uint64 {
+	return &value
+}
 
 type fakeDepositAddressAllocator struct {
 	address string
@@ -46,6 +51,8 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 		{LedgerTxID: "ldg_wd_other", EventID: "evt_wd_other", BizType: "WITHDRAW_REFUND", BizRefID: "wd_other", Asset: "USDC", IdempotencyKey: "idem_wd_other", OperatorType: "system", OperatorID: "wallet", TraceID: "trace_4", Status: "COMMITTED", CreatedAt: now},
 		{LedgerTxID: "ldg_trf_user", EventID: "evt_trf_user", BizType: "TRANSFER", BizRefID: "trf_user", Asset: "USDC", IdempotencyKey: "idem_trf_user", OperatorType: "user", OperatorID: "7", TraceID: "trace_5", Status: "COMMITTED", CreatedAt: now},
 		{LedgerTxID: "ldg_trf_other", EventID: "evt_trf_other", BizType: "TRANSFER", BizRefID: "trf_other", Asset: "USDC", IdempotencyKey: "idem_trf_other", OperatorType: "user", OperatorID: "8", TraceID: "trace_6", Status: "COMMITTED", CreatedAt: now},
+		{LedgerTxID: "ldg_funding_user", EventID: "evt_funding_user", BizType: "funding.settlement", BizRefID: "fb_user", Asset: "USDC", IdempotencyKey: "idem_funding_user", OperatorType: "system", OperatorID: "funding-worker", TraceID: "trace_7", Status: "COMMITTED", CreatedAt: now},
+		{LedgerTxID: "ldg_funding_other", EventID: "evt_funding_other", BizType: "funding.settlement", BizRefID: "fb_other", Asset: "USDC", IdempotencyKey: "idem_funding_other", OperatorType: "system", OperatorID: "funding-worker", TraceID: "trace_8", Status: "COMMITTED", CreatedAt: now},
 	}
 	if err := db.Create(&ledgerTxs).Error; err != nil {
 		t.Fatalf("seed ledger txs: %v", err)
@@ -76,6 +83,12 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	if err := db.Create(&outbox).Error; err != nil {
 		t.Fatalf("seed outbox: %v", err)
 	}
+	if err := db.Create(&[]OutboxEventModel{
+		{EventID: "ob_funding_user", AggregateType: "ledger_tx", AggregateID: "ldg_funding_user", EventType: "ledger.committed", PayloadJSON: "{\"ledger_tx_id\":\"ldg_funding_user\",\"biz_type\":\"funding.settlement\",\"biz_ref_id\":\"fb_user\"}", Status: "PENDING", CreatedAt: now},
+		{EventID: "ob_funding_other", AggregateType: "ledger_tx", AggregateID: "ldg_funding_other", EventType: "ledger.committed", PayloadJSON: "{\"ledger_tx_id\":\"ldg_funding_other\",\"biz_type\":\"funding.settlement\",\"biz_ref_id\":\"fb_other\"}", Status: "PENDING", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed funding outbox: %v", err)
+	}
 
 	if err := db.Create(&[]OrderModel{
 		{OrderID: "ord_user", ClientOrderID: "cli_user", UserID: 7, SymbolID: 1, Side: "BUY", PositionEffect: "OPEN", Type: "LIMIT", TimeInForce: "GTC", Qty: "1", FilledQty: "0", AvgFillPrice: "0", ReduceOnly: false, MaxSlippageBps: 100, Status: "RESTING", FrozenMargin: "10", CreatedAt: now, UpdatedAt: now},
@@ -105,31 +118,60 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed trade outbox: %v", err)
 	}
+	if err := db.Create(&OutboxEventModel{
+		EventID:       "ob_risk_user",
+		AggregateType: "risk_snapshot",
+		AggregateID:   "99",
+		EventType:     "risk.snapshot.updated",
+		PayloadJSON:   "{\"risk_snapshot_id\":99,\"user_id\":7,\"risk_level\":\"NO_NEW_RISK\",\"previous_risk_level\":\"SAFE\",\"triggered_by\":\"mark_price\"}",
+		Status:        "PENDING",
+		CreatedAt:     now,
+	}).Error; err != nil {
+		t.Fatalf("seed risk outbox: %v", err)
+	}
+	if err := db.Create(&[]LedgerEntryModel{
+		{LedgerTxID: "ldg_funding_user", AccountID: 1, UserID: uint64Ptr(7), Asset: "USDC", Amount: "-4.12", EntryType: "FUNDING_SETTLEMENT", CreatedAt: now},
+		{LedgerTxID: "ldg_funding_user", AccountID: 2, Asset: "USDC", Amount: "4.12", EntryType: "FUNDING_SETTLEMENT", CreatedAt: now},
+		{LedgerTxID: "ldg_funding_other", AccountID: 3, UserID: uint64Ptr(8), Asset: "USDC", Amount: "1.87", EntryType: "FUNDING_SETTLEMENT", CreatedAt: now},
+		{LedgerTxID: "ldg_funding_other", AccountID: 4, Asset: "USDC", Amount: "-1.87", EntryType: "FUNDING_SETTLEMENT", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed funding ledger entries: %v", err)
+	}
 
 	items, err := repo.ListEvents(context.Background(), 7, false, 100)
 	if err != nil {
 		t.Fatalf("list scoped explorer events: %v", err)
 	}
-	if len(items) != 6 {
-		t.Fatalf("expected 6 user-scoped events, got %d", len(items))
+	if len(items) != 7 {
+		t.Fatalf("expected 7 user-scoped events, got %d", len(items))
 	}
 	got := map[string]bool{}
 	for _, item := range items {
 		got[item.EventID] = true
 	}
-	if !got["ob_dep_user"] || !got["ob_wd_user"] || !got["ob_trf_user"] || !got["ob_trade_order_user"] || !got["ob_trade_fill_user"] || !got["ob_trade_pos_user"] {
+	if !got["ob_dep_user"] || !got["ob_wd_user"] || !got["ob_trf_user"] || !got["ob_trade_order_user"] || !got["ob_trade_fill_user"] || !got["ob_trade_pos_user"] || !got["ob_funding_user"] {
 		t.Fatalf("expected only user-owned events, got %#v", got)
 	}
-	if got["ob_dep_other"] || got["ob_wd_other"] || got["ob_trf_other"] || got["ob_trade_order_other"] || got["ob_trade_fill_other"] || got["ob_trade_pos_other"] {
+	if got["ob_dep_other"] || got["ob_wd_other"] || got["ob_trf_other"] || got["ob_trade_order_other"] || got["ob_trade_fill_other"] || got["ob_trade_pos_other"] || got["ob_funding_other"] {
 		t.Fatalf("unexpected leakage of other users' events, got %#v", got)
+	}
+	if got["ob_risk_user"] {
+		t.Fatalf("expected risk snapshot event to remain admin-only, got %#v", got)
 	}
 
 	adminItems, err := repo.ListEvents(context.Background(), 7, true, 100)
 	if err != nil {
 		t.Fatalf("list admin explorer events: %v", err)
 	}
-	if len(adminItems) != 12 {
-		t.Fatalf("expected 12 admin-visible events, got %d", len(adminItems))
+	if len(adminItems) != 15 {
+		t.Fatalf("expected 15 admin-visible events, got %d", len(adminItems))
+	}
+	adminGot := map[string]bool{}
+	for _, item := range adminItems {
+		adminGot[item.EventID] = true
+	}
+	if !adminGot["ob_risk_user"] {
+		t.Fatalf("expected admin explorer to include risk snapshot event, got %#v", adminGot)
 	}
 
 	var depositEvent, withdrawEvent *readmodel.ExplorerEvent
@@ -166,7 +208,7 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 		t.Fatalf("expected withdraw event amount to be exposed, got %+v", withdrawEvent)
 	}
 
-	var tradeOrderEvent, tradeFillEvent, tradePositionEvent *readmodel.ExplorerEvent
+	var tradeOrderEvent, tradeFillEvent, tradePositionEvent, fundingEvent *readmodel.ExplorerEvent
 	for idx := range items {
 		switch items[idx].EventID {
 		case "ob_trade_order_user":
@@ -175,6 +217,8 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 			tradeFillEvent = &items[idx]
 		case "ob_trade_pos_user":
 			tradePositionEvent = &items[idx]
+		case "ob_funding_user":
+			fundingEvent = &items[idx]
 		}
 	}
 	if tradeOrderEvent == nil || tradeOrderEvent.OrderID == nil || *tradeOrderEvent.OrderID != "ord_user" {
@@ -194,6 +238,12 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 	if tradePositionEvent == nil || tradePositionEvent.PositionID == nil || *tradePositionEvent.PositionID != "pos_user" {
 		t.Fatalf("expected trade position event position_id to be exposed, got %+v", tradePositionEvent)
+	}
+	if fundingEvent == nil || fundingEvent.LedgerTxID == nil || *fundingEvent.LedgerTxID != "ldg_funding_user" {
+		t.Fatalf("expected funding event ledger_tx_id to be exposed, got %+v", fundingEvent)
+	}
+	if fundingEvent.Amount == nil || *fundingEvent.Amount != "-4.12" {
+		t.Fatalf("expected funding event amount to be exposed, got %+v", fundingEvent)
 	}
 }
 
@@ -277,6 +327,77 @@ func TestAccountQueryRepository_ListTransfersIncludesReceiver(t *testing.T) {
 	}
 }
 
+func TestAccountQueryRepository_ListTransfersFallsBackToAccountUserWhenEntryUserMissing(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewAccountQueryRepository(db)
+	ledgerRepo := NewLedgerRepository(db)
+	now := time.Now().UTC()
+	userSender := uint64(17)
+	userReceiver := uint64(18)
+
+	if err := db.Create(&[]UserModel{
+		{ID: userSender, EVMAddress: "0x0000000000000000000000000000000000000017", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{ID: userReceiver, EVMAddress: "0x0000000000000000000000000000000000000018", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
+
+	accounts := []AccountModel{
+		{UserID: &userSender, AccountCode: "USER_WALLET", AccountType: "USER", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+		{UserID: &userReceiver, AccountCode: "USER_WALLET", AccountType: "USER", Asset: "USDC", Status: "ACTIVE", CreatedAt: now, UpdatedAt: now},
+	}
+	if err := db.Create(&accounts).Error; err != nil {
+		t.Fatalf("seed accounts: %v", err)
+	}
+
+	var senderWallet AccountModel
+	if err := db.Where("user_id = ? AND account_code = ? AND asset = ?", userSender, "USER_WALLET", "USDC").First(&senderWallet).Error; err != nil {
+		t.Fatalf("load sender wallet: %v", err)
+	}
+	var receiverWallet AccountModel
+	if err := db.Where("user_id = ? AND account_code = ? AND asset = ?", userReceiver, "USER_WALLET", "USDC").First(&receiverWallet).Error; err != nil {
+		t.Fatalf("load receiver wallet: %v", err)
+	}
+
+	if err := ledgerRepo.CreatePosting(context.Background(), ledgerdomain.PostingRequest{
+		LedgerTx: ledgerdomain.LedgerTx{
+			ID:             "ldg_transfer_fallback",
+			EventID:        "evt_transfer_fallback",
+			BizType:        "TRANSFER",
+			BizRefID:       "trf_fallback",
+			Asset:          "USDC",
+			IdempotencyKey: "transfer:17:test_fallback",
+			OperatorType:   "user",
+			OperatorID:     "17",
+			TraceID:        "trace_transfer_fallback",
+			Status:         "COMMITTED",
+			CreatedAt:      now,
+		},
+		Entries: []ledgerdomain.LedgerEntry{
+			{AccountID: senderWallet.ID, Asset: "USDC", Amount: "-3.5", EntryType: "TRANSFER_OUT"},
+			{AccountID: receiverWallet.ID, Asset: "USDC", Amount: "3.5", EntryType: "TRANSFER_IN"},
+		},
+	}); err != nil {
+		t.Fatalf("create transfer posting: %v", err)
+	}
+
+	senderItems, err := repo.ListTransfers(context.Background(), userSender)
+	if err != nil {
+		t.Fatalf("list sender transfers: %v", err)
+	}
+	if len(senderItems) != 1 || senderItems[0].Direction != "OUT" || senderItems[0].CounterpartyAddress != "0x0000000000000000000000000000000000000018" {
+		t.Fatalf("unexpected sender fallback transfer details: %+v", senderItems)
+	}
+
+	receiverItems, err := repo.ListTransfers(context.Background(), userReceiver)
+	if err != nil {
+		t.Fatalf("list receiver transfers: %v", err)
+	}
+	if len(receiverItems) != 1 || receiverItems[0].Direction != "IN" || receiverItems[0].CounterpartyAddress != "0x0000000000000000000000000000000000000017" {
+		t.Fatalf("unexpected receiver fallback transfer details: %+v", receiverItems)
+	}
+}
+
 func TestWalletReadService_ListDepositAddressesFiltersInvalidRows(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewDepositAddressRepository(db, map[int64]int{31337: 1})
@@ -292,7 +413,7 @@ func TestWalletReadService_ListDepositAddressesFiltersInvalidRows(t *testing.T) 
 		t.Fatalf("seed deposit address: %v", err)
 	}
 
-	readSvc := NewWalletReadService(repo, NewWalletQueryRepository(db), fakeDepositAddressAllocator{
+	readSvc := NewWalletReadService(repo, NewWalletQueryRepository(db, nil), fakeDepositAddressAllocator{
 		address: "0x00000000000000000000000000000000000000ab",
 		valid:   false,
 	})
@@ -302,6 +423,66 @@ func TestWalletReadService_ListDepositAddressesFiltersInvalidRows(t *testing.T) 
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected invalid deposit address to be hidden, got %+v", items)
+	}
+}
+
+func TestDepositAddressRepository_AllowsSameAddressAcrossChains(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewDepositAddressRepository(db, map[int64]int{31337: 1, 31338: 2})
+	ctx := context.Background()
+	now := time.Now().UTC()
+	sharedAddress := "0x00000000000000000000000000000000000000ef"
+
+	if err := repo.Upsert(ctx, walletdomain.DepositAddress{
+		UserID:    7,
+		ChainID:   31337,
+		Asset:     "USDC",
+		Address:   sharedAddress,
+		Status:    "ACTIVE",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert first chain address: %v", err)
+	}
+	if err := repo.Upsert(ctx, walletdomain.DepositAddress{
+		UserID:    7,
+		ChainID:   31338,
+		Asset:     "USDC",
+		Address:   sharedAddress,
+		Status:    "ACTIVE",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("upsert second chain address: %v", err)
+	}
+
+	first, err := repo.GetByChainAddress(ctx, 31337, sharedAddress)
+	if err != nil {
+		t.Fatalf("get first chain address: %v", err)
+	}
+	second, err := repo.GetByChainAddress(ctx, 31338, sharedAddress)
+	if err != nil {
+		t.Fatalf("get second chain address: %v", err)
+	}
+	if first.ChainID != 31337 || second.ChainID != 31338 {
+		t.Fatalf("expected chain-specific address lookup, got first=%+v second=%+v", first, second)
+	}
+}
+
+func TestDepositAddressRepository_AssignToUserCreatesMissingRow(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewDepositAddressRepository(db, map[int64]int{31339: 2})
+	ctx := context.Background()
+	address := "0x00000000000000000000000000000000000000aa"
+
+	if err := repo.AssignToUser(ctx, 9, 31339, "USDC", address); err != nil {
+		t.Fatalf("assign to user: %v", err)
+	}
+
+	item, err := repo.GetByChainAddress(ctx, 31339, address)
+	if err != nil {
+		t.Fatalf("get assigned address: %v", err)
+	}
+	if item.UserID != 9 || item.ChainID != 31339 || item.Asset != "USDC" {
+		t.Fatalf("unexpected assigned address: %+v", item)
 	}
 }
 
@@ -328,7 +509,7 @@ func TestWalletQueryRepository_GetRiskMonitorDashboard(t *testing.T) {
 		t.Fatalf("seed positions: %v", err)
 	}
 
-	repo := NewWalletQueryRepositoryWithRiskConfig(db, RiskMonitorConfig{
+	repo := NewWalletQueryRepositoryWithRiskConfig(db, nil, RiskMonitorConfig{
 		HardLimitNotional:      "200",
 		MaxExposureSlippageBps: 40,
 	})
@@ -393,7 +574,7 @@ func TestAccountQueryRepository_GetRiskReturnsNoNewRiskSnapshot(t *testing.T) {
 
 func TestWalletQueryRepository_LedgerOverviewAndAudit(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewWalletQueryRepository(db, fakeLedgerChainReader{
+	repo := NewWalletQueryRepository(db, nil, fakeLedgerChainReader{
 		items: []chaininfra.VaultBalanceSnapshot{{
 			ChainID:      31337,
 			ChainKey:     "local",

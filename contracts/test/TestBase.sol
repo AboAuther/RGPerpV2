@@ -4,6 +4,7 @@ pragma solidity ^0.8.26;
 interface Vm {
     function prank(address) external;
     function expectRevert(bytes calldata) external;
+    function deal(address who, uint256 newBalance) external;
 }
 
 contract TestBase {

@@ -90,6 +90,7 @@ export function OrdersHistoryPage() {
         pagination={false}
         scroll={{ x: 980 }}
         columns={[
+          { title: '时间', dataIndex: 'created_at', render: (value: string) => formatDateTime(value) },
           { title: '交易对', dataIndex: 'symbol' },
           { title: '方向', dataIndex: 'side', render: (value: string) => <StatusTag value={value} /> },
           { title: '类型', dataIndex: 'type' },

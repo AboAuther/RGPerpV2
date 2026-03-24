@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
@@ -28,6 +29,7 @@ func NewMarketCatalogRepository(db *gorm.DB) *MarketCatalogRepository {
 func (r *MarketCatalogRepository) UpsertSymbols(ctx context.Context, symbols []marketdomain.Symbol) error {
 	now := time.Now().UTC()
 	for _, symbol := range symbols {
+		activeSourceNames := make(map[string]struct{}, len(symbol.Mappings))
 		model := SymbolModel{
 			Symbol:             symbol.Symbol,
 			AssetClass:         symbol.AssetClass,
@@ -64,6 +66,10 @@ func (r *MarketCatalogRepository) UpsertSymbols(ctx context.Context, symbols []m
 			return err
 		}
 		for _, mapping := range symbol.Mappings {
+			if strings.TrimSpace(mapping.SourceName) == "" || strings.TrimSpace(mapping.SourceSymbol) == "" {
+				continue
+			}
+			activeSourceNames[mapping.SourceName] = struct{}{}
 			mappingModel := SymbolMappingModel{
 				SymbolID:     created.ID,
 				SourceName:   mapping.SourceName,
@@ -84,27 +90,55 @@ func (r *MarketCatalogRepository) UpsertSymbols(ctx context.Context, symbols []m
 				return err
 			}
 		}
-		if err := r.ensureDefaultRiskTier(ctx, created.ID, now); err != nil {
+		if len(activeSourceNames) == 0 {
+			if err := DB(ctx, r.db).Model(&SymbolMappingModel{}).Where("symbol_id = ?", created.ID).Update("status", "INACTIVE").Error; err != nil {
+				return err
+			}
+		} else {
+			if err := DB(ctx, r.db).
+				Model(&SymbolMappingModel{}).
+				Where("symbol_id = ?", created.ID).
+				Where("source_name NOT IN ?", mapKeys(activeSourceNames)).
+				Update("status", "INACTIVE").Error; err != nil {
+				return err
+			}
+		}
+		if err := r.ensureDefaultRiskTier(ctx, created.ID, symbol.MaxLeverage, now); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r *MarketCatalogRepository) ensureDefaultRiskTier(ctx context.Context, symbolID uint64, now time.Time) error {
+func (r *MarketCatalogRepository) ensureDefaultRiskTier(ctx context.Context, symbolID uint64, maxLeverage string, now time.Time) error {
+	if strings.TrimSpace(maxLeverage) == "" {
+		maxLeverage = "20"
+	}
+	leverage := decimalx.MustFromString(maxLeverage)
+	if !leverage.GreaterThan(decimalx.MustFromString("0")) {
+		leverage = decimalx.MustFromString("20")
+	}
+	imr := decimalx.MustFromString("1").Div(leverage)
+	mmr := imr.Div(decimalx.MustFromString("2"))
 	model := RiskTierModel{
 		SymbolID:           symbolID,
 		TierLevel:          1,
 		MaxNotional:        "1000000",
-		MaxLeverage:        "20",
-		IMR:                "0.1",
-		MMR:                "0.05",
+		MaxLeverage:        leverage.String(),
+		IMR:                imr.String(),
+		MMR:                mmr.String(),
 		LiquidationFeeRate: "0.005",
 		CreatedAt:          now,
 	}
 	return DB(ctx, r.db).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "symbol_id"}, {Name: "tier_level"}},
-		DoNothing: true,
+		Columns: []clause.Column{{Name: "symbol_id"}, {Name: "tier_level"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"max_notional":         model.MaxNotional,
+			"max_leverage":         model.MaxLeverage,
+			"imr":                  model.IMR,
+			"mmr":                  model.MMR,
+			"liquidation_fee_rate": model.LiquidationFeeRate,
+		}),
 	}).Create(&model).Error
 }
 
@@ -146,6 +180,7 @@ func (r *MarketCatalogRepository) ListActiveSymbols(ctx context.Context) ([]mark
 			TickSize:           model.TickSize,
 			StepSize:           model.StepSize,
 			MinNotional:        model.MinNotional,
+			MaxLeverage:        "",
 			Status:             model.Status,
 			SessionPolicy:      model.SessionPolicy,
 			Mappings:           mappingsBySymbol[model.ID],
@@ -155,12 +190,13 @@ func (r *MarketCatalogRepository) ListActiveSymbols(ctx context.Context) ([]mark
 }
 
 type MarketSnapshotRepository struct {
-	db          *gorm.DB
-	latestCache *marketcache.Cache
+	db           *gorm.DB
+	latestCache  *marketcache.Cache
+	orderRuntime OrderRuntimeConfigProvider
 }
 
-func NewMarketSnapshotRepository(db *gorm.DB, latestCache *marketcache.Cache) *MarketSnapshotRepository {
-	return &MarketSnapshotRepository{db: db, latestCache: latestCache}
+func NewMarketSnapshotRepository(db *gorm.DB, latestCache *marketcache.Cache, orderRuntime OrderRuntimeConfigProvider) *MarketSnapshotRepository {
+	return &MarketSnapshotRepository{db: db, latestCache: latestCache, orderRuntime: orderRuntime}
 }
 
 func (r *MarketSnapshotRepository) AppendSourceSnapshots(ctx context.Context, snapshots []marketdomain.SourcePriceSnapshot) error {
@@ -206,7 +242,7 @@ func (r *MarketSnapshotRepository) ApplyAggregatedState(ctx context.Context, sna
 			return err
 		}
 		if len(snapshots) > 0 {
-			if err := refreshOpenPositions(tx, snapshots); err != nil {
+			if err := refreshOpenPositions(tx, snapshots, r.orderRuntime); err != nil {
 				return err
 			}
 		}
@@ -235,7 +271,7 @@ func applySymbolRuntimeStates(tx *gorm.DB, states []marketdomain.SymbolRuntimeSt
 	return nil
 }
 
-func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice) error {
+func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice, orderRuntime OrderRuntimeConfigProvider) error {
 	if len(snapshots) == 0 {
 		return nil
 	}
@@ -255,6 +291,7 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 	for _, symbol := range symbols {
 		symbolByID[symbol.ID] = symbol
 	}
+	runtimeBySymbol := make(map[string]orderdomain.RuntimeConfig, len(symbols))
 
 	tierBySymbolID, err := loadRiskTiersBySymbol(context.Background(), tx, symbolIDs)
 	if err != nil {
@@ -282,6 +319,13 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 			return fmt.Errorf("risk tier missing for symbol_id=%d", position.SymbolID)
 		}
 
+		runtimeCfg, ok := runtimeBySymbol[symbol.Symbol]
+		if !ok {
+			if orderRuntime != nil {
+				runtimeCfg = orderRuntime.CurrentOrderRuntimeConfig(symbol.Symbol)
+			}
+			runtimeBySymbol[symbol.Symbol] = runtimeCfg
+		}
 		qty := decimalx.MustFromString(position.Qty)
 		mark := decimalx.MustFromString(snapshot.MarkPrice)
 		entry := decimalx.MustFromString(position.AvgEntryPrice)
@@ -296,15 +340,21 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 			return err
 		}
 		unrealized := sign.Mul(qty).Mul(mark.Sub(entry)).Mul(multiplier)
-		maintenance := notional.Mul(decimalx.MustFromString(tier.MMR))
+		maintenanceRate := applyMaintenanceUplift(tier.MMR, runtimeCfg.MaintenanceMarginUpliftRatio)
+		liquidationPenaltyRate := tier.LiquidationFeeRate
+		if strings.TrimSpace(runtimeCfg.LiquidationPenaltyRate) != "" {
+			liquidationPenaltyRate = runtimeCfg.LiquidationPenaltyRate
+		}
+		maintenance := notional.Mul(decimalx.MustFromString(maintenanceRate))
 		liquidationPrice, bankruptcyPrice := positionrisk.ComputeDisplayPrices(
 			position.Side,
 			position.Qty,
 			position.AvgEntryPrice,
 			position.InitialMargin,
-			tier.MMR,
-			tier.LiquidationFeeRate,
+			maintenanceRate,
+			liquidationPenaltyRate,
 			symbol.ContractMultiplier,
+			runtimeCfg.LiquidationExtraSlippageBps,
 		)
 
 		if err := tx.Model(&PositionModel{}).
@@ -326,46 +376,104 @@ func refreshOpenPositions(tx *gorm.DB, snapshots []marketdomain.AggregatedPrice)
 }
 
 type MarketReadRepository struct {
-	db          *gorm.DB
-	latestCache *marketcache.Cache
-	maxDataAge  time.Duration
+	db             *gorm.DB
+	latestCache    *marketcache.Cache
+	maxDataAge     time.Duration
+	orderRuntime   OrderRuntimeConfigProvider
+	fundingRuntime FundingRuntimeConfigProvider
 }
 
-func NewMarketReadRepository(db *gorm.DB, latestCache *marketcache.Cache, maxDataAge time.Duration) *MarketReadRepository {
-	return &MarketReadRepository{db: db, latestCache: latestCache, maxDataAge: maxDataAge}
+type OrderRuntimeConfigProvider interface {
+	CurrentOrderRuntimeConfig(symbol string) orderdomain.RuntimeConfig
+}
+
+type FundingRuntimeConfigProvider interface {
+	CurrentFundingRuntimeConfig(symbol string) fundingdomain.ServiceConfig
+}
+
+func NewMarketReadRepository(db *gorm.DB, latestCache *marketcache.Cache, maxDataAge time.Duration, orderRuntime OrderRuntimeConfigProvider, fundingRuntime FundingRuntimeConfigProvider) *MarketReadRepository {
+	return &MarketReadRepository{db: db, latestCache: latestCache, maxDataAge: maxDataAge, orderRuntime: orderRuntime, fundingRuntime: fundingRuntime}
 }
 
 func (r *MarketReadRepository) ListSymbols(ctx context.Context) ([]readmodel.SymbolItem, error) {
 	var models []SymbolModel
-	if err := DB(ctx, r.db).Order("symbol ASC").Find(&models).Error; err != nil {
+	if err := DB(ctx, r.db).Where("status IN ?", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).Order("symbol ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	symbolIDs := make([]uint64, 0, len(models))
+	for _, model := range models {
+		symbolIDs = append(symbolIDs, model.ID)
+	}
+	tiersBySymbol, err := loadRiskTiersBySymbol(ctx, DB(ctx, r.db), symbolIDs)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]readmodel.SymbolItem, 0, len(models))
 	for _, model := range models {
+		maxLeverage := "1"
+		if tiers := tiersBySymbol[model.ID]; len(tiers) > 0 {
+			maxLeverage = tiers[0].MaxLeverage
+		}
+		if r.orderRuntime != nil {
+			runtimeCfg := r.orderRuntime.CurrentOrderRuntimeConfig(model.Symbol)
+			override := strings.TrimSpace(runtimeCfg.MaxLeverage)
+			if override != "" {
+				maxLeverage = override
+			}
+			sessionPolicy := strings.TrimSpace(runtimeCfg.SessionPolicy)
+			if sessionPolicy == "" {
+				sessionPolicy = model.SessionPolicy
+			}
+			out = append(out, readmodel.SymbolItem{
+				Symbol:        model.Symbol,
+				AssetClass:    model.AssetClass,
+				TickSize:      model.TickSize,
+				StepSize:      model.StepSize,
+				MinNotional:   model.MinNotional,
+				MaxLeverage:   maxLeverage,
+				SessionPolicy: sessionPolicy,
+				Status:        model.Status,
+			})
+			continue
+		}
 		out = append(out, readmodel.SymbolItem{
-			Symbol:      model.Symbol,
-			AssetClass:  model.AssetClass,
-			TickSize:    model.TickSize,
-			StepSize:    model.StepSize,
-			MinNotional: model.MinNotional,
-			Status:      model.Status,
+			Symbol:        model.Symbol,
+			AssetClass:    model.AssetClass,
+			TickSize:      model.TickSize,
+			StepSize:      model.StepSize,
+			MinNotional:   model.MinNotional,
+			MaxLeverage:   maxLeverage,
+			SessionPolicy: model.SessionPolicy,
+			Status:        model.Status,
 		})
 	}
 	return out, nil
 }
 
 func (r *MarketReadRepository) ListTickers(ctx context.Context) ([]readmodel.TickerItem, error) {
-	if r.latestCache != nil {
-		if cached, err := r.latestCache.ListTickers(ctx); err == nil && len(cached) > 0 {
-			return cached, nil
-		}
-	}
 	var symbols []SymbolModel
-	if err := DB(ctx, r.db).Order("symbol ASC").Find(&symbols).Error; err != nil {
+	if err := DB(ctx, r.db).Where("status IN ?", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).Order("symbol ASC").Find(&symbols).Error; err != nil {
 		return nil, err
 	}
 	if len(symbols) == 0 {
 		return []readmodel.TickerItem{}, nil
+	}
+	if r.latestCache != nil {
+		if cached, err := r.latestCache.ListTickers(ctx); err == nil && len(cached) > 0 {
+			allowed := make(map[string]struct{}, len(symbols))
+			for _, symbol := range symbols {
+				allowed[symbol.Symbol] = struct{}{}
+			}
+			filtered := make([]readmodel.TickerItem, 0, len(cached))
+			for _, item := range cached {
+				if _, ok := allowed[item.Symbol]; ok {
+					filtered = append(filtered, item)
+				}
+			}
+			if len(filtered) > 0 {
+				return filtered, nil
+			}
+		}
 	}
 	symbolIDs := make([]uint64, 0, len(symbols))
 	for _, symbol := range symbols {
@@ -437,6 +545,127 @@ JOIN (
 		})
 	}
 	return out, nil
+}
+
+func (r *MarketReadRepository) ListFundingQuotes(ctx context.Context) ([]readmodel.FundingQuoteItem, error) {
+	var symbols []SymbolModel
+	if err := DB(ctx, r.db).Where("status IN ?", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).Order("symbol ASC").Find(&symbols).Error; err != nil {
+		return nil, err
+	}
+	if len(symbols) == 0 {
+		return []readmodel.FundingQuoteItem{}, nil
+	}
+	cfg := fundingdomain.ServiceConfig{
+		SettlementIntervalSec: 3600,
+		CapRatePerHour:        "0.0075",
+		MinValidSourceCount:   1,
+		DefaultCryptoModel:    fundingdomain.ModelExternalAvg,
+	}
+	now := time.Now().UTC()
+	symbolIDs := make([]uint64, 0, len(symbols))
+	for _, symbol := range symbols {
+		symbolIDs = append(symbolIDs, symbol.ID)
+	}
+	var snapshotRows []FundingRateSnapshotModel
+	if err := DB(ctx, r.db).Raw(`
+SELECT frs.*
+FROM funding_rate_snapshots frs
+JOIN (
+  SELECT symbol_id, source_name, MAX(id) AS max_id
+  FROM funding_rate_snapshots
+  WHERE symbol_id IN ?
+  GROUP BY symbol_id, source_name
+) latest ON latest.max_id = frs.id
+ORDER BY frs.symbol_id ASC, frs.source_name ASC
+`, symbolIDs).Scan(&snapshotRows).Error; err != nil {
+		return nil, err
+	}
+	snapshotsBySymbol := make(map[uint64][]fundingdomain.SourceRate, len(symbols))
+	for _, row := range snapshotRows {
+		snapshotsBySymbol[row.SymbolID] = append(snapshotsBySymbol[row.SymbolID], fundingdomain.SourceRate{
+			SourceName:      row.SourceName,
+			Rate:            row.FundingRate,
+			IntervalSeconds: row.IntervalSeconds,
+		})
+	}
+	out := make([]readmodel.FundingQuoteItem, 0, len(symbols))
+	for _, symbol := range symbols {
+		symbolCfg := cfg
+		if r.fundingRuntime != nil {
+			override := r.fundingRuntime.CurrentFundingRuntimeConfig(symbol.Symbol)
+			if override.SettlementIntervalSec > 0 {
+				symbolCfg.SettlementIntervalSec = override.SettlementIntervalSec
+			}
+			if override.CapRatePerHour != "" {
+				symbolCfg.CapRatePerHour = override.CapRatePerHour
+			}
+			if override.MinValidSourceCount > 0 {
+				symbolCfg.MinValidSourceCount = override.MinValidSourceCount
+			}
+			if override.DefaultCryptoModel != "" {
+				symbolCfg.DefaultCryptoModel = override.DefaultCryptoModel
+			}
+		}
+		service, err := fundingdomain.NewService(symbolCfg)
+		if err != nil {
+			return nil, err
+		}
+		nextFundingAt := time.Unix(((now.Unix()/int64(symbolCfg.SettlementIntervalSec))+1)*int64(symbolCfg.SettlementIntervalSec), 0).UTC()
+		countdown := int64(nextFundingAt.Sub(now).Seconds())
+		sourceRates := snapshotsBySymbol[symbol.ID]
+		item := readmodel.FundingQuoteItem{
+			Symbol:        symbol.Symbol,
+			NextFundingAt: nextFundingAt.Format(time.RFC3339),
+			CountdownSec:  countdown,
+			Status:        "UNAVAILABLE",
+			SourceCount:   len(sourceRates),
+		}
+		if estimated, _, err := service.AggregateRate(sourceRates); err == nil {
+			item.EstimatedRate = &estimated
+			item.Status = "READY"
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func applyMaintenanceUplift(baseRate string, upliftRatio string) string {
+	base := decimalx.MustFromString(baseRate)
+	uplift := decimalx.MustFromString(strings.TrimSpace(defaultString(upliftRatio, "0")))
+	if !uplift.GreaterThan(decimalx.MustFromString("0")) {
+		return base.String()
+	}
+	return base.Mul(decimalx.MustFromString("1").Add(uplift)).String()
+}
+
+func minPositiveDecimalString(left string, right string) string {
+	leftValue := decimalx.MustFromString(defaultString(left, "0"))
+	rightValue := decimalx.MustFromString(defaultString(right, "0"))
+	if !leftValue.GreaterThan(decimalx.MustFromString("0")) {
+		return rightValue.String()
+	}
+	if !rightValue.GreaterThan(decimalx.MustFromString("0")) {
+		return leftValue.String()
+	}
+	if rightValue.LessThan(leftValue) {
+		return rightValue.String()
+	}
+	return leftValue.String()
+}
+
+func defaultString(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(value)
+}
+
+func mapKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 func (r *MarketSnapshotRepository) refreshLatestCache(ctx context.Context, snapshots []marketdomain.AggregatedPrice, runtimeStates []marketdomain.SymbolRuntimeState) {
@@ -529,12 +758,14 @@ JOIN (
 			SymbolID:              symbol.ID,
 			Symbol:                symbol.Symbol,
 			Status:                symbol.Status,
+			SessionPolicy:         symbol.SessionPolicy,
 			ContractMultiplier:    symbol.ContractMultiplier,
 			TickSize:              symbol.TickSize,
 			StepSize:              symbol.StepSize,
 			MinNotional:           symbol.MinNotional,
 			InitialMarginRate:     tier.IMR,
 			MaintenanceMarginRate: tier.MMR,
+			RiskTiers:             toOrderRiskTiers(tiers),
 			IndexPrice:            mark.IndexPrice,
 			MarkPrice:             mark.MarkPrice,
 			BestBid:               bestBid,
@@ -599,6 +830,8 @@ func (r *TradingReadRepository) ListOrders(ctx context.Context, userID uint64) (
 			Qty:            row.Qty,
 			FilledQty:      row.FilledQty,
 			AvgFillPrice:   row.AvgFillPrice,
+			Leverage:       row.Leverage,
+			MarginMode:     marginModeOrDefault(row.MarginMode),
 			Price:          row.Price,
 			TriggerPrice:   row.TriggerPrice,
 			ReduceOnly:     row.ReduceOnly,
@@ -664,6 +897,8 @@ func (r *TradingReadRepository) ListPositions(ctx context.Context, userID uint64
 			Qty:               row.Qty,
 			AvgEntryPrice:     row.AvgEntryPrice,
 			MarkPrice:         row.MarkPrice,
+			Leverage:          row.Leverage,
+			MarginMode:        marginModeOrDefault(row.MarginMode),
 			InitialMargin:     row.InitialMargin,
 			MaintenanceMargin: row.MaintenanceMargin,
 			RealizedPnL:       row.RealizedPnL,

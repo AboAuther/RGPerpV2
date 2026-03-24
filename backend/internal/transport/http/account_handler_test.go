@@ -9,6 +9,7 @@ import (
 
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
 type fakeAccessVerifier struct {
@@ -51,6 +52,12 @@ type fakeTransferResolver struct{}
 
 func (fakeTransferResolver) ResolveUserIDByAddress(_ context.Context, _ string) (uint64, error) {
 	return 88, nil
+}
+
+type fakeMissingTransferResolver struct{}
+
+func (fakeMissingTransferResolver) ResolveUserIDByAddress(_ context.Context, _ string) (uint64, error) {
+	return 0, errorsx.ErrNotFound
 }
 
 func TestAccountHandler_GetSummary(t *testing.T) {
@@ -108,5 +115,38 @@ func TestAccountHandler_Transfer(t *testing.T) {
 	}
 	if transferUC.req.IdempotencyKey != "idem_transfer_1" {
 		t.Fatalf("unexpected idempotency key: %+v", transferUC.req)
+	}
+}
+
+func TestAccountHandler_TransferRejectsUnregisteredReceiver(t *testing.T) {
+	transferUC := &fakeTransferUseCase{}
+	engine := NewEngine(
+		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
+		nil,
+		nil,
+		nil,
+		NewAccountHandler(fakeAccountReader{}, transferUC, fakeMissingTransferResolver{}),
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+
+	body := []byte(`{"to_address":"0x0000000000000000000000000000000000000999","amount":"10","asset":"USDC"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/account/transfer", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Trace-Id", "trace_2")
+	resp := httptest.NewRecorder()
+	engine.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.Code)
+	}
+	if transferUC.req.ToUserID != 0 {
+		t.Fatalf("transfer use case should not be called on unregistered receiver: %+v", transferUC.req)
+	}
+	if !bytes.Contains(resp.Body.Bytes(), []byte("收款地址未注册")) {
+		t.Fatalf("expected unregistered receiver message, got %s", resp.Body.String())
 	}
 }

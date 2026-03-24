@@ -129,6 +129,8 @@ export interface SymbolItem {
   tick_size: string;
   step_size: string;
   min_notional: string;
+  max_leverage: string;
+  session_policy: string;
   status: string;
 }
 
@@ -143,6 +145,15 @@ export interface TickerItem {
   ts: string;
 }
 
+export interface FundingQuoteItem {
+  symbol: string;
+  estimated_rate?: string | null;
+  next_funding_at: string;
+  countdown_sec: number;
+  status: string;
+  source_count: number;
+}
+
 export interface OrderItem {
   order_id: string;
   client_order_id: string;
@@ -153,6 +164,8 @@ export interface OrderItem {
   qty: string;
   filled_qty: string;
   avg_fill_price: string;
+  leverage: string;
+  margin_mode: string;
   price?: string | null;
   trigger_price?: string | null;
   reduce_only: boolean;
@@ -168,6 +181,8 @@ export interface OrderCreateRequest {
   position_effect: 'OPEN' | 'REDUCE' | 'CLOSE';
   type: 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
   qty: string;
+  leverage?: string | null;
+  margin_mode?: 'ISOLATED' | 'CROSS';
   price?: string | null;
   trigger_price?: string | null;
   reduce_only: boolean;
@@ -193,6 +208,8 @@ export interface PositionItem {
   qty: string;
   avg_entry_price: string;
   mark_price: string;
+  leverage: string;
+  margin_mode: string;
   initial_margin: string;
   maintenance_margin: string;
   realized_pnl: string;
@@ -230,6 +247,45 @@ export interface AdminWithdrawReviewItem {
   risk_flag?: string | null;
   tx_hash?: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface AdminLiquidationItem {
+  liquidation_id: string;
+  user_id: number;
+  user_address: string;
+  symbol?: string | null;
+  mode: string;
+  status: string;
+  trigger_risk_snapshot_id: number;
+  position_count: number;
+  penalty_amount: string;
+  insurance_fund_used: string;
+  bankrupt_amount: string;
+  abort_reason?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InsuranceFundTopUpRequest {
+  asset: string;
+  amount: string;
+  source_account: 'SYSTEM_POOL' | 'CUSTODY_HOT';
+  reason: string;
+}
+
+export interface InsuranceFundTopUpResult {
+  topup_id: string;
+  asset: string;
+  amount: string;
+  source_account: string;
+  status: string;
+}
+
+export interface AdminLiquidationActionResult {
+  liquidation_id: string;
+  status: string;
+  abort_reason?: string | null;
 }
 
 export interface LedgerAssetOverview {
@@ -329,17 +385,38 @@ export interface RuntimeConfigSnapshotView {
   read_only: boolean;
   reduce_only: boolean;
   trace_header_required: boolean;
+  market_taker_fee_rate: string;
+  market_maker_fee_rate: string;
+  market_default_max_slippage_bps: number;
   risk_global_buffer_ratio: string;
   risk_mark_price_stale_sec: number;
   risk_force_reduce_only_on_stale_price: boolean;
   risk_liquidation_penalty_rate: string;
+  risk_maintenance_margin_uplift_ratio: string;
   risk_liquidation_extra_slippage_bps: number;
   risk_max_open_orders_per_user_per_symbol: number;
   risk_net_exposure_hard_limit: string;
   risk_max_exposure_slippage_bps: number;
+  funding_interval_sec: number;
+  funding_source_poll_interval_sec: number;
+  funding_cap_rate_per_hour: string;
+  funding_min_valid_source_count: number;
+  funding_default_model_crypto: string;
   hedge_enabled: boolean;
   hedge_soft_threshold_ratio: string;
   hedge_hard_threshold_ratio: string;
+  pair_overrides?: Record<string, RuntimeConfigPairOverrideView>;
+}
+
+export interface RuntimeConfigPairOverrideView {
+  max_leverage?: string;
+  session_policy?: string;
+  taker_fee_rate?: string;
+  maker_fee_rate?: string;
+  default_max_slippage_bps?: number;
+  liquidation_penalty_rate?: string;
+  maintenance_margin_uplift_ratio?: string;
+  funding_interval_sec?: number;
 }
 
 export interface RuntimeConfigHistoryItem {
@@ -369,20 +446,51 @@ export interface RuntimeConfigPatchRequest {
     reduce_only?: boolean;
     trace_header_required?: boolean;
   };
+  market?: {
+    taker_fee_rate?: string;
+    maker_fee_rate?: string;
+    default_max_slippage_bps?: number;
+  };
   risk?: {
     global_buffer_ratio?: string;
     mark_price_stale_sec?: number;
     force_reduce_only_on_stale_price?: boolean;
     liquidation_penalty_rate?: string;
+    maintenance_margin_uplift_ratio?: string;
     liquidation_extra_slippage_bps?: number;
     max_open_orders_per_user_per_symbol?: number;
     net_exposure_hard_limit?: string;
     max_exposure_slippage_bps?: number;
   };
+  funding?: {
+    interval_sec?: number;
+    source_poll_interval_sec?: number;
+    cap_rate_per_hour?: string;
+    min_valid_source_count?: number;
+    default_model_crypto?: string;
+  };
   hedge?: {
     enabled?: boolean;
     soft_threshold_ratio?: string;
     hard_threshold_ratio?: string;
+  };
+  pairs?: Record<string, RuntimeConfigPairPatchRequest>;
+}
+
+export interface RuntimeConfigPairPatchRequest {
+  market?: {
+    max_leverage?: string;
+    session_policy?: string;
+    taker_fee_rate?: string;
+    maker_fee_rate?: string;
+    default_max_slippage_bps?: number;
+  };
+  risk?: {
+    liquidation_penalty_rate?: string;
+    maintenance_margin_uplift_ratio?: string;
+  };
+  funding?: {
+    interval_sec?: number;
   };
 }
 

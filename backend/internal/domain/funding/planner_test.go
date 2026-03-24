@@ -35,6 +35,17 @@ func (s fundingStubRates) GetRates(context.Context, Symbol, time.Time, time.Time
 	return s.rates, s.err
 }
 
+type fundingStubRuntime struct {
+	bySymbol map[string]ServiceConfig
+}
+
+func (s fundingStubRuntime) CurrentFundingRuntimeConfig(symbol string) ServiceConfig {
+	if cfg, ok := s.bySymbol[symbol]; ok {
+		return cfg
+	}
+	return ServiceConfig{}
+}
+
 type fundingPlannerStubRepo struct {
 	symbols               []Symbol
 	batch                 Batch
@@ -52,17 +63,25 @@ type fundingPlannerStubRepo struct {
 	updatedBatch          Batch
 	updatedItems          []BatchItem
 	updatedFundingByPos   map[string]string
+	downgradedSymbolIDs   []uint64
+	failedBatchID         string
+	failedBatchAt         time.Time
 }
 
 func (s *fundingPlannerStubRepo) ListSymbolsForFunding(context.Context) ([]Symbol, error) {
 	return s.symbols, nil
 }
 
+func (s *fundingPlannerStubRepo) DowngradeSymbolToReduceOnly(_ context.Context, symbolID uint64) (bool, error) {
+	s.downgradedSymbolIDs = append(s.downgradedSymbolIDs, symbolID)
+	return true, nil
+}
+
 func (s *fundingPlannerStubRepo) GetBatchByWindow(context.Context, uint64, time.Time, time.Time) (Batch, error) {
 	return s.batch, s.batchErr
 }
 
-func (s *fundingPlannerStubRepo) ListReadyBatches(context.Context, int) ([]Batch, error) {
+func (s *fundingPlannerStubRepo) ListExecutableBatches(context.Context, int) ([]Batch, error) {
 	return append([]Batch(nil), s.readyBatches...), nil
 }
 
@@ -95,6 +114,15 @@ func (s *fundingPlannerStubRepo) CreateBatch(_ context.Context, batch Batch) err
 func (s *fundingPlannerStubRepo) UpdateBatch(_ context.Context, batch Batch) error {
 	s.updatedBatch = batch
 	s.batch = batch
+	return nil
+}
+
+func (s *fundingPlannerStubRepo) MarkBatchFailed(_ context.Context, fundingBatchID string, failedAt time.Time) error {
+	s.failedBatchID = fundingBatchID
+	s.failedBatchAt = failedAt
+	if s.batch.ID == fundingBatchID {
+		s.batch.Status = BatchStatusFailed
+	}
 	return nil
 }
 
@@ -155,6 +183,7 @@ func TestPlannerPlanBatchForSymbolCreatesBatch(t *testing.T) {
 	}
 	planner, err := NewPlanner(
 		service,
+		nil,
 		fundingStubClock{now: time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC)},
 		fundingStubIDGen{value: "fb_1"},
 		fundingStubTxManager{},
@@ -210,6 +239,7 @@ func TestPlannerPlanBatchForSymbolSkipsExistingBatch(t *testing.T) {
 	}
 	planner, err := NewPlanner(
 		service,
+		nil,
 		fundingStubClock{now: time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC)},
 		fundingStubIDGen{value: "fb_1"},
 		fundingStubTxManager{},
@@ -253,6 +283,7 @@ func TestPlannerPlanDueBatchesReturnsCreatedPlans(t *testing.T) {
 	}
 	planner, err := NewPlanner(
 		service,
+		nil,
 		fundingStubClock{now: time.Date(2026, 3, 22, 10, 1, 0, 0, time.UTC)},
 		fundingStubIDGen{value: "fb_1"},
 		fundingStubTxManager{},
@@ -269,5 +300,61 @@ func TestPlannerPlanDueBatchesReturnsCreatedPlans(t *testing.T) {
 	}
 	if len(plans) != 1 {
 		t.Fatalf("expected 1 plan, got %d", len(plans))
+	}
+}
+
+func TestPlannerPlanBatchForSymbolUsesPairFundingIntervalOverride(t *testing.T) {
+	service, err := NewService(ServiceConfig{
+		SettlementIntervalSec: 3600,
+		CapRatePerHour:        "0.0075",
+		MinValidSourceCount:   1,
+		DefaultCryptoModel:    ModelExternalAvg,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	repo := &fundingPlannerStubRepo{
+		batchErr: errorsx.ErrNotFound,
+		settlement: SettlementPrice{
+			SymbolID:  7,
+			Price:     "50000",
+			CreatedAt: time.Date(2026, 3, 22, 10, 0, 0, 0, time.UTC),
+		},
+		positions: []PositionSnapshot{
+			{PositionID: "pos_long", UserID: 101, SymbolID: 7, Symbol: "BTC-PERP", Side: PositionSideLong, Qty: "2", ContractMultiplier: "1"},
+		},
+	}
+	planner, err := NewPlanner(
+		service,
+		fundingStubRuntime{bySymbol: map[string]ServiceConfig{
+			"BTC-PERP": {
+				SettlementIntervalSec: 1800,
+				CapRatePerHour:        "0.0075",
+				MinValidSourceCount:   1,
+				DefaultCryptoModel:    ModelExternalAvg,
+			},
+		}},
+		fundingStubClock{now: time.Date(2026, 3, 22, 10, 5, 0, 0, time.UTC)},
+		fundingStubIDGen{value: "fb_1"},
+		fundingStubTxManager{},
+		repo,
+		fundingStubRates{rates: []SourceRate{{SourceName: "binance", Rate: "0.0008", IntervalSeconds: 28800}}},
+	)
+	if err != nil {
+		t.Fatalf("new planner: %v", err)
+	}
+
+	plan, err := planner.PlanBatchForSymbol(context.Background(), Symbol{ID: 7, Symbol: "BTC-PERP", AssetClass: "CRYPTO", Status: "TRADING"}, planner.clock.Now())
+	if err != nil {
+		t.Fatalf("plan batch: %v", err)
+	}
+	if plan == nil {
+		t.Fatalf("expected plan")
+	}
+	if plan.Batch.TimeWindowStart != time.Date(2026, 3, 22, 9, 30, 0, 0, time.UTC) {
+		t.Fatalf("unexpected window start: %s", plan.Batch.TimeWindowStart)
+	}
+	if plan.Batch.NormalizedRate != "0.00005" {
+		t.Fatalf("unexpected normalized rate: %s", plan.Batch.NormalizedRate)
 	}
 }

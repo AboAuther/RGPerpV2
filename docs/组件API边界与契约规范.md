@@ -53,7 +53,6 @@ RabbitMQ 事件契约定义在：
 允许：
 
 - 调用 OpenAPI 定义的 HTTP 接口
-- 建立 WebSocket 订阅
 
 禁止：
 
@@ -73,14 +72,10 @@ RabbitMQ 事件契约定义在：
 - Explorer Queries
 - Admin Config / Withdraw Review / Risk Views
 
-### 3.3 Frontend 依赖的核心推送接口
+### 3.3 Frontend 刷新策略
 
-- `account.updates`
-- `order.updates`
-- `position.updates`
-- `market.tickers`
-- `market.markPrices`
-- `notification.events`
+- 当前阶段不定义独立推送接口
+- 前端通过 HTTP 轮询和写后重载获取账户、订单、仓位、行情更新
 
 ## 4. Backend API 边界
 
@@ -308,7 +303,7 @@ Backend API 只能依赖 usecase 接口，不直接依赖底层仓储实现。
 | From | To | Mode | Purpose |
 | --- | --- | --- | --- |
 | Frontend | Backend API | Sync HTTP | 用户与后台操作 |
-| Frontend | WS Gateway | WebSocket | 行情与账户更新 |
+| Frontend | Backend API | Sync HTTP | 行情与账户更新 |
 | Backend API | Domain UseCases | In-process sync | 核心业务 |
 | Indexer | Ledger/Wallet flow | Async MQ | 充值提现链路推进 |
 | Trade Engine | Explorer/Notification | Async MQ | 成交、仓位、订单广播 |

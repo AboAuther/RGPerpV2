@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -11,13 +12,12 @@ import (
 	gormmysql "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
-	runtimeconfigapp "github.com/xiaobao/rgperp/backend/internal/app/runtimeconfig"
+	"github.com/xiaobao/rgperp/backend/internal/app/runtimeconfig"
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
-	liquidationdomain "github.com/xiaobao/rgperp/backend/internal/domain/liquidation"
-	riskdomain "github.com/xiaobao/rgperp/backend/internal/domain/risk"
 	dbinfra "github.com/xiaobao/rgperp/backend/internal/infra/db"
+	marketinfra "github.com/xiaobao/rgperp/backend/internal/infra/market"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/clockx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/idgen"
@@ -37,6 +37,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("open mysql: %v", err)
 	}
+	if err := dbinfra.ConfigureMySQLConnectionPool(gormDB, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, time.Duration(cfg.MySQL.ConnMaxLifetimeSec)*time.Second); err != nil {
+		log.Fatalf("configure mysql pool: %v", err)
+	}
 	if err := waitForFundingSchema(context.Background(), gormDB, 60*time.Second); err != nil {
 		log.Fatalf("wait schema: %v", err)
 	}
@@ -51,6 +54,7 @@ func main() {
 	runtimeStore.StartPolling(context.Background(), 2*time.Second, func(err error) {
 		log.Printf("runtime config refresh failed: %v", err)
 	})
+	serviceRuntimeProvider := runtimeconfig.NewServiceRuntimeProvider(runtimeStore)
 
 	txManager := dbinfra.NewTxManager(gormDB)
 	repo := dbinfra.NewFundingRepository(gormDB)
@@ -59,26 +63,7 @@ func main() {
 		dbinfra.NewLedgerRepository(gormDB),
 		decimalx.LedgerDecimalFactory{},
 	)
-	service, err := fundingdomain.NewService(fundingdomain.ServiceConfig{
-		SettlementIntervalSec: runtimeCfg.Funding.IntervalSec,
-		CapRatePerHour:        runtimeCfg.Funding.CapRatePerHour,
-		MinValidSourceCount:   runtimeCfg.Funding.MinValidSourceCount,
-		DefaultCryptoModel:    runtimeCfg.Funding.DefaultModelCrypto,
-	})
-	if err != nil {
-		log.Fatalf("create funding service: %v", err)
-	}
-	planner, err := fundingdomain.NewPlanner(
-		service,
-		clockx.RealClock{},
-		&idgen.TimeBasedGenerator{},
-		txManager,
-		repo,
-		fundingdomain.NewSnapshotRateProvider(repo),
-	)
-	if err != nil {
-		log.Fatalf("create funding planner: %v", err)
-	}
+	eventPublisher := dbinfra.NewFundingOutboxPublisher(gormDB)
 	executor, err := fundingdomain.NewExecutor(
 		fundingdomain.ExecutorConfig{Asset: "USDC"},
 		clockx.RealClock{},
@@ -87,66 +72,121 @@ func main() {
 		repo,
 		accountResolver,
 		ledgerService,
+		eventPublisher,
 	)
 	if err != nil {
 		log.Fatalf("create funding executor: %v", err)
 	}
-	serviceRuntimeProvider := runtimeconfigapp.NewServiceRuntimeProvider(runtimeStore)
-	riskService, err := riskdomain.NewService(
-		riskdomain.ServiceConfig{
-			RiskBufferRatio:             runtimeCfg.Risk.GlobalBufferRatio,
-			HedgeEnabled:                runtimeCfg.Hedge.Enabled,
-			SoftThresholdRatio:          runtimeCfg.Hedge.SoftThresholdRatio,
-			HardThresholdRatio:          runtimeCfg.Hedge.HardThresholdRatio,
-			MarkPriceStaleSec:           runtimeCfg.Risk.MarkPriceStaleSec,
-			ForceReduceOnlyOnStalePrice: runtimeCfg.Risk.ForceReduceOnlyOnStalePrice,
-			TakerFeeRate:                runtimeCfg.Market.TakerFeeRate,
-		},
+	collector, err := fundingdomain.NewRateCollector(
 		clockx.RealClock{},
-		&idgen.TimeBasedGenerator{},
-		txManager,
-		dbinfra.NewRiskRepository(gormDB),
-		dbinfra.NewRiskOutboxPublisher(gormDB),
+		repo,
+		[]fundingdomain.RateSourceClient{
+			marketinfra.NewBinanceFundingRateClient(nil),
+			marketinfra.NewHyperliquidFundingRateClient(nil),
+		},
 	)
 	if err != nil {
-		log.Fatalf("create risk service: %v", err)
+		log.Fatalf("create funding collector: %v", err)
 	}
-	riskService.SetRuntimeConfigProvider(serviceRuntimeProvider)
-	liquidationService, err := liquidationdomain.NewService(
-		liquidationdomain.ServiceConfig{
-			Asset:            "USDC",
-			PenaltyRate:      runtimeCfg.Risk.LiquidationPenaltyRate,
-			ExtraSlippageBps: runtimeCfg.Risk.LiquidationExtraSlippageBps,
-		},
-		clockx.RealClock{},
-		&idgen.TimeBasedGenerator{},
-		txManager,
-		dbinfra.NewLiquidationRepository(gormDB),
-		accountResolver,
-		ledgerService,
-		riskService,
-		dbinfra.NewLiquidationOutboxPublisher(gormDB),
-	)
-	if err != nil {
-		log.Fatalf("create liquidation service: %v", err)
-	}
-	liquidationService.SetRuntimeConfigProvider(serviceRuntimeProvider)
+	requestIDGen := &idgen.TimeBasedGenerator{}
+	outboxRepo := dbinfra.NewOutboxRepository(gormDB)
+	rateProvider := fundingdomain.NewSnapshotRateProvider(repo)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	pollInterval := time.Duration(runtimeCfg.Funding.SourcePollIntervalSec) * time.Second
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
 	runOnce := func() {
-		plans, err := planner.PlanDueBatches(ctx)
+		currentCfg := runtimeStore.Current()
+		service, err := fundingdomain.NewService(fundingdomain.ServiceConfig{
+			SettlementIntervalSec: currentCfg.Funding.IntervalSec,
+			CapRatePerHour:        currentCfg.Funding.CapRatePerHour,
+			MinValidSourceCount:   currentCfg.Funding.MinValidSourceCount,
+			DefaultCryptoModel:    currentCfg.Funding.DefaultModelCrypto,
+		})
 		if err != nil {
-			log.Printf("funding planning failed: %v", err)
+			log.Printf("funding runtime config invalid: %v", err)
 			return
 		}
-		if len(plans) > 0 {
-			log.Printf("funding planning completed: created_batches=%d", len(plans))
+		planner, err := fundingdomain.NewPlanner(
+			service,
+			serviceRuntimeProvider,
+			clockx.RealClock{},
+			&idgen.TimeBasedGenerator{},
+			txManager,
+			repo,
+			rateProvider,
+		)
+		if err != nil {
+			log.Printf("create funding planner failed: %v", err)
+			return
+		}
+		if err := collector.SyncOnce(ctx, time.Now().UTC()); err != nil {
+			log.Printf("funding source sync failed: %v", err)
+			return
+		}
+		symbols, err := repo.ListSymbolsForFunding(ctx)
+		if err != nil {
+			log.Printf("list funding symbols failed: %v", err)
+			return
+		}
+		createdBatches := 0
+		now := time.Now().UTC()
+		for _, symbol := range symbols {
+			plan, err := planner.PlanBatchForSymbol(ctx, symbol, now)
+			if err != nil {
+				if fundingdomain.IsInsufficientValidFundingSources(err) {
+					if symbol.AssetClass != "CRYPTO" {
+						if changed, restoreErr := repo.RestoreSymbolToTrading(ctx, symbol.ID); restoreErr != nil {
+							log.Printf("funding non-crypto restore failed: symbol=%s symbol_id=%d err=%v", symbol.Symbol, symbol.ID, restoreErr)
+						} else if changed {
+							log.Printf("funding non-crypto symbol kept trading despite missing funding window: symbol=%s symbol_id=%d", symbol.Symbol, symbol.ID)
+						}
+						continue
+					}
+					changed, degradeErr := repo.DowngradeSymbolToReduceOnly(ctx, symbol.ID)
+					if degradeErr != nil {
+						log.Printf("funding degraded symbol update failed: symbol=%s symbol_id=%d err=%v", symbol.Symbol, symbol.ID, degradeErr)
+						continue
+					}
+					if changed {
+						if err := outboxRepo.Create(ctx, dbinfra.OutboxMessage{
+							EventID:       requestIDGen.NewID("evt"),
+							AggregateType: "symbol",
+							AggregateID:   fmt.Sprintf("%d", symbol.ID),
+							EventType:     "funding.sources.degraded",
+							Payload: map[string]any{
+								"symbol_id":       symbol.ID,
+								"symbol":          symbol.Symbol,
+								"failure_reason":  fundingdomain.FailureReasonInsufficientSources,
+								"desired_status":  "REDUCE_ONLY",
+								"triggered_by":    "funding-worker",
+								"triggered_at":    now.Format(time.RFC3339Nano),
+								"current_sources": len(symbol.Mappings),
+							},
+							CreatedAt: now,
+						}); err != nil {
+							log.Printf("queue funding degraded event failed: symbol=%s symbol_id=%d err=%v", symbol.Symbol, symbol.ID, err)
+						}
+						log.Printf("funding symbol degraded to reduce_only: symbol=%s symbol_id=%d reason=%s", symbol.Symbol, symbol.ID, fundingdomain.FailureReasonInsufficientSources)
+					} else {
+						log.Printf("funding insufficient sources persisted: symbol=%s symbol_id=%d", symbol.Symbol, symbol.ID)
+					}
+					continue
+				}
+				log.Printf("funding planning failed: symbol=%s symbol_id=%d err=%v", symbol.Symbol, symbol.ID, err)
+				continue
+			}
+			if changed, restoreErr := repo.RestoreSymbolToTrading(ctx, symbol.ID); restoreErr != nil {
+				log.Printf("funding trading restore failed: symbol=%s symbol_id=%d err=%v", symbol.Symbol, symbol.ID, restoreErr)
+			} else if changed {
+				log.Printf("funding symbol restored to trading: symbol=%s symbol_id=%d", symbol.Symbol, symbol.ID)
+			}
+			if plan != nil {
+				createdBatches++
+			}
+		}
+		if createdBatches > 0 {
+			log.Printf("funding planning completed: created_batches=%d", createdBatches)
 		}
 		applied, err := executor.ApplyReadyBatches(ctx, 100)
 		if err != nil {
@@ -163,35 +203,40 @@ func main() {
 			}
 		}
 		for userID := range impactedUsers {
-			snapshot, trigger, err := riskService.RecalculateAccountRisk(ctx, userID, "funding")
-			if err != nil {
-				log.Printf("risk recalculation after funding failed: user_id=%d err=%v", userID, err)
+			requestID := requestIDGen.NewID("rrq")
+			if err := outboxRepo.Create(ctx, dbinfra.OutboxMessage{
+				EventID:       requestIDGen.NewID("evt"),
+				AggregateType: "risk_recalculation",
+				AggregateID:   requestID,
+				EventType:     "risk.recalculate.requested",
+				Payload: map[string]any{
+					"request_id":   requestID,
+					"user_id":      userID,
+					"triggered_by": "funding",
+					"trace_id":     "funding:" + requestID,
+				},
+				CreatedAt: time.Now().UTC(),
+			}); err != nil {
+				log.Printf("queue risk recalculation after funding failed: user_id=%d err=%v", userID, err)
 				continue
 			}
-			if trigger == nil {
-				continue
-			}
-			liquidation, err := liquidationService.Execute(ctx, liquidationdomain.ExecuteInput{
-				LiquidationID:         trigger.LiquidationID,
-				UserID:                userID,
-				TriggerRiskSnapshotID: snapshot.ID,
-				TraceID:               "funding:" + trigger.LiquidationID,
-			})
-			if err != nil {
-				log.Printf("liquidation execution after funding failed: user_id=%d liquidation_id=%s err=%v", userID, trigger.LiquidationID, err)
-				continue
-			}
-			log.Printf("liquidation executed after funding: user_id=%d liquidation_id=%s status=%s", userID, liquidation.ID, liquidation.Status)
+			log.Printf("risk recalculation queued after funding: user_id=%d request_id=%s", userID, requestID)
 		}
 	}
 
 	runOnce()
 	for {
+		pollInterval := time.Duration(runtimeStore.Current().Funding.SourcePollIntervalSec) * time.Second
+		if pollInterval <= 0 {
+			pollInterval = time.Minute
+		}
+		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			log.Printf("funding-worker stopping: %v", ctx.Err())
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			runOnce()
 		}
 	}

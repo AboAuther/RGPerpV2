@@ -16,7 +16,8 @@ func loadRiskAccountState(ctx context.Context, tx *gorm.DB, userID uint64, forUp
 	accountQuery := tx.Table("accounts").
 		Select("accounts.account_code, COALESCE(account_balance_snapshots.balance, '0') AS balance").
 		Joins("LEFT JOIN account_balance_snapshots ON account_balance_snapshots.account_id = accounts.id AND account_balance_snapshots.asset = accounts.asset").
-		Where("accounts.user_id = ?", userID)
+		Where("accounts.user_id = ?", userID).
+		Order("accounts.id ASC")
 	if forUpdate {
 		accountQuery = accountQuery.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -31,7 +32,8 @@ func loadRiskAccountState(ctx context.Context, tx *gorm.DB, userID uint64, forUp
 	positionQuery := tx.Table("positions").
 		Select("positions.*, symbols.symbol, symbols.contract_multiplier").
 		Joins("JOIN symbols ON symbols.id = positions.symbol_id").
-		Where("positions.user_id = ? AND positions.status = ?", userID, orderdomain.PositionStatusOpen)
+		Where("positions.user_id = ? AND positions.status = ?", userID, orderdomain.PositionStatusOpen).
+		Order("positions.id ASC")
 	if forUpdate {
 		positionQuery = positionQuery.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -47,7 +49,8 @@ func loadRiskAccountState(ctx context.Context, tx *gorm.DB, userID uint64, forUp
 	pendingOrderQuery := tx.Table("orders").
 		Select("orders.order_id, orders.symbol_id, symbols.symbol, orders.side, orders.type, orders.qty, orders.price, orders.trigger_price, orders.frozen_initial_margin, orders.frozen_fee, orders.frozen_margin, symbols.contract_multiplier").
 		Joins("JOIN symbols ON symbols.id = orders.symbol_id").
-		Where("orders.user_id = ? AND orders.position_effect = ? AND orders.status IN ?", userID, orderdomain.PositionEffectOpen, []string{orderdomain.OrderStatusResting, orderdomain.OrderStatusTriggerWait})
+		Where("orders.user_id = ? AND orders.position_effect = ? AND orders.status IN ?", userID, orderdomain.PositionEffectOpen, []string{orderdomain.OrderStatusResting, orderdomain.OrderStatusTriggerWait}).
+		Order("orders.id ASC")
 	if forUpdate {
 		pendingOrderQuery = pendingOrderQuery.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -124,20 +127,22 @@ func loadRiskAccountState(ctx context.Context, tx *gorm.DB, userID uint64, forUp
 		if err != nil {
 			return riskdomain.AccountState{}, err
 		}
-		notional, initialMargin, maintenanceMargin, unrealizedPnL := livePositionMetrics(row.Side, row.Qty, row.AvgEntryPrice, mark.MarkPrice, row.ContractMultiplier, tier.IMR, tier.MMR)
+		notional, maintenanceMargin, unrealizedPnL := livePositionMetrics(row.Side, row.Qty, row.AvgEntryPrice, mark.MarkPrice, row.ContractMultiplier, tier.MMR)
 		state.Positions = append(state.Positions, riskdomain.PositionExposure{
 			PositionID:         row.PositionID,
 			SymbolID:           row.SymbolID,
 			Symbol:             row.Symbol,
 			Side:               row.Side,
+			MarginMode:         marginModeOrDefault(row.MarginMode),
 			Qty:                row.Qty,
 			AvgEntryPrice:      row.AvgEntryPrice,
 			MarkPrice:          mark.MarkPrice,
 			Notional:           notional,
-			InitialMargin:      initialMargin,
+			InitialMargin:      row.InitialMargin,
 			MaintenanceMargin:  maintenanceMargin,
 			UnrealizedPnL:      unrealizedPnL,
 			FundingAccrual:     row.FundingAccrual,
+			LiquidationPrice:   row.LiquidationPrice,
 			LiquidationFeeRate: tier.LiquidationFeeRate,
 			ContractMultiplier: row.ContractMultiplier,
 			MarkPriceUpdatedAt: mark.CreatedAt,

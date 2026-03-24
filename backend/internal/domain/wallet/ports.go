@@ -21,7 +21,8 @@ type WithdrawRepository interface {
 	Create(ctx context.Context, withdraw WithdrawRequest) error
 	GetByID(ctx context.Context, withdrawID string) (WithdrawRequest, error)
 	UpdateStatus(ctx context.Context, withdrawID string, from []string, to string) error
-	MarkBroadcasted(ctx context.Context, withdrawID string, txHash string) error
+	UpdateStatusDetailed(ctx context.Context, withdrawID string, from []string, to string, riskFlag *string, clearBroadcast bool) error
+	MarkBroadcasted(ctx context.Context, withdrawID string, txHash string, nonce *uint64) error
 	MarkCompleted(ctx context.Context, withdrawID string) error
 	MarkRefunded(ctx context.Context, withdrawID string) error
 	ListByUser(ctx context.Context, userID uint64) ([]WithdrawRequest, error)

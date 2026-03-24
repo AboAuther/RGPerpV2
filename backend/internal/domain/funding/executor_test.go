@@ -33,10 +33,29 @@ func (fundingAccountsStub) ResolveFundingAccounts(context.Context, uint64, strin
 
 type fundingLedgerStub struct {
 	requests []ledgerdomain.PostingRequest
+	err      error
 }
 
 func (s *fundingLedgerStub) Post(_ context.Context, req ledgerdomain.PostingRequest) error {
+	if s.err != nil {
+		return s.err
+	}
 	s.requests = append(s.requests, req)
+	return nil
+}
+
+type fundingEventPublisherStub struct {
+	applied  []BatchAppliedEvent
+	reversed []BatchReversedEvent
+}
+
+func (s *fundingEventPublisherStub) PublishBatchApplied(_ context.Context, event BatchAppliedEvent) error {
+	s.applied = append(s.applied, event)
+	return nil
+}
+
+func (s *fundingEventPublisherStub) PublishBatchReversed(_ context.Context, event BatchReversedEvent) error {
+	s.reversed = append(s.reversed, event)
 	return nil
 }
 
@@ -65,6 +84,7 @@ func TestExecutorApplyBatchSettlesLedgerAndAccrual(t *testing.T) {
 		},
 	}
 	ledger := &fundingLedgerStub{}
+	events := &fundingEventPublisherStub{}
 	executor, err := NewExecutor(
 		ExecutorConfig{Asset: "USDC"},
 		fundingStubClock{now: now},
@@ -73,6 +93,7 @@ func TestExecutorApplyBatchSettlesLedgerAndAccrual(t *testing.T) {
 		repo,
 		fundingAccountsStub{},
 		ledger,
+		events,
 	)
 	if err != nil {
 		t.Fatalf("new executor: %v", err)
@@ -103,6 +124,9 @@ func TestExecutorApplyBatchSettlesLedgerAndAccrual(t *testing.T) {
 	if len(repo.updatedItems) != 2 {
 		t.Fatalf("expected 2 updated items, got %d", len(repo.updatedItems))
 	}
+	if len(events.applied) != 1 || events.applied[0].AppliedCount != 2 {
+		t.Fatalf("unexpected applied events: %+v", events.applied)
+	}
 
 	payPosting := ledger.requests[0]
 	if payPosting.Entries[0].AccountID != 202 || payPosting.Entries[0].Amount != "10" {
@@ -127,6 +151,7 @@ func TestExecutorApplyBatchIsIdempotentForAppliedBatch(t *testing.T) {
 		},
 	}
 	ledger := &fundingLedgerStub{}
+	events := &fundingEventPublisherStub{}
 	executor, err := NewExecutor(
 		ExecutorConfig{Asset: "USDC"},
 		fundingStubClock{now: now},
@@ -135,6 +160,7 @@ func TestExecutorApplyBatchIsIdempotentForAppliedBatch(t *testing.T) {
 		repo,
 		fundingAccountsStub{},
 		ledger,
+		events,
 	)
 	if err != nil {
 		t.Fatalf("new executor: %v", err)
@@ -149,5 +175,104 @@ func TestExecutorApplyBatchIsIdempotentForAppliedBatch(t *testing.T) {
 	}
 	if len(ledger.requests) != 0 {
 		t.Fatalf("expected no ledger postings, got %d", len(ledger.requests))
+	}
+}
+
+func TestExecutorApplyBatchMarksBatchFailedWhenLedgerPostingFails(t *testing.T) {
+	now := time.Date(2026, 3, 23, 1, 0, 0, 0, time.UTC)
+	repo := &fundingPlannerStubRepo{
+		batch: Batch{
+			ID:              "fb_fail",
+			SymbolID:        7,
+			Symbol:          "BTC-PERP",
+			TimeWindowStart: now.Add(-time.Hour),
+			TimeWindowEnd:   now,
+			NormalizedRate:  "0.0001",
+			SettlementPrice: "50000",
+			Status:          BatchStatusReady,
+			CreatedAt:       now.Add(-time.Hour),
+			UpdatedAt:       now.Add(-time.Hour),
+		},
+		createdItems: []BatchItem{
+			{FundingBatchID: "fb_fail", PositionID: "pos_long", UserID: 7, FundingFee: "-10", Status: ItemStatusPending, CreatedAt: now},
+		},
+		positionByID: map[string]PositionSnapshot{
+			"pos_long": {PositionID: "pos_long", UserID: 7, ExistingFundingAccrual: "1"},
+		},
+	}
+	ledger := &fundingLedgerStub{err: context.DeadlineExceeded}
+	events := &fundingEventPublisherStub{}
+	executor, err := NewExecutor(
+		ExecutorConfig{Asset: "USDC"},
+		fundingStubClock{now: now},
+		&fundingExecutorIDGen{values: []string{"ldg_1", "evt_1"}},
+		fundingStubTxManager{},
+		repo,
+		fundingAccountsStub{},
+		ledger,
+		events,
+	)
+	if err != nil {
+		t.Fatalf("new executor: %v", err)
+	}
+
+	if _, err := executor.ApplyBatch(context.Background(), "fb_fail"); err == nil {
+		t.Fatalf("expected apply batch error")
+	}
+	if repo.failedBatchID != "fb_fail" {
+		t.Fatalf("expected failed batch to be marked, got %q", repo.failedBatchID)
+	}
+	if repo.batch.Status != BatchStatusFailed {
+		t.Fatalf("expected batch status FAILED, got %s", repo.batch.Status)
+	}
+}
+
+func TestExecutorApplyBatchAllowsRetryFromFailedStatus(t *testing.T) {
+	now := time.Date(2026, 3, 23, 1, 0, 0, 0, time.UTC)
+	repo := &fundingPlannerStubRepo{
+		batch: Batch{
+			ID:              "fb_retry",
+			SymbolID:        7,
+			Symbol:          "BTC-PERP",
+			TimeWindowStart: now.Add(-time.Hour),
+			TimeWindowEnd:   now,
+			NormalizedRate:  "0.0001",
+			SettlementPrice: "50000",
+			Status:          BatchStatusFailed,
+			CreatedAt:       now.Add(-time.Hour),
+			UpdatedAt:       now.Add(-time.Hour),
+		},
+		createdItems: []BatchItem{
+			{FundingBatchID: "fb_retry", PositionID: "pos_long", UserID: 7, FundingFee: "-10", Status: ItemStatusFailed, CreatedAt: now},
+		},
+		positionByID: map[string]PositionSnapshot{
+			"pos_long": {PositionID: "pos_long", UserID: 7, ExistingFundingAccrual: "1"},
+		},
+	}
+	ledger := &fundingLedgerStub{}
+	events := &fundingEventPublisherStub{}
+	executor, err := NewExecutor(
+		ExecutorConfig{Asset: "USDC"},
+		fundingStubClock{now: now},
+		&fundingExecutorIDGen{values: []string{"ldg_1", "evt_1"}},
+		fundingStubTxManager{},
+		repo,
+		fundingAccountsStub{},
+		ledger,
+		events,
+	)
+	if err != nil {
+		t.Fatalf("new executor: %v", err)
+	}
+
+	result, err := executor.ApplyBatch(context.Background(), "fb_retry")
+	if err != nil {
+		t.Fatalf("apply retry batch: %v", err)
+	}
+	if result.Batch.Status != BatchStatusApplied {
+		t.Fatalf("unexpected batch status: %s", result.Batch.Status)
+	}
+	if len(ledger.requests) != 1 {
+		t.Fatalf("expected 1 ledger posting, got %d", len(ledger.requests))
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 type Planner struct {
 	service *Service
+	runtime RuntimeConfigProvider
 	clock   Clock
 	idgen   IDGenerator
 	txm     TxManager
@@ -18,12 +19,13 @@ type Planner struct {
 	rates   RateProvider
 }
 
-func NewPlanner(service *Service, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, rates RateProvider) (*Planner, error) {
+func NewPlanner(service *Service, runtime RuntimeConfigProvider, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, rates RateProvider) (*Planner, error) {
 	if service == nil || clock == nil || idgen == nil || txm == nil || repo == nil || rates == nil {
 		return nil, fmt.Errorf("%w: missing funding planner dependency", errorsx.ErrInvalidArgument)
 	}
 	return &Planner{
 		service: service,
+		runtime: runtime,
 		clock:   clock,
 		idgen:   idgen,
 		txm:     txm,
@@ -61,15 +63,19 @@ func (p *Planner) PlanBatchForSymbol(ctx context.Context, symbol Symbol, now tim
 		return nil, fmt.Errorf("%w: invalid funding symbol", errorsx.ErrInvalidArgument)
 	}
 
-	windowEnd := alignWindowEnd(now.UTC(), p.service.cfg.SettlementIntervalSec)
-	windowStart := windowEnd.Add(-time.Duration(p.service.cfg.SettlementIntervalSec) * time.Second)
+	service, err := p.serviceForSymbol(symbol.Symbol)
+	if err != nil {
+		return nil, err
+	}
+	windowEnd := alignWindowEnd(now.UTC(), service.cfg.SettlementIntervalSec)
+	windowStart := windowEnd.Add(-time.Duration(service.cfg.SettlementIntervalSec) * time.Second)
 	if !windowEnd.After(windowStart) {
 		return nil, fmt.Errorf("%w: invalid funding window", errorsx.ErrInvalidArgument)
 	}
 
 	var built BatchPlan
 	created := false
-	err := p.txm.WithinTransaction(ctx, func(txCtx context.Context) error {
+	err = p.txm.WithinTransaction(ctx, func(txCtx context.Context) error {
 		_, err := p.repo.GetBatchByWindow(txCtx, symbol.ID, windowStart, windowEnd)
 		if err == nil {
 			return nil
@@ -91,7 +97,7 @@ func (p *Planner) PlanBatchForSymbol(ctx context.Context, symbol Symbol, now tim
 			return err
 		}
 
-		built, err = p.service.BuildBatch(BuildBatchInput{
+		built, err = service.BuildBatch(BuildBatchInput{
 			FundingBatchID:  p.idgen.NewID("fb"),
 			SymbolID:        symbol.ID,
 			Symbol:          symbol.Symbol,
@@ -121,6 +127,26 @@ func (p *Planner) PlanBatchForSymbol(ctx context.Context, symbol Symbol, now tim
 		return nil, nil
 	}
 	return &built, nil
+}
+
+func (p *Planner) serviceForSymbol(symbol string) (*Service, error) {
+	cfg := p.service.cfg
+	if p.runtime != nil {
+		override := p.runtime.CurrentFundingRuntimeConfig(symbol)
+		if override.SettlementIntervalSec > 0 {
+			cfg.SettlementIntervalSec = override.SettlementIntervalSec
+		}
+		if override.CapRatePerHour != "" {
+			cfg.CapRatePerHour = override.CapRatePerHour
+		}
+		if override.MinValidSourceCount > 0 {
+			cfg.MinValidSourceCount = override.MinValidSourceCount
+		}
+		if override.DefaultCryptoModel != "" {
+			cfg.DefaultCryptoModel = override.DefaultCryptoModel
+		}
+	}
+	return NewService(cfg)
 }
 
 func alignWindowEnd(now time.Time, intervalSec int) time.Time {

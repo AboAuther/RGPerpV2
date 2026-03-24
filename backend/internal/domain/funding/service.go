@@ -1,12 +1,15 @@
 package funding
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
+
+var ErrInsufficientValidFundingSources = fmt.Errorf("%w: insufficient valid funding sources", errorsx.ErrConflict)
 
 type ServiceConfig struct {
 	SettlementIntervalSec int
@@ -57,7 +60,7 @@ func (s *Service) AggregateRate(sources []SourceRate) (string, []string, error) 
 		sourceNames = append(sourceNames, source.SourceName)
 	}
 	if len(validRates) < s.cfg.MinValidSourceCount {
-		return "", nil, fmt.Errorf("%w: insufficient valid funding sources", errorsx.ErrConflict)
+		return "", nil, ErrInsufficientValidFundingSources
 	}
 
 	sum := decimalx.MustFromString("0")
@@ -72,6 +75,10 @@ func (s *Service) AggregateRate(sources []SourceRate) (string, []string, error) 
 		avg = cap.Neg()
 	}
 	return avg.String(), sourceNames, nil
+}
+
+func IsInsufficientValidFundingSources(err error) bool {
+	return errors.Is(err, ErrInsufficientValidFundingSources)
 }
 
 func (s *Service) BuildBatch(input BuildBatchInput) (BatchPlan, error) {

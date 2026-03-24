@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -76,6 +77,7 @@ type UpdateInput struct {
 	TraceID    string
 	Reason     string
 	Values     map[string]json.RawMessage
+	PairValues map[string]map[string]json.RawMessage
 }
 
 type Service struct {
@@ -108,7 +110,7 @@ func (s *Service) GetRuntimeConfigView(ctx context.Context, limit int) (readmode
 	if limit <= 0 {
 		limit = 20
 	}
-	active, err := s.repo.LoadActiveConfigValues(ctx, config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal)
+	active, err := s.loadAllActiveValues(ctx)
 	if err != nil {
 		return readmodel.RuntimeConfigView{}, err
 	}
@@ -116,7 +118,7 @@ func (s *Service) GetRuntimeConfigView(ctx context.Context, limit int) (readmode
 	if err != nil {
 		return readmodel.RuntimeConfigView{}, err
 	}
-	history, err := s.repo.ListConfigHistory(ctx, config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal, limit)
+	history, err := s.repo.ListConfigHistory(ctx, "", "", limit)
 	if err != nil {
 		return readmodel.RuntimeConfigView{}, err
 	}
@@ -129,11 +131,11 @@ func (s *Service) GetRuntimeConfigView(ctx context.Context, limit int) (readmode
 
 func (s *Service) UpdateRuntimeConfig(ctx context.Context, input UpdateInput) (readmodel.RuntimeConfigView, error) {
 	operatorID := strings.ToLower(strings.TrimSpace(input.OperatorID))
-	if operatorID == "" || strings.TrimSpace(input.Reason) == "" || len(input.Values) == 0 {
+	if operatorID == "" || strings.TrimSpace(input.Reason) == "" || (len(input.Values) == 0 && len(input.PairValues) == 0) {
 		return readmodel.RuntimeConfigView{}, fmt.Errorf("%w: invalid runtime config patch", errorsx.ErrInvalidArgument)
 	}
 
-	active, err := s.repo.LoadActiveConfigValues(ctx, config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal)
+	active, err := s.loadAllActiveValues(ctx)
 	if err != nil {
 		return readmodel.RuntimeConfigView{}, err
 	}
@@ -144,20 +146,24 @@ func (s *Service) UpdateRuntimeConfig(ctx context.Context, input UpdateInput) (r
 
 	activeMap := make(map[string]json.RawMessage, len(active))
 	for _, item := range active {
-		activeMap[item.Key] = append(json.RawMessage(nil), item.ValueJSON...)
+		activeMap[scopeConfigMapKey(item.ScopeType, item.ScopeValue, item.Key)] = append(json.RawMessage(nil), item.ValueJSON...)
 	}
 
-	changes := make([]ConfigChange, 0, len(input.Values))
-	for key, raw := range input.Values {
-		candidate := append(json.RawMessage(nil), raw...)
-		if current, ok := activeMap[key]; ok && bytes.Equal(bytes.TrimSpace(current), bytes.TrimSpace(candidate)) {
-			continue
+	groupedChanges := make(map[string][]ConfigChange)
+	scopeOrder := make([]string, 0)
+	seenScopes := make(map[string]struct{})
+	appendScopeChange := func(scopeType string, scopeValue string, key string, raw json.RawMessage) {
+		scopeKey := scopeConfigMapKey(scopeType, scopeValue, key)
+		activeMap[scopeKey] = raw
+		groupKey := scopeGroupKey(scopeType, scopeValue)
+		if _, ok := seenScopes[groupKey]; !ok {
+			scopeOrder = append(scopeOrder, groupKey)
+			seenScopes[groupKey] = struct{}{}
 		}
-		activeMap[key] = candidate
 		now := s.clock.Now().UTC()
-		changes = append(changes, ConfigChange{
+		groupedChanges[groupKey] = append(groupedChanges[groupKey], ConfigChange{
 			Key:         key,
-			ValueJSON:   candidate,
+			ValueJSON:   raw,
 			CreatedBy:   operatorID,
 			ApprovedBy:  operatorID,
 			Reason:      strings.TrimSpace(input.Reason),
@@ -165,16 +171,37 @@ func (s *Service) UpdateRuntimeConfig(ctx context.Context, input UpdateInput) (r
 			CreatedAt:   now,
 		})
 	}
-	if len(changes) == 0 {
+
+	for key, raw := range input.Values {
+		candidate := append(json.RawMessage(nil), raw...)
+		scopeKey := scopeConfigMapKey(config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal, key)
+		if current, ok := activeMap[scopeKey]; ok && bytes.Equal(bytes.TrimSpace(current), bytes.TrimSpace(candidate)) {
+			continue
+		}
+		appendScopeChange(config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal, key, candidate)
+	}
+	for pair, values := range input.PairValues {
+		scopeValue := normalizePairKey(pair)
+		for key, raw := range values {
+			candidate := append(json.RawMessage(nil), raw...)
+			scopeKey := scopeConfigMapKey(config.ConfigScopeTypePair, scopeValue, key)
+			if current, ok := activeMap[scopeKey]; ok && bytes.Equal(bytes.TrimSpace(current), bytes.TrimSpace(candidate)) {
+				continue
+			}
+			appendScopeChange(config.ConfigScopeTypePair, scopeValue, key, candidate)
+		}
+	}
+	if len(groupedChanges) == 0 {
 		return readmodel.RuntimeConfigView{}, fmt.Errorf("%w: no runtime config change detected", errorsx.ErrInvalidArgument)
 	}
 
 	nextValues := make([]config.DynamicConfigValue, 0, len(activeMap))
-	for key, raw := range activeMap {
+	for scopedKey, raw := range activeMap {
+		scopeType, scopeValue, key := splitScopeConfigMapKey(scopedKey)
 		nextValues = append(nextValues, config.DynamicConfigValue{
 			Key:        key,
-			ScopeType:  config.ConfigScopeTypeGlobal,
-			ScopeValue: config.ConfigScopeValueGlobal,
+			ScopeType:  scopeType,
+			ScopeValue: scopeValue,
 			ValueJSON:  raw,
 		})
 	}
@@ -192,23 +219,34 @@ func (s *Service) UpdateRuntimeConfig(ctx context.Context, input UpdateInput) (r
 	}
 
 	err = s.txm.WithinTransaction(ctx, func(txCtx context.Context) error {
-		return s.repo.ApplyConfigPatch(txCtx, ApplyPatchInput{
-			ScopeType:  config.ConfigScopeTypeGlobal,
-			ScopeValue: config.ConfigScopeValueGlobal,
-			Changes:    changes,
-			Audit: AuditLog{
-				AuditID:      s.idgen.NewID("audit"),
-				ActorType:    "ADMIN",
-				ActorID:      operatorID,
-				Action:       "runtime_config.update",
-				ResourceType: resourceTypeRuntimeConfig,
-				ResourceID:   resourceIDGlobal,
-				BeforeJSON:   beforeJSON,
-				AfterJSON:    afterJSON,
-				TraceID:      strings.TrimSpace(input.TraceID),
-				CreatedAt:    s.clock.Now().UTC(),
-			},
-		})
+		sort.Strings(scopeOrder)
+		for _, groupKey := range scopeOrder {
+			scopeType, scopeValue := splitScopeGroupKey(groupKey)
+			resourceID := scopeValue
+			if scopeType == config.ConfigScopeTypeGlobal {
+				resourceID = resourceIDGlobal
+			}
+			if err := s.repo.ApplyConfigPatch(txCtx, ApplyPatchInput{
+				ScopeType:  scopeType,
+				ScopeValue: scopeValue,
+				Changes:    groupedChanges[groupKey],
+				Audit: AuditLog{
+					AuditID:      s.idgen.NewID("audit"),
+					ActorType:    "ADMIN",
+					ActorID:      operatorID,
+					Action:       "runtime_config.update",
+					ResourceType: resourceTypeRuntimeConfig,
+					ResourceID:   resourceID,
+					BeforeJSON:   beforeJSON,
+					AfterJSON:    afterJSON,
+					TraceID:      strings.TrimSpace(input.TraceID),
+					CreatedAt:    s.clock.Now().UTC(),
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return readmodel.RuntimeConfigView{}, err
@@ -228,17 +266,27 @@ func buildSnapshotView(snapshot config.RuntimeConfigSnapshot) readmodel.RuntimeC
 		ReadOnly:                          snapshot.Global.ReadOnly,
 		ReduceOnly:                        snapshot.Global.ReduceOnly,
 		TraceHeaderRequired:               snapshot.Global.TraceHeaderRequired,
+		MarketTakerFeeRate:                snapshot.Market.TakerFeeRate,
+		MarketMakerFeeRate:                snapshot.Market.MakerFeeRate,
+		MarketDefaultMaxSlippageBps:       snapshot.Market.DefaultMaxSlippageBps,
 		RiskGlobalBufferRatio:             snapshot.Risk.GlobalBufferRatio,
 		RiskMarkPriceStaleSec:             snapshot.Risk.MarkPriceStaleSec,
 		RiskForceReduceOnlyOnStalePrice:   snapshot.Risk.ForceReduceOnlyOnStalePrice,
 		RiskLiquidationPenaltyRate:        snapshot.Risk.LiquidationPenaltyRate,
+		RiskMaintenanceMarginUpliftRatio:  snapshot.Risk.MaintenanceMarginUpliftRatio,
 		RiskLiquidationExtraSlippageBps:   snapshot.Risk.LiquidationExtraSlippageBps,
 		RiskMaxOpenOrdersPerUserPerSymbol: snapshot.Risk.MaxOpenOrdersPerUserPerSymbol,
 		RiskNetExposureHardLimit:          snapshot.Risk.NetExposureHardLimit,
 		RiskMaxExposureSlippageBps:        snapshot.Risk.MaxExposureSlippageBps,
+		FundingIntervalSec:                snapshot.Funding.IntervalSec,
+		FundingSourcePollIntervalSec:      snapshot.Funding.SourcePollIntervalSec,
+		FundingCapRatePerHour:             snapshot.Funding.CapRatePerHour,
+		FundingMinValidSourceCount:        snapshot.Funding.MinValidSourceCount,
+		FundingDefaultModelCrypto:         snapshot.Funding.DefaultModelCrypto,
 		HedgeEnabled:                      snapshot.Hedge.Enabled,
 		HedgeSoftThresholdRatio:           snapshot.Hedge.SoftThresholdRatio,
 		HedgeHardThresholdRatio:           snapshot.Hedge.HardThresholdRatio,
+		PairOverrides:                     buildPairOverrideView(snapshot.Pairs),
 	}
 }
 
@@ -273,4 +321,64 @@ func marshalString(value any) (*string, error) {
 	}
 	text := string(raw)
 	return &text, nil
+}
+
+func (s *Service) loadAllActiveValues(ctx context.Context) ([]config.DynamicConfigValue, error) {
+	globalValues, err := s.repo.LoadActiveConfigValues(ctx, config.ConfigScopeTypeGlobal, config.ConfigScopeValueGlobal)
+	if err != nil {
+		return nil, err
+	}
+	pairValues, err := s.repo.LoadActiveConfigValues(ctx, config.ConfigScopeTypePair, "")
+	if err != nil {
+		return nil, err
+	}
+	return append(globalValues, pairValues...), nil
+}
+
+func buildPairOverrideView(pairs map[string]config.PairRuntimeConfig) map[string]readmodel.RuntimeConfigPairOverrideView {
+	if len(pairs) == 0 {
+		return nil
+	}
+	out := make(map[string]readmodel.RuntimeConfigPairOverrideView, len(pairs))
+	for pair, cfg := range pairs {
+		out[pair] = readmodel.RuntimeConfigPairOverrideView{
+			MaxLeverage:                  cfg.MaxLeverage,
+			SessionPolicy:                cfg.SessionPolicy,
+			TakerFeeRate:                 cfg.TakerFeeRate,
+			MakerFeeRate:                 cfg.MakerFeeRate,
+			DefaultMaxSlippageBps:        cfg.DefaultMaxSlippageBps,
+			LiquidationPenaltyRate:       cfg.LiquidationPenaltyRate,
+			FundingIntervalSec:           cfg.FundingIntervalSec,
+			MaintenanceMarginUpliftRatio: cfg.MaintenanceMarginUpliftRatio,
+		}
+	}
+	return out
+}
+
+func scopeGroupKey(scopeType string, scopeValue string) string {
+	return scopeType + "|" + scopeValue
+}
+
+func splitScopeGroupKey(value string) (string, string) {
+	parts := strings.SplitN(value, "|", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+func scopeConfigMapKey(scopeType string, scopeValue string, key string) string {
+	return scopeType + "|" + scopeValue + "|" + key
+}
+
+func splitScopeConfigMapKey(value string) (string, string, string) {
+	parts := strings.SplitN(value, "|", 3)
+	if len(parts) != 3 {
+		return "", "", value
+	}
+	return parts[0], parts[1], parts[2]
+}
+
+func normalizePairKey(value string) string {
+	return strings.ToUpper(strings.TrimSpace(value))
 }

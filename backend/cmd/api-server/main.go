@@ -7,28 +7,31 @@ import (
 	"strconv"
 	"time"
 
+	gormmysql "gorm.io/driver/mysql"
+	"gorm.io/gorm"
+
+	adminopsapp "github.com/xiaobao/rgperp/backend/internal/app/adminops"
 	posttradeapp "github.com/xiaobao/rgperp/backend/internal/app/posttrade"
 	runtimeconfigapp "github.com/xiaobao/rgperp/backend/internal/app/runtimeconfig"
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
+	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
 	liquidationdomain "github.com/xiaobao/rgperp/backend/internal/domain/liquidation"
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
-	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
+	"github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	riskdomain "github.com/xiaobao/rgperp/backend/internal/domain/risk"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	withdrawexecdomain "github.com/xiaobao/rgperp/backend/internal/domain/withdrawexec"
 	authinfra "github.com/xiaobao/rgperp/backend/internal/infra/auth"
 	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
 	"github.com/xiaobao/rgperp/backend/internal/infra/db"
-	marketcache "github.com/xiaobao/rgperp/backend/internal/infra/marketcache"
+	"github.com/xiaobao/rgperp/backend/internal/infra/marketcache"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/clockx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/idgen"
 	httptransport "github.com/xiaobao/rgperp/backend/internal/transport/http"
-	gormmysql "gorm.io/driver/mysql"
-	"gorm.io/gorm"
 )
 
 func main() {
@@ -44,6 +47,9 @@ func main() {
 	gormDB, err := gorm.Open(gormmysql.Open(cfg.MySQL.DSN), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("open mysql: %v", err)
+	}
+	if err := db.ConfigureMySQLConnectionPool(gormDB, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, time.Duration(cfg.MySQL.ConnMaxLifetimeSec)*time.Second); err != nil {
+		log.Fatalf("configure mysql pool: %v", err)
 	}
 	if err := db.Migrate(gormDB); err != nil {
 		log.Fatalf("migrate db: %v", err)
@@ -115,6 +121,7 @@ func main() {
 		decimalx.LedgerDecimalFactory{},
 	)
 	accountResolver := db.NewAccountResolver(gormDB)
+	fundingEventPublisher := db.NewFundingOutboxPublisher(gormDB)
 	orderService, err := orderdomain.NewService(
 		orderdomain.ServiceConfig{
 			Asset:                  "USDC",
@@ -178,7 +185,8 @@ func main() {
 		log.Fatalf("create liquidation service: %v", err)
 	}
 	liquidationService.SetRuntimeConfigProvider(serviceRuntimeProvider)
-	orderService.SetPostTradeRiskProcessor(posttradeapp.NewProcessor(riskService, liquidationService))
+	riskRequestProcessor := posttradeapp.NewProcessor(clockx.RealClock{}, &idgen.TimeBasedGenerator{}, db.NewRiskOutboxPublisher(gormDB))
+	orderService.SetPostTradeRiskProcessor(riskRequestProcessor)
 	runtimeConfigService, err := runtimeconfigapp.NewService(runtimeCfg, clockx.RealClock{}, &idgen.TimeBasedGenerator{}, txManager, runtimeConfigRepo, runtimeStore)
 	if err != nil {
 		log.Fatalf("create runtime config service: %v", err)
@@ -211,6 +219,7 @@ func main() {
 	}
 	walletQueryRepo := db.NewWalletQueryRepositoryWithRiskConfig(
 		gormDB,
+		confirmations,
 		db.RiskMonitorConfig{
 			HardLimitNotional:      runtimeCfg.Risk.NetExposureHardLimit,
 			MaxExposureSlippageBps: runtimeCfg.Risk.MaxExposureSlippageBps,
@@ -218,20 +227,30 @@ func main() {
 		vaultBalanceReader,
 	)
 	var localNativeFaucet *chaininfra.LocalNativeFaucet
-	if cfg.App.Env == "dev" && cfg.Review.LocalMinterPrivateKey != "" && cfg.Chains.Base.RPCURL != "" {
-		faucet, err := chaininfra.NewLocalNativeFaucet(cfg.Review.LocalMinterPrivateKey, []chaininfra.LocalNativeFaucetChainConfig{{
-			ChainID: config.EffectiveBaseChainID(cfg.App.Env),
-			RPCURL:  cfg.Chains.Base.RPCURL,
-		}}, big.NewInt(1_000_000_000_000_000_000))
-		if err != nil {
-			log.Fatalf("create local native faucet: %v", err)
+	if cfg.App.Env == "dev" && cfg.Review.LocalMinterPrivateKey != "" {
+		faucetChains := make([]chaininfra.LocalNativeFaucetChainConfig, 0, len(enabledChains))
+		for _, chain := range enabledChains {
+			if !chain.LocalTestnet || chain.RPCURL == "" {
+				continue
+			}
+			faucetChains = append(faucetChains, chaininfra.LocalNativeFaucetChainConfig{
+				ChainID: chain.ChainID,
+				RPCURL:  chain.RPCURL,
+			})
 		}
-		defer faucet.Close()
-		localNativeFaucet = faucet
+		if len(faucetChains) > 0 {
+			faucet, err := chaininfra.NewLocalNativeFaucet(cfg.Review.LocalMinterPrivateKey, faucetChains, big.NewInt(1_000_000_000_000_000_000))
+			if err != nil {
+				log.Fatalf("create local native faucet: %v", err)
+			}
+			defer faucet.Close()
+			localNativeFaucet = faucet
+		}
 	}
+	withdrawRepo := db.NewWithdrawRepository(gormDB)
 	walletService := walletdomain.NewService(
-		db.NewDepositRepository(gormDB),
-		db.NewWithdrawRepository(gormDB),
+		db.NewDepositRepository(gormDB, confirmations),
+		withdrawRepo,
 		userRepo,
 		ledgerService,
 		txManager,
@@ -262,8 +281,8 @@ func main() {
 				log.Fatalf("create vault withdraw executor: %v", err)
 			}
 			defer executor.Close()
-			walletService.SetWithdrawRiskEvaluator(chaininfra.NewWithdrawRiskEvaluator(runtimeCfg.Global, runtimeCfg.Wallet, executor))
-			withdrawExecService, err := withdrawexecdomain.NewService(db.NewWithdrawRepository(gormDB), walletService, executor)
+			walletService.SetWithdrawRiskEvaluator(chaininfra.NewWithdrawRiskEvaluator(runtimeCfg.Global, runtimeCfg.Wallet, executor, withdrawRepo))
+			withdrawExecService, err := withdrawexecdomain.NewService(withdrawRepo, walletService, executor, txManager)
 			if err != nil {
 				log.Fatalf("create withdraw executor service: %v", err)
 			}
@@ -273,7 +292,7 @@ func main() {
 
 	verifier := &accessVerifierAdapter{verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret)}
 	authHandler := httptransport.NewAuthHandler(authService, cfg.Admin.Wallets)
-	marketReadRepo := db.NewMarketReadRepository(gormDB, latestMarketCache, time.Duration(runtimeCfg.Market.MaxSourceAgeSec)*time.Second)
+	marketReadRepo := db.NewMarketReadRepository(gormDB, latestMarketCache, time.Duration(runtimeCfg.Market.MaxSourceAgeSec)*time.Second, serviceRuntimeProvider, serviceRuntimeProvider)
 	tradingReadRepo := db.NewTradingReadRepository(gormDB)
 	marketHandler := httptransport.NewMarketHandler(marketReadRepo)
 	accountHandler := httptransport.NewAccountHandler(db.NewAccountQueryRepositoryWithRuntime(gormDB, serviceRuntimeProvider), walletService, userRepo)
@@ -287,8 +306,42 @@ func main() {
 	tradingHandler := httptransport.NewTradingHandler(tradingReadRepo, orderService)
 	explorerHandler := httptransport.NewExplorerHandler(db.NewExplorerQueryRepository(gormDB), cfg.Admin.Wallets)
 	adminHandler := httptransport.NewAdminHandler(walletService, walletQueryRepo, cfg.Admin.Wallets)
-	adminHandler.SetRiskMutator(posttradeapp.NewProcessor(riskService, liquidationService))
+	adminHandler.SetRiskMutator(riskRequestProcessor)
 	adminHandler.SetConfigManager(adminRuntimeConfigManager{service: runtimeConfigService})
+	adminOpsService, err := adminopsapp.NewService(
+		clockx.RealClock{},
+		&idgen.TimeBasedGenerator{},
+		txManager,
+		accountResolver,
+		ledgerService,
+		db.NewLiquidationRepository(gormDB),
+		liquidationService,
+	)
+	if err != nil {
+		log.Fatalf("create admin ops service: %v", err)
+	}
+	adminHandler.SetLedgerMutator(adminLedgerManager{service: adminOpsService})
+	adminHandler.SetLiquidationMutator(adminLiquidationManager{service: adminOpsService})
+	fundingReverser, err := fundingdomain.NewReverser(
+		fundingdomain.ReverserConfig{Asset: "USDC"},
+		clockx.RealClock{},
+		&idgen.TimeBasedGenerator{},
+		txManager,
+		db.NewFundingRepository(gormDB),
+		accountResolver,
+		ledgerService,
+		fundingEventPublisher,
+	)
+	if err != nil {
+		log.Fatalf("create funding reverser: %v", err)
+	}
+	adminHandler.SetFundingMutator(adminFundingManager{
+		reverser: fundingReverser,
+		reader:   walletQueryRepo,
+		outbox:   db.NewOutboxRepository(gormDB),
+		idgen:    &idgen.TimeBasedGenerator{},
+		db:       gormDB,
+	})
 
 	router := httptransport.NewEngine(verifier, httpRuntimeConfigProvider{store: runtimeStore}, authHandler, marketHandler, accountHandler, walletHandler, tradingHandler, explorerHandler, adminHandler, systemHandler)
 
@@ -312,8 +365,8 @@ func buildSystemChains(chains []config.EnabledChain, cfg config.StaticConfig) []
 			Name:              config.ChainDisplayName(chain),
 			Asset:             chain.Asset,
 			Confirmations:     chain.Confirmations,
-			LocalTestnet:      chain.Key == "local",
-			LocalToolsEnabled: chain.Key == "local" && cfg.Review.LocalMinterPrivateKey != "" && chain.USDCAddress != "",
+			LocalTestnet:      chain.LocalTestnet,
+			LocalToolsEnabled: chain.LocalTestnet && cfg.Review.LocalMinterPrivateKey != "" && chain.USDCAddress != "",
 			DepositEnabled:    chain.RPCURL != "" && chain.FactoryAddress != "" && chain.USDCAddress != "",
 			WithdrawEnabled:   chain.RPCURL != "" && chain.VaultAddress != "" && chain.USDCAddress != "",
 			USDCAddress:       usdcAddress,
@@ -323,7 +376,20 @@ func buildSystemChains(chains []config.EnabledChain, cfg config.StaticConfig) []
 }
 
 type adminRuntimeConfigManager struct {
-	service *runtimeconfigapp.Service
+	service runtimeConfigService
+}
+
+type runtimeConfigService interface {
+	GetRuntimeConfigView(ctx context.Context, limit int) (readmodel.RuntimeConfigView, error)
+	UpdateRuntimeConfig(ctx context.Context, input runtimeconfigapp.UpdateInput) (readmodel.RuntimeConfigView, error)
+}
+
+type adminFundingManager struct {
+	reverser *fundingdomain.Reverser
+	reader   *db.WalletQueryRepository
+	outbox   *db.OutboxRepository
+	idgen    *idgen.TimeBasedGenerator
+	db       *gorm.DB
 }
 
 func (m adminRuntimeConfigManager) GetRuntimeConfigView(ctx context.Context, limit int) (readmodel.RuntimeConfigView, error) {
@@ -336,7 +402,68 @@ func (m adminRuntimeConfigManager) UpdateRuntimeConfig(ctx context.Context, inpu
 		TraceID:    input.TraceID,
 		Reason:     input.Reason,
 		Values:     input.Values,
+		PairValues: input.PairValues,
 	})
+}
+
+func (m adminFundingManager) ReverseFundingBatch(ctx context.Context, fundingBatchID string, operatorID string, traceID string, reason string) (readmodel.AdminFundingBatchItem, error) {
+	if _, err := m.reverser.ReverseBatch(ctx, fundingdomain.ReverseBatchInput{
+		FundingBatchID: fundingBatchID,
+		OperatorID:     operatorID,
+		TraceID:        traceID,
+		Reason:         reason,
+	}); err != nil {
+		return readmodel.AdminFundingBatchItem{}, err
+	}
+	items, err := m.reader.ListFundingBatches(ctx, 200)
+	if err != nil {
+		return readmodel.AdminFundingBatchItem{}, err
+	}
+	var target *readmodel.AdminFundingBatchItem
+	for idx := range items {
+		if items[idx].FundingBatchID == fundingBatchID {
+			target = &items[idx]
+			break
+		}
+	}
+	if target == nil {
+		return readmodel.AdminFundingBatchItem{}, errorsx.ErrNotFound
+	}
+	return *target, m.enqueueRiskRecalculations(ctx, fundingBatchID)
+}
+
+func (m adminFundingManager) enqueueRiskRecalculations(ctx context.Context, fundingBatchID string) error {
+	var userIDs []uint64
+	if err := m.db.WithContext(ctx).Raw(`
+SELECT DISTINCT user_id
+FROM funding_batch_items
+WHERE funding_batch_id = ? AND user_id <> 0
+`, fundingBatchID).Scan(&userIDs).Error; err != nil {
+		return err
+	}
+	for _, userID := range userIDs {
+		requestID := m.idgen.NewID("rrq")
+		if err := m.outbox.Create(ctx, db.OutboxMessage{
+			EventID:       m.idgen.NewID("evt"),
+			AggregateType: "risk_recalculation",
+			AggregateID:   requestID,
+			EventType:     "risk.recalculate.requested",
+			Payload: map[string]any{
+				"request_id":   requestID,
+				"user_id":      userID,
+				"triggered_by": "funding_reversal",
+				"trace_id":     traceIDForFundingReverse(fundingBatchID),
+			},
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func traceIDForFundingReverse(fundingBatchID string) string {
+	return "funding:reverse:" + fundingBatchID
 }
 
 func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []config.EnabledChain) {

@@ -2,7 +2,11 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	fundingdomain "github.com/xiaobao/rgperp/backend/internal/domain/funding"
@@ -11,11 +15,17 @@ import (
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
-type DepositRepository struct{ db *gorm.DB }
+type DepositRepository struct {
+	db            *gorm.DB
+	confirmations map[int64]int
+}
 
-func NewDepositRepository(db *gorm.DB) *DepositRepository { return &DepositRepository{db: db} }
+func NewDepositRepository(db *gorm.DB, confirmations map[int64]int) *DepositRepository {
+	return &DepositRepository{db: db, confirmations: cloneConfirmations(confirmations)}
+}
 
 func (r *DepositRepository) Create(ctx context.Context, deposit walletdomain.DepositChainTx) error {
 	return DB(ctx, r.db).Create(&DepositChainTxModel{
@@ -58,7 +68,7 @@ func (r *DepositRepository) GetByID(ctx context.Context, depositID string) (wall
 		Amount:             model.Amount,
 		BlockNumber:        model.BlockNumber,
 		Confirmations:      model.Confirmations,
-		RequiredConfs:      requiredConfirmations(model.ChainID),
+		RequiredConfs:      r.requiredConfirmations(model.ChainID),
 		Status:             model.Status,
 		Asset:              "USDC",
 		CreditedLedgerTxID: model.CreditedLedgerTxID,
@@ -108,7 +118,7 @@ func (r *DepositRepository) ListPendingByChain(ctx context.Context, chainID int6
 			Asset:              "USDC",
 			BlockNumber:        model.BlockNumber,
 			Confirmations:      model.Confirmations,
-			RequiredConfs:      requiredConfirmations(model.ChainID),
+			RequiredConfs:      r.requiredConfirmations(model.ChainID),
 			Status:             model.Status,
 			CreditedLedgerTxID: model.CreditedLedgerTxID,
 			CreatedAt:          model.CreatedAt,
@@ -189,7 +199,7 @@ func (r *DepositRepository) ListByUser(ctx context.Context, userID uint64) ([]wa
 			Asset:              "USDC",
 			BlockNumber:        model.BlockNumber,
 			Confirmations:      model.Confirmations,
-			RequiredConfs:      requiredConfirmations(model.ChainID),
+			RequiredConfs:      r.requiredConfirmations(model.ChainID),
 			Status:             model.Status,
 			CreditedLedgerTxID: model.CreditedLedgerTxID,
 			CreatedAt:          model.CreatedAt,
@@ -202,6 +212,13 @@ func (r *DepositRepository) ListByUser(ctx context.Context, userID uint64) ([]wa
 type WithdrawRepository struct{ db *gorm.DB }
 
 func NewWithdrawRepository(db *gorm.DB) *WithdrawRepository { return &WithdrawRepository{db: db} }
+
+func (r *DepositRepository) requiredConfirmations(chainID int64) int {
+	if r == nil {
+		return 0
+	}
+	return r.confirmations[chainID]
+}
 
 func (r *WithdrawRepository) Create(ctx context.Context, withdraw walletdomain.WithdrawRequest) error {
 	return DB(ctx, r.db).Create(&WithdrawRequestModel{
@@ -241,6 +258,7 @@ func (r *WithdrawRepository) GetByID(ctx context.Context, withdrawID string) (wa
 		RiskFlag:        derefString(model.RiskFlag),
 		HoldLedgerTxID:  model.HoldLedgerTxID,
 		BroadcastTxHash: model.BroadcastTxHash,
+		BroadcastNonce:  uint64PtrFromInt64Ptr(model.BroadcastNonce),
 		CreatedAt:       model.CreatedAt,
 		UpdatedAt:       model.UpdatedAt,
 	}, nil
@@ -272,11 +290,38 @@ func (r *WithdrawRepository) ListByChainStatuses(ctx context.Context, chainID in
 			RiskFlag:        derefString(model.RiskFlag),
 			HoldLedgerTxID:  model.HoldLedgerTxID,
 			BroadcastTxHash: model.BroadcastTxHash,
+			BroadcastNonce:  uint64PtrFromInt64Ptr(model.BroadcastNonce),
 			CreatedAt:       model.CreatedAt,
 			UpdatedAt:       model.UpdatedAt,
 		})
 	}
 	return out, nil
+}
+
+func (r *WithdrawRepository) SumRequestedAmountByUserSince(ctx context.Context, userID uint64, asset string, since time.Time) (string, error) {
+	var row struct {
+		Total sql.NullString `gorm:"column:total"`
+	}
+	statuses := []string{
+		walletdomain.StatusHold,
+		walletdomain.StatusRiskReview,
+		walletdomain.StatusApproved,
+		walletdomain.StatusSigning,
+		walletdomain.StatusBroadcasted,
+		walletdomain.StatusCompleted,
+		walletdomain.StatusFailed,
+	}
+	if err := DB(ctx, r.db).
+		Model(&WithdrawRequestModel{}).
+		Select("COALESCE(SUM(CAST(amount AS DECIMAL(38,18))), 0) AS total").
+		Where("user_id = ? AND asset = ? AND created_at >= ? AND status IN ?", userID, asset, since, statuses).
+		Scan(&row).Error; err != nil {
+		return "", err
+	}
+	if !row.Total.Valid || row.Total.String == "" {
+		return "0", nil
+	}
+	return row.Total.String, nil
 }
 
 func (r *WithdrawRepository) UpdateStatus(ctx context.Context, withdrawID string, from []string, to string) error {
@@ -294,12 +339,56 @@ func (r *WithdrawRepository) UpdateStatus(ctx context.Context, withdrawID string
 	return nil
 }
 
-func (r *WithdrawRepository) MarkBroadcasted(ctx context.Context, withdrawID string, txHash string) error {
-	result := DB(ctx, r.db).Model(&WithdrawRequestModel{}).
+func (r *WithdrawRepository) UpdateStatusDetailed(ctx context.Context, withdrawID string, from []string, to string, riskFlag *string, clearBroadcast bool) error {
+	updates := map[string]any{
+		"status":     to,
+		"updated_at": time.Now().UTC(),
+	}
+	if riskFlag != nil {
+		updates["risk_flag"] = nullableString(strings.TrimSpace(*riskFlag))
+	}
+	if clearBroadcast {
+		updates["broadcast_nonce"] = nil
+		updates["broadcast_tx_hash"] = ""
+	}
+	query := DB(ctx, r.db).Model(&WithdrawRequestModel{}).Where("withdraw_id = ?", withdrawID)
+	if len(from) > 0 {
+		query = query.Where("status IN ?", from)
+	}
+	if clearBroadcast {
+		query = query.Where("broadcast_tx_hash = '' OR broadcast_tx_hash IS NULL")
+	}
+	result := query.Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrConflict
+	}
+	return nil
+}
+
+func (r *WithdrawRepository) MarkBroadcasted(ctx context.Context, withdrawID string, txHash string, nonce *uint64) error {
+	tx := DB(ctx, r.db)
+	var model WithdrawRequestModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("withdraw_id = ?", withdrawID).
-		Updates(map[string]any{
-			"broadcast_tx_hash": txHash,
-		})
+		First(&model).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errorsx.ErrNotFound
+		}
+		return err
+	}
+	if nonce != nil && model.BroadcastNonce != nil && *model.BroadcastNonce != int64(*nonce) {
+		return fmt.Errorf("%w: withdraw broadcast nonce mismatch", errorsx.ErrConflict)
+	}
+	updates := map[string]any{
+		"broadcast_tx_hash": txHash,
+	}
+	if nonce != nil {
+		updates["broadcast_nonce"] = int64(*nonce)
+	}
+	result := tx.Model(&WithdrawRequestModel{}).Where("id = ?", model.ID).Updates(updates)
 	if result.Error != nil {
 		return result.Error
 	}
@@ -355,6 +444,7 @@ func (r *WithdrawRepository) ListByUser(ctx context.Context, userID uint64) ([]w
 			RiskFlag:        derefString(model.RiskFlag),
 			HoldLedgerTxID:  model.HoldLedgerTxID,
 			BroadcastTxHash: model.BroadcastTxHash,
+			BroadcastNonce:  uint64PtrFromInt64Ptr(model.BroadcastNonce),
 			CreatedAt:       model.CreatedAt,
 			UpdatedAt:       model.UpdatedAt,
 		})
@@ -362,11 +452,166 @@ func (r *WithdrawRepository) ListByUser(ctx context.Context, userID uint64) ([]w
 	return out, nil
 }
 
-type AccountResolver struct{ db *gorm.DB }
+func (r *WithdrawRepository) ReserveNextNonce(ctx context.Context, chainID int64, signerAddress string, chainPendingNonce uint64) (walletdomain.WithdrawRequest, error) {
+	tx := DB(ctx, r.db)
+	now := time.Now().UTC()
+	initialNonce, err := uint64ToInt64(chainPendingNonce)
+	if err != nil {
+		return walletdomain.WithdrawRequest{}, err
+	}
+
+	if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&SignerNonceStateModel{
+		ChainID:       chainID,
+		SignerAddress: signerAddress,
+		NextNonce:     initialNonce,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}).Error; err != nil {
+		return walletdomain.WithdrawRequest{}, err
+	}
+
+	var state SignerNonceStateModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain_id = ? AND signer_address = ?", chainID, signerAddress).
+		First(&state).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return walletdomain.WithdrawRequest{}, errorsx.ErrNotFound
+		}
+		return walletdomain.WithdrawRequest{}, err
+	}
+
+	var activeReserved int64
+	if err := tx.Model(&WithdrawRequestModel{}).
+		Where("chain_id = ? AND status = ? AND broadcast_nonce IS NOT NULL AND (broadcast_tx_hash = '' OR broadcast_tx_hash IS NULL)", chainID, walletdomain.StatusSigning).
+		Count(&activeReserved).Error; err != nil {
+		return walletdomain.WithdrawRequest{}, err
+	}
+	if activeReserved > 0 {
+		return walletdomain.WithdrawRequest{}, errorsx.ErrConflict
+	}
+
+	var withdraw WithdrawRequestModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("chain_id = ? AND status = ?", chainID, walletdomain.StatusApproved).
+		Order("created_at ASC").
+		First(&withdraw).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return walletdomain.WithdrawRequest{}, errorsx.ErrNotFound
+		}
+		return walletdomain.WithdrawRequest{}, err
+	}
+
+	// The chain pending nonce is the authoritative source once there is no
+	// outstanding SIGNING row without a tx hash. This self-heals stale local
+	// signer state after a reservation was released before broadcast.
+	reservedNonce := initialNonce
+
+	result := tx.Model(&WithdrawRequestModel{}).
+		Where("id = ? AND status = ?", withdraw.ID, walletdomain.StatusApproved).
+		Updates(map[string]any{
+			"status":          walletdomain.StatusSigning,
+			"broadcast_nonce": reservedNonce,
+			"updated_at":      now,
+		})
+	if result.Error != nil {
+		return walletdomain.WithdrawRequest{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return walletdomain.WithdrawRequest{}, errorsx.ErrConflict
+	}
+
+	result = tx.Model(&SignerNonceStateModel{}).
+		Where("id = ?", state.ID).
+		Updates(map[string]any{
+			"next_nonce": reservedNonce + 1,
+			"updated_at": now,
+		})
+	if result.Error != nil {
+		return walletdomain.WithdrawRequest{}, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return walletdomain.WithdrawRequest{}, errorsx.ErrConflict
+	}
+
+	nonce := uint64(reservedNonce)
+	return walletdomain.WithdrawRequest{
+		WithdrawID:      withdraw.WithdrawID,
+		UserID:          withdraw.UserID,
+		ChainID:         withdraw.ChainID,
+		Asset:           withdraw.Asset,
+		Amount:          withdraw.Amount,
+		FeeAmount:       withdraw.FeeAmount,
+		ToAddress:       withdraw.ToAddress,
+		Status:          walletdomain.StatusSigning,
+		RiskFlag:        derefString(withdraw.RiskFlag),
+		HoldLedgerTxID:  withdraw.HoldLedgerTxID,
+		BroadcastTxHash: withdraw.BroadcastTxHash,
+		BroadcastNonce:  &nonce,
+		CreatedAt:       withdraw.CreatedAt,
+		UpdatedAt:       now,
+	}, nil
+}
+
+func (r *WithdrawRepository) ListReservedForBroadcastRetry(ctx context.Context, chainID int64, limit int) ([]walletdomain.WithdrawRequest, error) {
+	query := DB(ctx, r.db).
+		Where("chain_id = ? AND status = ? AND broadcast_nonce IS NOT NULL AND (broadcast_tx_hash = '' OR broadcast_tx_hash IS NULL)", chainID, walletdomain.StatusSigning)
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	var models []WithdrawRequestModel
+	if err := query.Order("updated_at ASC").Find(&models).Error; err != nil {
+		return nil, err
+	}
+	out := make([]walletdomain.WithdrawRequest, 0, len(models))
+	for _, model := range models {
+		out = append(out, walletdomain.WithdrawRequest{
+			WithdrawID:      model.WithdrawID,
+			UserID:          model.UserID,
+			ChainID:         model.ChainID,
+			Asset:           model.Asset,
+			Amount:          model.Amount,
+			FeeAmount:       model.FeeAmount,
+			ToAddress:       model.ToAddress,
+			Status:          model.Status,
+			RiskFlag:        derefString(model.RiskFlag),
+			HoldLedgerTxID:  model.HoldLedgerTxID,
+			BroadcastTxHash: model.BroadcastTxHash,
+			BroadcastNonce:  uint64PtrFromInt64Ptr(model.BroadcastNonce),
+			CreatedAt:       model.CreatedAt,
+			UpdatedAt:       model.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+func uint64PtrFromInt64Ptr(value *int64) *uint64 {
+	if value == nil || *value < 0 {
+		return nil
+	}
+	out := uint64(*value)
+	return &out
+}
+
+func uint64ToInt64(value uint64) (int64, error) {
+	if value > uint64(^uint64(0)>>1) {
+		return 0, fmt.Errorf("%w: nonce exceeds int64 range", errorsx.ErrInvalidArgument)
+	}
+	return int64(value), nil
+}
+
+type AccountResolver struct {
+	db         *gorm.DB
+	tradeCache sync.Map
+}
 
 func NewAccountResolver(db *gorm.DB) *AccountResolver { return &AccountResolver{db: db} }
 
 func (r *AccountResolver) ResolveTradeAccounts(ctx context.Context, userID uint64, asset string) (orderdomain.TradeAccounts, error) {
+	cacheKey := fmt.Sprintf("%d:%s", userID, asset)
+	if cached, ok := r.tradeCache.Load(cacheKey); ok {
+		return cached.(orderdomain.TradeAccounts), nil
+	}
+
 	requiredUserCodes := map[string]func(*orderdomain.TradeAccounts, uint64){
 		"USER_WALLET":          func(a *orderdomain.TradeAccounts, id uint64) { a.UserWalletAccountID = id },
 		"USER_ORDER_MARGIN":    func(a *orderdomain.TradeAccounts, id uint64) { a.UserOrderMarginAccountID = id },
@@ -407,6 +652,7 @@ func (r *AccountResolver) ResolveTradeAccounts(ctx context.Context, userID uint6
 	if accounts.UserWalletAccountID == 0 || accounts.UserOrderMarginAccountID == 0 || accounts.UserPositionMarginAccountID == 0 || accounts.SystemPoolAccountID == 0 || accounts.TradingFeeAccountID == 0 {
 		return orderdomain.TradeAccounts{}, errorsx.ErrNotFound
 	}
+	r.tradeCache.Store(cacheKey, accounts)
 	return accounts, nil
 }
 
@@ -468,6 +714,9 @@ func (r *AccountResolver) TradingFeeAccountID(ctx context.Context, asset string)
 }
 func (r *AccountResolver) FundingPoolAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "FUNDING_POOL", asset)
+}
+func (r *AccountResolver) InsuranceFundAccountID(ctx context.Context, asset string) (uint64, error) {
+	return r.lookupAccountID(ctx, nil, "INSURANCE_FUND", asset)
 }
 func (r *AccountResolver) DepositPendingAccountID(ctx context.Context, asset string) (uint64, error) {
 	return r.lookupAccountID(ctx, nil, "DEPOSIT_PENDING_CONFIRM", asset)
@@ -548,18 +797,23 @@ func (r *DepositAddressRepository) GetByChainAddress(ctx context.Context, chainI
 }
 
 func (r *DepositAddressRepository) AssignToUser(ctx context.Context, userID uint64, chainID int64, asset string, address string) error {
-	result := DB(ctx, r.db).
-		Model(&DepositAddressModel{}).
-		Where("user_id = ? AND chain_id = ? AND asset = ?", userID, chainID, asset).
-		Updates(map[string]any{
+	now := time.Now().UTC()
+	return DB(ctx, r.db).Clauses(clause.OnConflict{
+		Columns: []clause.Column{
+			{Name: "user_id"},
+			{Name: "chain_id"},
+			{Name: "asset"},
+		},
+		DoUpdates: clause.Assignments(map[string]any{
 			"address": address,
 			"status":  "ACTIVE",
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return errorsx.ErrNotFound
-	}
-	return nil
+		}),
+	}).Create(&DepositAddressModel{
+		UserID:    userID,
+		ChainID:   chainID,
+		Address:   address,
+		Asset:     asset,
+		Status:    "ACTIVE",
+		CreatedAt: now,
+	}).Error
 }

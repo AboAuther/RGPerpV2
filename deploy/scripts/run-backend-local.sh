@@ -3,10 +3,14 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 SERVICE_BIN="${1:-${SERVICE_BIN:-}}"
-CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-$ROOT_DIR/.local/contracts.env}"
+CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-$ROOT_DIR/deploy/env/local-chains.env}"
+if [ ! -s "$CHAIN_ENV_FILE" ] && [ -s "$ROOT_DIR/.local/contracts.env" ]; then
+  CHAIN_ENV_FILE="$ROOT_DIR/.local/contracts.env"
+fi
+export CHAIN_ENV_FILE
 
 if [ -z "$SERVICE_BIN" ]; then
-  echo "usage: $0 <api-server|indexer|market-data|funding-worker|migrator>" >&2
+  echo "usage: $0 <api-server|indexer|market-data|order-executor-worker|risk-engine-worker|funding-worker|liquidator-worker|migrator>" >&2
   exit 1
 fi
 
@@ -17,6 +21,12 @@ if [ -s "$CHAIN_ENV_FILE" ]; then
   set +a
 fi
 
+if [ -n "${ETH_RPC_URL_HOST:-}" ]; then
+  export ETH_RPC_URL="${ETH_RPC_URL_HOST}"
+fi
+if [ -n "${ARB_RPC_URL_HOST:-}" ]; then
+  export ARB_RPC_URL="${ARB_RPC_URL_HOST}"
+fi
 if [ -n "${BASE_RPC_URL_HOST:-}" ]; then
   export BASE_RPC_URL="${BASE_RPC_URL_HOST}"
 fi
@@ -44,8 +54,17 @@ case "$SERVICE_BIN" in
   market-data)
     export APP_PORT="${APP_PORT:-8082}"
     ;;
+  order-executor-worker)
+    export APP_PORT="${APP_PORT:-8086}"
+    ;;
+  risk-engine-worker)
+    export APP_PORT="${APP_PORT:-8087}"
+    ;;
   funding-worker)
     export APP_PORT="${APP_PORT:-8084}"
+    ;;
+  liquidator-worker)
+    export APP_PORT="${APP_PORT:-8085}"
     ;;
   migrator)
     export APP_PORT="${APP_PORT:-8083}"

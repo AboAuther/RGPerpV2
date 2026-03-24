@@ -3,9 +3,9 @@
 当前计划的可执行进程：
 
 - `api-server`
-- `ws-gateway`
 - `indexer`
 - `market-data-worker`
+- `order-executor-worker`
 - `trade-engine-worker`
 - `risk-engine-worker`
 - `liquidator-worker`

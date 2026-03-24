@@ -57,6 +57,17 @@ contract VaultTest is TestBase {
         assertEq(token.balanceOf(user), 10e6, "user should receive withdrawn amount");
     }
 
+    function testWithdrawRejectsReplayByWithdrawId() public {
+        token.mint(address(vault), 50e6);
+
+        vm.prank(executor);
+        vault.withdraw(address(token), user, 10e6, bytes32("wd-replay"));
+
+        vm.prank(executor);
+        vm.expectRevert(bytes("WITHDRAW_ALREADY_PROCESSED"));
+        vault.withdraw(address(token), user, 10e6, bytes32("wd-replay"));
+    }
+
     function testPauseBlocksWithdraw() public {
         token.mint(address(vault), 50e6);
 
@@ -66,5 +77,30 @@ contract VaultTest is TestBase {
         vm.prank(executor);
         vm.expectRevert(bytes("PAUSED"));
         vault.withdraw(address(token), user, 1e6, bytes32("wd-paused"));
+    }
+
+    function testRescueTokenBlocksAllowedCustodyToken() public {
+        token.mint(address(vault), 10e6);
+
+        vm.prank(admin);
+        vm.expectRevert(bytes("TOKEN_RESCUE_BLOCKED"));
+        vault.rescueToken(address(token), user, 1e6, bytes32("rescue-usdc"));
+    }
+
+    function testRouterSweepNativeRequiresOwner() public {
+        bytes32 salt = keccak256("user-3");
+        vm.prank(admin);
+        address payable router = payable(factory.createRouter(3, salt));
+
+        vm.deal(router, 1 ether);
+
+        vm.prank(user);
+        vm.expectRevert(bytes("NOT_OWNER"));
+        DepositRouter(router).sweepNative(payable(user));
+
+        uint256 beforeBalance = admin.balance;
+        vm.prank(admin);
+        DepositRouter(router).sweepNative(payable(admin));
+        assertEq(admin.balance, beforeBalance + 1 ether, "owner should receive swept native token");
     }
 }

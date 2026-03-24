@@ -22,13 +22,14 @@ type Executor struct {
 	repo     Repository
 	accounts AccountResolver
 	ledger   LedgerPoster
+	events   EventPublisher
 }
 
-func NewExecutor(cfg ExecutorConfig, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, accounts AccountResolver, ledger LedgerPoster) (*Executor, error) {
+func NewExecutor(cfg ExecutorConfig, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, accounts AccountResolver, ledger LedgerPoster, events EventPublisher) (*Executor, error) {
 	if strings.TrimSpace(cfg.Asset) == "" {
 		return nil, fmt.Errorf("%w: funding asset is required", errorsx.ErrInvalidArgument)
 	}
-	if clock == nil || idgen == nil || txm == nil || repo == nil || accounts == nil || ledger == nil {
+	if clock == nil || idgen == nil || txm == nil || repo == nil || accounts == nil || ledger == nil || events == nil {
 		return nil, fmt.Errorf("%w: missing funding executor dependency", errorsx.ErrInvalidArgument)
 	}
 	return &Executor{
@@ -39,6 +40,7 @@ func NewExecutor(cfg ExecutorConfig, clock Clock, idgen IDGenerator, txm TxManag
 		repo:     repo,
 		accounts: accounts,
 		ledger:   ledger,
+		events:   events,
 	}, nil
 }
 
@@ -46,7 +48,7 @@ func (e *Executor) ApplyReadyBatches(ctx context.Context, limit int) ([]ApplyRes
 	if limit <= 0 {
 		limit = 100
 	}
-	batches, err := e.repo.ListReadyBatches(ctx, limit)
+	batches, err := e.repo.ListExecutableBatches(ctx, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +70,7 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 
 	now := e.clock.Now().UTC()
 	result := ApplyResult{}
+	executionStarted := false
 	err := e.txm.WithinTransaction(ctx, func(txCtx context.Context) error {
 		batch, err := e.repo.GetBatchByIDForUpdate(txCtx, fundingBatchID)
 		if err != nil {
@@ -77,10 +80,11 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 		switch batch.Status {
 		case BatchStatusApplied:
 			return nil
-		case BatchStatusReady, BatchStatusApplying:
+		case BatchStatusReady, BatchStatusApplying, BatchStatusFailed:
 		default:
 			return fmt.Errorf("%w: funding batch %s is not executable in status %s", errorsx.ErrConflict, batch.ID, batch.Status)
 		}
+		executionStarted = true
 
 		batch.Status = BatchStatusApplying
 		batch.UpdatedAt = now
@@ -93,12 +97,14 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 			return err
 		}
 		seenUsers := make(map[uint64]struct{}, len(items))
+		appliedCount := 0
 		for _, item := range items {
 			switch item.Status {
 			case ItemStatusApplied:
 				if item.UserID != 0 {
 					seenUsers[item.UserID] = struct{}{}
 				}
+				appliedCount++
 				continue
 			case ItemStatusPending, ItemStatusFailed:
 			default:
@@ -125,30 +131,13 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 				if err := e.repo.UpdateBatchItem(txCtx, item); err != nil {
 					return err
 				}
+				appliedCount++
 				continue
 			}
 
 			fundingFeeAbs := signedFee.Abs()
 			ledgerTxID := e.idgen.NewID("ldg")
-			entries := []ledgerdomain.LedgerEntry{
-				{
-					AccountID: accounts.FundingPoolAccountID,
-					Asset:     e.cfg.Asset,
-					Amount:    fundingFeeAbs.String(),
-					EntryType: "FUNDING_SETTLEMENT",
-				},
-				{
-					AccountID: accounts.UserPositionMarginAccountID,
-					UserID:    uint64Ptr(item.UserID),
-					Asset:     e.cfg.Asset,
-					Amount:    fundingFeeAbs.Neg().String(),
-					EntryType: "FUNDING_SETTLEMENT",
-				},
-			}
-			if signedFee.GreaterThan(decimalx.MustFromString("0")) {
-				entries[0].Amount = fundingFeeAbs.Neg().String()
-				entries[1].Amount = fundingFeeAbs.String()
-			}
+			entries := buildFundingSettlementEntries(accounts, e.cfg.Asset, item.UserID, signedFee, fundingFeeAbs)
 			if err := e.ledger.Post(txCtx, ledgerdomain.PostingRequest{
 				LedgerTx: ledgerdomain.LedgerTx{
 					ID:             ledgerTxID,
@@ -179,11 +168,23 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 				return err
 			}
 			seenUsers[item.UserID] = struct{}{}
+			appliedCount++
 		}
 
 		batch.Status = BatchStatusApplied
 		batch.UpdatedAt = now
 		if err := e.repo.UpdateBatch(txCtx, batch); err != nil {
+			return err
+		}
+		if err := e.events.PublishBatchApplied(txCtx, BatchAppliedEvent{
+			FundingBatchID:  batch.ID,
+			Symbol:          batch.Symbol,
+			TimeWindowStart: batch.TimeWindowStart,
+			TimeWindowEnd:   batch.TimeWindowEnd,
+			NormalizedRate:  batch.NormalizedRate,
+			Status:          batch.Status,
+			AppliedCount:    appliedCount,
+		}); err != nil {
 			return err
 		}
 		result.Batch = batch
@@ -194,9 +195,37 @@ func (e *Executor) ApplyBatch(ctx context.Context, fundingBatchID string) (Apply
 		return nil
 	})
 	if err != nil {
+		if executionStarted {
+			if markErr := e.repo.MarkBatchFailed(ctx, fundingBatchID, now); markErr != nil {
+				return ApplyResult{}, fmt.Errorf("mark funding batch failed after apply error: %w: %v", err, markErr)
+			}
+		}
 		return ApplyResult{}, err
 	}
 	return result, nil
+}
+
+func buildFundingSettlementEntries(accounts FundingAccounts, asset string, userID uint64, signedFee decimalx.Decimal, feeAbs decimalx.Decimal) []ledgerdomain.LedgerEntry {
+	entries := []ledgerdomain.LedgerEntry{
+		{
+			AccountID: accounts.FundingPoolAccountID,
+			Asset:     asset,
+			Amount:    feeAbs.String(),
+			EntryType: "FUNDING_SETTLEMENT",
+		},
+		{
+			AccountID: accounts.UserPositionMarginAccountID,
+			UserID:    uint64Ptr(userID),
+			Asset:     asset,
+			Amount:    feeAbs.Neg().String(),
+			EntryType: "FUNDING_SETTLEMENT",
+		},
+	}
+	if signedFee.GreaterThan(decimalx.MustFromString("0")) {
+		entries[0].Amount = feeAbs.Neg().String()
+		entries[1].Amount = feeAbs.String()
+	}
+	return entries
 }
 
 func uint64Ptr(v uint64) *uint64 { return &v }

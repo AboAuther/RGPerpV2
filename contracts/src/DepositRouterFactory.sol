@@ -26,13 +26,13 @@ contract DepositRouterFactory {
 
     function createRouter(uint256 userId, bytes32 salt) external onlyOwner returns (address router) {
         require(routerOfUser[userId] == address(0), "ROUTER_EXISTS");
-        router = address(new DepositRouter{salt: salt}(userId, vault, token));
+        router = address(new DepositRouter{salt: salt}(userId, vault, token, owner));
         routerOfUser[userId] = router;
         emit RouterCreated(userId, router, salt);
     }
 
     function predictRouter(uint256 userId, bytes32 salt) external view returns (address predicted) {
-        bytes memory bytecode = abi.encodePacked(type(DepositRouter).creationCode, abi.encode(userId, vault, token));
+        bytes memory bytecode = abi.encodePacked(type(DepositRouter).creationCode, abi.encode(userId, vault, token, owner));
         bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(bytecode)));
         predicted = address(uint160(uint256(hash)));
     }

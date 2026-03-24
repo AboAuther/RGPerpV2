@@ -3,6 +3,7 @@ package wallet
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/authx"
@@ -401,6 +402,55 @@ func (s *Service) ApproveWithdraw(ctx context.Context, input ApproveWithdrawInpu
 	return s.withdraws.UpdateStatus(ctx, input.WithdrawID, []string{StatusHold, StatusRiskReview}, StatusApproved)
 }
 
+func (s *Service) ReturnWithdrawToReview(ctx context.Context, input ReturnWithdrawToReviewInput) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
+	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
+	if err != nil {
+		return err
+	}
+	if withdraw.Status == StatusRiskReview {
+		return nil
+	}
+	if strings.TrimSpace(withdraw.BroadcastTxHash) != "" {
+		return fmt.Errorf("%w: broadcasted withdraw cannot return to review", errorsx.ErrConflict)
+	}
+	return s.withdraws.UpdateStatusDetailed(
+		ctx,
+		input.WithdrawID,
+		[]string{StatusHold, StatusApproved, StatusSigning, StatusFailed},
+		StatusRiskReview,
+		nil,
+		true,
+	)
+}
+
+func (s *Service) FailWithdraw(ctx context.Context, input FailWithdrawInput) error {
+	if err := s.ensureWritable(); err != nil {
+		return err
+	}
+	withdraw, err := s.withdraws.GetByID(ctx, input.WithdrawID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(withdraw.BroadcastTxHash) != "" {
+		return fmt.Errorf("%w: broadcasted withdraw cannot be failed before settlement", errorsx.ErrConflict)
+	}
+	riskFlag := strings.TrimSpace(input.RiskFlag)
+	if riskFlag == "" {
+		riskFlag = withdraw.RiskFlag
+	}
+	return s.withdraws.UpdateStatusDetailed(
+		ctx,
+		input.WithdrawID,
+		[]string{StatusApproved, StatusSigning, StatusRiskReview},
+		StatusFailed,
+		&riskFlag,
+		true,
+	)
+}
+
 func (s *Service) GenerateDepositAddress(ctx context.Context, input GenerateDepositAddressInput) (DepositAddress, error) {
 	if err := s.ensureWritable(); err != nil {
 		return DepositAddress{}, err
@@ -510,7 +560,7 @@ func (s *Service) MarkWithdrawBroadcasted(ctx context.Context, input BroadcastWi
 		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusApproved, StatusSigning}, StatusBroadcasted); err != nil {
 			return err
 		}
-		return s.withdraws.MarkBroadcasted(txCtx, withdraw.WithdrawID, input.TxHash)
+		return s.withdraws.MarkBroadcasted(txCtx, withdraw.WithdrawID, input.TxHash, input.BroadcastNonce)
 	})
 }
 
@@ -580,16 +630,15 @@ func (s *Service) RefundWithdraw(ctx context.Context, input RefundWithdrawInput)
 		if err != nil {
 			return err
 		}
-		switch withdraw.Status {
-		case StatusHold, StatusRequested, StatusApproved, StatusRiskReview:
-			if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+		postRefund := func(idempotencyKey string) error {
+			return s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
 				LedgerTx: ledgerdomain.LedgerTx{
 					ID:             s.idgen.NewID("ldg"),
 					EventID:        s.idgen.NewID("evt"),
 					BizType:        "WITHDRAW_REFUND",
 					BizRefID:       withdraw.WithdrawID,
 					Asset:          withdraw.Asset,
-					IdempotencyKey: input.IdempotencyKey,
+					IdempotencyKey: idempotencyKey,
 					OperatorType:   "system",
 					OperatorID:     "wallet",
 					TraceID:        input.TraceID,
@@ -600,10 +649,14 @@ func (s *Service) RefundWithdraw(ctx context.Context, input RefundWithdrawInput)
 					{AccountID: userWalletID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_REFUND_IN"},
 					{AccountID: holdID, Asset: withdraw.Asset, Amount: negate(withdraw.Amount), EntryType: "WITHDRAW_REFUND_OUT"},
 				},
-			}); err != nil {
+			})
+		}
+		switch withdraw.Status {
+		case StatusHold, StatusRequested, StatusApproved, StatusRiskReview, StatusSigning:
+			if err := postRefund(input.IdempotencyKey); err != nil {
 				return err
 			}
-		case StatusBroadcasted, StatusFailed:
+		case StatusBroadcasted:
 			inTransitID, err := s.accountResolver.WithdrawInTransitAccountID(txCtx, withdraw.Asset)
 			if err != nil {
 				return err
@@ -638,31 +691,53 @@ func (s *Service) RefundWithdraw(ctx context.Context, input RefundWithdrawInput)
 			}); err != nil {
 				return err
 			}
-			if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
-				LedgerTx: ledgerdomain.LedgerTx{
-					ID:             s.idgen.NewID("ldg"),
-					EventID:        s.idgen.NewID("evt"),
-					BizType:        "WITHDRAW_REFUND",
-					BizRefID:       withdraw.WithdrawID,
-					Asset:          withdraw.Asset,
-					IdempotencyKey: input.IdempotencyKey + ":refund",
-					OperatorType:   "system",
-					OperatorID:     "wallet",
-					TraceID:        input.TraceID,
-					Status:         "COMMITTED",
-					CreatedAt:      s.clock.Now(),
-				},
-				Entries: []ledgerdomain.LedgerEntry{
-					{AccountID: userWalletID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_REFUND_IN"},
-					{AccountID: holdID, Asset: withdraw.Asset, Amount: negate(withdraw.Amount), EntryType: "WITHDRAW_REFUND_OUT"},
-				},
-			}); err != nil {
+			if err := postRefund(input.IdempotencyKey + ":refund"); err != nil {
+				return err
+			}
+		case StatusFailed:
+			if strings.TrimSpace(withdraw.BroadcastTxHash) != "" {
+				inTransitID, err := s.accountResolver.WithdrawInTransitAccountID(txCtx, withdraw.Asset)
+				if err != nil {
+					return err
+				}
+				feeID, err := s.accountResolver.WithdrawFeeAccountID(txCtx, withdraw.Asset)
+				if err != nil {
+					return err
+				}
+				netAmount, err := subtract(withdraw.Amount, withdraw.FeeAmount)
+				if err != nil {
+					return err
+				}
+				if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+					LedgerTx: ledgerdomain.LedgerTx{
+						ID:             s.idgen.NewID("ldg"),
+						EventID:        s.idgen.NewID("evt"),
+						BizType:        "WITHDRAW_REFUND_REVERSAL",
+						BizRefID:       withdraw.WithdrawID,
+						Asset:          withdraw.Asset,
+						IdempotencyKey: input.IdempotencyKey + ":reversal",
+						OperatorType:   "system",
+						OperatorID:     "wallet",
+						TraceID:        input.TraceID,
+						Status:         "COMMITTED",
+						CreatedAt:      s.clock.Now(),
+					},
+					Entries: []ledgerdomain.LedgerEntry{
+						{AccountID: holdID, Asset: withdraw.Asset, Amount: withdraw.Amount, EntryType: "WITHDRAW_HOLD_RESTORE"},
+						{AccountID: inTransitID, Asset: withdraw.Asset, Amount: negate(netAmount), EntryType: "WITHDRAW_IN_TRANSIT_REVERSE"},
+						{AccountID: feeID, Asset: withdraw.Asset, Amount: negate(withdraw.FeeAmount), EntryType: "WITHDRAW_FEE_REVERSE"},
+					},
+				}); err != nil {
+					return err
+				}
+			}
+			if err := postRefund(input.IdempotencyKey + ":refund"); err != nil {
 				return err
 			}
 		default:
 			return fmt.Errorf("%w: withdraw cannot be refunded from current state", errorsx.ErrConflict)
 		}
-		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusHold, StatusBroadcasted, StatusFailed}, StatusRefunded); err != nil {
+		if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{StatusHold, StatusApproved, StatusRiskReview, StatusSigning, StatusBroadcasted, StatusFailed, StatusRequested}, StatusRefunded); err != nil {
 			return err
 		}
 		return s.withdraws.MarkRefunded(txCtx, withdraw.WithdrawID)

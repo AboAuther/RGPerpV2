@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, LoginRequiredCard, MetricCard, PageIntro, StatusTag, TwoColumnRow } from '../../shared/components';
 import type { AccountSummary, BalanceItem, RiskSnapshot } from '../../shared/domain';
-import { formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
+import { formatDecimalAdaptive, formatPercent, formatSignedUsd, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 import { useAuth } from '../../shared/auth';
 
@@ -13,6 +13,16 @@ interface PortfolioState {
   summary: AccountSummary;
   balances: BalanceItem[];
   risk: RiskSnapshot;
+}
+
+function formatRiskNote(note: string): string {
+  const snapshotMatch = note.match(/权益=([0-9.]+)\s*,\s*维持保证金=([0-9.]+)\s*,\s*风险率=([0-9.]+)/);
+  if (snapshotMatch) {
+    const [, equity, maintenanceMargin, marginRatio] = snapshotMatch;
+    return `最新风险快照：权益 ${formatUsd(equity)}，维持保证金 ${formatUsd(maintenanceMargin)}，风险率 ${formatPercent(marginRatio)}。`;
+  }
+
+  return note.replace(/\d+\.\d{6,}/g, (value) => formatDecimalAdaptive(value, 6, 2));
 }
 
 export function PortfolioPage() {
@@ -100,7 +110,7 @@ export function PortfolioPage() {
             description={
               <Space direction="vertical" size={2}>
                 {state.risk.notes.map((note) => (
-                  <Text key={note}>{note}</Text>
+                  <Text key={note}>{formatRiskNote(note)}</Text>
                 ))}
                 {state.risk.mark_price_stale ? <Text>标记价格延迟，系统应禁止新增风险。</Text> : null}
               </Space>

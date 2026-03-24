@@ -8,12 +8,15 @@ const (
 	StatusAborted       = "ABORTED"
 	StatusPendingManual = "PENDING_MANUAL"
 
-	ModeFull = "FULL"
+	ModeFull     = "FULL"
+	ModeIsolated = "ISOLATED"
 )
 
 type ExecuteInput struct {
 	LiquidationID         string
 	UserID                uint64
+	Mode                  string
+	PositionID            string
 	TriggerRiskSnapshotID uint64
 	TraceID               string
 }
@@ -56,6 +59,7 @@ type PositionSnapshot struct {
 	SymbolID          uint64 `json:"symbol_id"`
 	Symbol            string `json:"symbol"`
 	Side              string `json:"side"`
+	MarginMode        string `json:"margin_mode"`
 	Qty               string `json:"qty"`
 	AvgEntryPrice     string `json:"avg_entry_price"`
 	MarkPrice         string `json:"mark_price"`
@@ -125,6 +129,7 @@ type Position struct {
 	SymbolID           uint64
 	Symbol             string
 	Side               string
+	MarginMode         string
 	Qty                string
 	AvgEntryPrice      string
 	MarkPrice          string
@@ -149,6 +154,7 @@ type RiskIncreaseOrder struct {
 	SymbolID      uint64
 	Symbol        string
 	Side          string
+	MarginMode    string
 	Qty           string
 	FrozenMargin  string
 	Status        string
@@ -162,6 +168,7 @@ type OrderRecord struct {
 	UserID         uint64
 	SymbolID       uint64
 	Side           string
+	MarginMode     string
 	PositionEffect string
 	Type           string
 	TimeInForce    string

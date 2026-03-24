@@ -23,7 +23,7 @@ func NewFundingRepository(db *gorm.DB) *FundingRepository {
 func (r *FundingRepository) ListSymbolsForFunding(ctx context.Context) ([]fundingdomain.Symbol, error) {
 	var models []SymbolModel
 	if err := DB(ctx, r.db).
-		Where("asset_class = ? AND status IN ?", "CRYPTO", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).
+		Where("status IN ?", []string{"TRADING", "REDUCE_ONLY", "PAUSED"}).
 		Order("symbol ASC").
 		Find(&models).Error; err != nil {
 		return nil, err
@@ -37,7 +37,7 @@ func (r *FundingRepository) ListSymbolsForFunding(ctx context.Context) ([]fundin
 	}
 	var mappingModels []SymbolMappingModel
 	if err := DB(ctx, r.db).
-		Where("symbol_id IN ? AND source_name IN ?", ids, []string{"binance", "hyperliquid"}).
+		Where("symbol_id IN ? AND source_name IN ? AND status = ?", ids, []string{"binance", "hyperliquid"}, "ACTIVE").
 		Order("symbol_id ASC, source_name ASC").
 		Find(&mappingModels).Error; err != nil {
 		return nil, err
@@ -52,15 +52,39 @@ func (r *FundingRepository) ListSymbolsForFunding(ctx context.Context) ([]fundin
 	}
 	out := make([]fundingdomain.Symbol, 0, len(models))
 	for _, model := range models {
+		mappings := mappingsBySymbol[model.ID]
+		if len(mappings) == 0 {
+			continue
+		}
 		out = append(out, fundingdomain.Symbol{
 			ID:         model.ID,
 			Symbol:     model.Symbol,
 			AssetClass: model.AssetClass,
 			Status:     model.Status,
-			Mappings:   mappingsBySymbol[model.ID],
+			Mappings:   mappings,
 		})
 	}
 	return out, nil
+}
+
+func (r *FundingRepository) DowngradeSymbolToReduceOnly(ctx context.Context, symbolID uint64) (bool, error) {
+	result := DB(ctx, r.db).Model(&SymbolModel{}).
+		Where("id = ? AND status = ?", symbolID, "TRADING").
+		Update("status", "REDUCE_ONLY")
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func (r *FundingRepository) RestoreSymbolToTrading(ctx context.Context, symbolID uint64) (bool, error) {
+	result := DB(ctx, r.db).Model(&SymbolModel{}).
+		Where("id = ? AND status = ?", symbolID, "REDUCE_ONLY").
+		Update("status", "TRADING")
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (r *FundingRepository) GetBatchByWindow(ctx context.Context, symbolID uint64, start time.Time, end time.Time) (fundingdomain.Batch, error) {
@@ -76,13 +100,13 @@ func (r *FundingRepository) GetBatchByWindow(ctx context.Context, symbolID uint6
 	return toFundingBatchDomain(model), nil
 }
 
-func (r *FundingRepository) ListReadyBatches(ctx context.Context, limit int) ([]fundingdomain.Batch, error) {
+func (r *FundingRepository) ListExecutableBatches(ctx context.Context, limit int) ([]fundingdomain.Batch, error) {
 	if limit <= 0 {
 		limit = 100
 	}
 	var models []FundingBatchModel
 	if err := DB(ctx, r.db).
-		Where("status = ?", fundingdomain.BatchStatusReady).
+		Where("status IN ?", []string{fundingdomain.BatchStatusReady, fundingdomain.BatchStatusApplying, fundingdomain.BatchStatusFailed}).
 		Order("time_window_end ASC, id ASC").
 		Limit(limit).
 		Find(&models).Error; err != nil {
@@ -187,6 +211,9 @@ func (r *FundingRepository) CreateBatch(ctx context.Context, batch fundingdomain
 		NormalizedRate:  batch.NormalizedRate,
 		SettlementPrice: batch.SettlementPrice,
 		Status:          batch.Status,
+		ReversedAt:      batch.ReversedAt,
+		ReversedBy:      batch.ReversedBy,
+		ReversalReason:  batch.ReversalReason,
 		CreatedAt:       batch.CreatedAt,
 		UpdatedAt:       batch.UpdatedAt,
 	}).Error
@@ -196,9 +223,28 @@ func (r *FundingRepository) UpdateBatch(ctx context.Context, batch fundingdomain
 	return DB(ctx, r.db).Model(&FundingBatchModel{}).
 		Where("funding_batch_id = ?", batch.ID).
 		Updates(map[string]any{
-			"status":     batch.Status,
-			"updated_at": batch.UpdatedAt.UTC(),
+			"status":          batch.Status,
+			"reversed_at":     batch.ReversedAt,
+			"reversed_by":     batch.ReversedBy,
+			"reversal_reason": batch.ReversalReason,
+			"updated_at":      batch.UpdatedAt.UTC(),
 		}).Error
+}
+
+func (r *FundingRepository) MarkBatchFailed(ctx context.Context, fundingBatchID string, failedAt time.Time) error {
+	return DB(ctx, r.db).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&FundingBatchModel{}).
+			Where("funding_batch_id = ? AND status <> ?", fundingBatchID, fundingdomain.BatchStatusApplied).
+			Updates(map[string]any{
+				"status":     fundingdomain.BatchStatusFailed,
+				"updated_at": failedAt.UTC(),
+			}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&FundingBatchItemModel{}).
+			Where("funding_batch_id = ? AND status <> ?", fundingBatchID, fundingdomain.ItemStatusApplied).
+			Update("status", fundingdomain.ItemStatusFailed).Error
+	})
 }
 
 func (r *FundingRepository) CreateBatchItems(ctx context.Context, items []fundingdomain.BatchItem) error {
@@ -208,13 +254,15 @@ func (r *FundingRepository) CreateBatchItems(ctx context.Context, items []fundin
 	models := make([]FundingBatchItemModel, 0, len(items))
 	for _, item := range items {
 		models = append(models, FundingBatchItemModel{
-			FundingBatchID: item.FundingBatchID,
-			PositionID:     item.PositionID,
-			UserID:         item.UserID,
-			FundingFee:     item.FundingFee,
-			LedgerTxID:     item.LedgerTxID,
-			Status:         item.Status,
-			CreatedAt:      item.CreatedAt,
+			FundingBatchID:     item.FundingBatchID,
+			PositionID:         item.PositionID,
+			UserID:             item.UserID,
+			FundingFee:         item.FundingFee,
+			LedgerTxID:         item.LedgerTxID,
+			ReversalLedgerTxID: item.ReversalLedgerTxID,
+			Status:             item.Status,
+			CreatedAt:          item.CreatedAt,
+			ReversedAt:         item.ReversedAt,
 		})
 	}
 	return DB(ctx, r.db).Create(&models).Error
@@ -232,13 +280,15 @@ func (r *FundingRepository) ListBatchItemsForUpdate(ctx context.Context, funding
 	out := make([]fundingdomain.BatchItem, 0, len(models))
 	for _, model := range models {
 		out = append(out, fundingdomain.BatchItem{
-			FundingBatchID: model.FundingBatchID,
-			PositionID:     model.PositionID,
-			UserID:         model.UserID,
-			FundingFee:     model.FundingFee,
-			LedgerTxID:     model.LedgerTxID,
-			Status:         model.Status,
-			CreatedAt:      model.CreatedAt.UTC(),
+			FundingBatchID:     model.FundingBatchID,
+			PositionID:         model.PositionID,
+			UserID:             model.UserID,
+			FundingFee:         model.FundingFee,
+			LedgerTxID:         model.LedgerTxID,
+			ReversalLedgerTxID: model.ReversalLedgerTxID,
+			Status:             model.Status,
+			CreatedAt:          model.CreatedAt.UTC(),
+			ReversedAt:         model.ReversedAt,
 		})
 	}
 	return out, nil
@@ -248,8 +298,10 @@ func (r *FundingRepository) UpdateBatchItem(ctx context.Context, item fundingdom
 	return DB(ctx, r.db).Model(&FundingBatchItemModel{}).
 		Where("funding_batch_id = ? AND position_id = ?", item.FundingBatchID, item.PositionID).
 		Updates(map[string]any{
-			"ledger_tx_id": item.LedgerTxID,
-			"status":       item.Status,
+			"ledger_tx_id":          item.LedgerTxID,
+			"reversal_ledger_tx_id": item.ReversalLedgerTxID,
+			"status":                item.Status,
+			"reversed_at":           item.ReversedAt,
 		}).Error
 }
 
@@ -335,6 +387,9 @@ func toFundingBatchDomain(model FundingBatchModel) fundingdomain.Batch {
 		NormalizedRate:  model.NormalizedRate,
 		SettlementPrice: model.SettlementPrice,
 		Status:          model.Status,
+		ReversedAt:      model.ReversedAt,
+		ReversedBy:      model.ReversedBy,
+		ReversalReason:  model.ReversalReason,
 		CreatedAt:       model.CreatedAt,
 		UpdatedAt:       model.UpdatedAt,
 	}

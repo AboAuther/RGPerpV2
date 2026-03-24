@@ -60,6 +60,12 @@ function mapTradingViewSymbol(symbol: string) {
       return 'BINANCE:SOLUSDT.P';
     case 'XAUUSD-USDC':
       return 'OANDA:XAUUSD';
+    case 'AAPL-USDC':
+      return 'NASDAQ:AAPL';
+    case 'NVDA-USDC':
+      return 'NASDAQ:NVDA';
+    case 'TSLA-USDC':
+      return 'NASDAQ:TSLA';
     default: {
       const normalized = symbol.replace(/-(USDC|PERP)$/i, '').toUpperCase();
       if (/^[A-Z0-9]+$/.test(normalized)) {

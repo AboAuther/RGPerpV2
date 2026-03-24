@@ -40,6 +40,14 @@ func IsReviewRequired(err error) bool {
 	return errors.As(err, &target)
 }
 
+func ReviewRequiredReason(err error) string {
+	var target ReviewRequiredError
+	if errors.As(err, &target) {
+		return strings.TrimSpace(target.Reason)
+	}
+	return ""
+}
+
 type VaultWithdrawChainConfig struct {
 	ChainID      int64
 	RPCURL       string
@@ -49,6 +57,7 @@ type VaultWithdrawChainConfig struct {
 
 type VaultWithdrawExecutor struct {
 	privateKey *ecdsa.PrivateKey
+	signer     common.Address
 	clients    map[int64]*ethclient.Client
 	chains     map[int64]VaultWithdrawChainConfig
 }
@@ -64,6 +73,7 @@ func NewVaultWithdrawExecutor(privateKeyHex string, chains []VaultWithdrawChainC
 	}
 	out := &VaultWithdrawExecutor{
 		privateKey: privateKey,
+		signer:     crypto.PubkeyToAddress(privateKey.PublicKey),
 		clients:    make(map[int64]*ethclient.Client, len(chains)),
 		chains:     make(map[int64]VaultWithdrawChainConfig, len(chains)),
 	}
@@ -139,7 +149,23 @@ func (e *VaultWithdrawExecutor) VaultBalance(ctx context.Context, chainID int64)
 	return decimal.NewFromBigInt(balance, -6).String(), nil
 }
 
-func (e *VaultWithdrawExecutor) ExecuteWithdrawal(ctx context.Context, chainID int64, toAddress string, amount string, withdrawID string) (string, error) {
+func (e *VaultWithdrawExecutor) SignerAddress() string {
+	return e.signer.Hex()
+}
+
+func (e *VaultWithdrawExecutor) NextNonce(ctx context.Context, chainID int64) (uint64, error) {
+	client, _, err := e.client(chainID)
+	if err != nil {
+		return 0, ReviewRequiredError{Reason: err.Error()}
+	}
+	nonce, err := client.PendingNonceAt(ctx, e.signer)
+	if err != nil {
+		return 0, ReviewRequiredError{Reason: "chain_signer_unavailable"}
+	}
+	return nonce, nil
+}
+
+func (e *VaultWithdrawExecutor) ExecuteWithdrawal(ctx context.Context, chainID int64, toAddress string, amount string, withdrawID string, nonce uint64) (string, error) {
 	client, chain, err := e.client(chainID)
 	if err != nil {
 		return "", err
@@ -193,7 +219,7 @@ func (e *VaultWithdrawExecutor) ExecuteWithdrawal(ctx context.Context, chainID i
 	}
 	unsignedTx := types.NewTx(&types.DynamicFeeTx{
 		ChainID:   big.NewInt(chainID),
-		Nonce:     auth.Nonce,
+		Nonce:     nonce,
 		GasTipCap: auth.GasTipCap,
 		GasFeeCap: auth.GasFeeCap,
 		Gas:       gasLimit,
@@ -213,7 +239,6 @@ func (e *VaultWithdrawExecutor) ExecuteWithdrawal(ctx context.Context, chainID i
 
 type txAuth struct {
 	From      common.Address
-	Nonce     uint64
 	GasTipCap *big.Int
 	GasFeeCap *big.Int
 	Signer    func(common.Address, *types.Transaction) (*types.Transaction, error)
@@ -221,10 +246,6 @@ type txAuth struct {
 
 func bindKeyedTx(ctx context.Context, privateKey *ecdsa.PrivateKey, chainID int64, client *ethclient.Client) (txAuth, error) {
 	from := crypto.PubkeyToAddress(privateKey.PublicKey)
-	nonce, err := client.PendingNonceAt(ctx, from)
-	if err != nil {
-		return txAuth{}, err
-	}
 	gasTipCap, err := client.SuggestGasTipCap(ctx)
 	if err != nil {
 		return txAuth{}, err
@@ -237,7 +258,6 @@ func bindKeyedTx(ctx context.Context, privateKey *ecdsa.PrivateKey, chainID int6
 	gasFeeCap := new(big.Int).Add(gasTipCap, new(big.Int).Mul(header.BaseFee, big.NewInt(2)))
 	return txAuth{
 		From:      from,
-		Nonce:     nonce,
 		GasTipCap: gasTipCap,
 		GasFeeCap: gasFeeCap,
 		Signer: func(addr common.Address, tx *types.Transaction) (*types.Transaction, error) {

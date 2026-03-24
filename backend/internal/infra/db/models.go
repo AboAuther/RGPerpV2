@@ -185,8 +185,8 @@ func (MessageConsumptionModel) TableName() string { return "message_consumptions
 type DepositAddressModel struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement"`
 	UserID    uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_user_chain_asset;index"`
-	ChainID   int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_user_chain_asset"`
-	Address   string    `gorm:"column:address;size:64;not null;uniqueIndex:uk_chain_address"`
+	ChainID   int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_user_chain_asset;uniqueIndex:uk_chain_address,priority:1"`
+	Address   string    `gorm:"column:address;size:64;not null;uniqueIndex:uk_chain_address,priority:2"`
 	Asset     string    `gorm:"column:asset;size:32;not null;uniqueIndex:uk_user_chain_asset"`
 	Status    string    `gorm:"column:status;size:32;not null"`
 	CreatedAt time.Time `gorm:"column:created_at;not null"`
@@ -235,6 +235,17 @@ type WithdrawRequestModel struct {
 }
 
 func (WithdrawRequestModel) TableName() string { return "withdraw_requests" }
+
+type SignerNonceStateModel struct {
+	ID            uint64    `gorm:"primaryKey;autoIncrement"`
+	ChainID       int64     `gorm:"column:chain_id;not null;uniqueIndex:uk_signer_nonce_state,priority:1"`
+	SignerAddress string    `gorm:"column:signer_address;size:64;not null;uniqueIndex:uk_signer_nonce_state,priority:2"`
+	NextNonce     int64     `gorm:"column:next_nonce;not null"`
+	CreatedAt     time.Time `gorm:"column:created_at;not null"`
+	UpdatedAt     time.Time `gorm:"column:updated_at;not null"`
+}
+
+func (SignerNonceStateModel) TableName() string { return "signer_nonce_states" }
 
 type SymbolModel struct {
 	ID                 uint64    `gorm:"primaryKey;autoIncrement"`
@@ -321,6 +332,8 @@ type OrderModel struct {
 	Qty                 string    `gorm:"column:qty;type:decimal(38,18);not null"`
 	FilledQty           string    `gorm:"column:filled_qty;type:decimal(38,18);not null"`
 	AvgFillPrice        string    `gorm:"column:avg_fill_price;type:decimal(38,18);not null"`
+	Leverage            string    `gorm:"column:leverage;type:decimal(38,18);not null;default:1"`
+	MarginMode          string    `gorm:"column:margin_mode;size:16;not null;default:CROSS"`
 	ReduceOnly          bool      `gorm:"column:reduce_only;not null"`
 	MaxSlippageBps      int       `gorm:"column:max_slippage_bps;not null"`
 	Status              string    `gorm:"column:status;size:32;not null;index"`
@@ -354,13 +367,15 @@ func (FillModel) TableName() string { return "fills" }
 type PositionModel struct {
 	ID                uint64    `gorm:"primaryKey;autoIncrement"`
 	PositionID        string    `gorm:"column:position_id;size:64;uniqueIndex;not null"`
-	UserID            uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_positions_user_symbol_side,priority:1"`
-	SymbolID          uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_positions_user_symbol_side,priority:2"`
-	Side              string    `gorm:"column:side;size:16;not null;uniqueIndex:uk_positions_user_symbol_side,priority:3"`
+	UserID            uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_positions_user_symbol_side_mode,priority:1"`
+	SymbolID          uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_positions_user_symbol_side_mode,priority:2"`
+	Side              string    `gorm:"column:side;size:16;not null;uniqueIndex:uk_positions_user_symbol_side_mode,priority:3"`
+	MarginMode        string    `gorm:"column:margin_mode;size:16;not null;default:CROSS;uniqueIndex:uk_positions_user_symbol_side_mode,priority:4"`
 	Qty               string    `gorm:"column:qty;type:decimal(38,18);not null"`
 	AvgEntryPrice     string    `gorm:"column:avg_entry_price;type:decimal(38,18);not null"`
 	MarkPrice         string    `gorm:"column:mark_price;type:decimal(38,18);not null"`
 	Notional          string    `gorm:"column:notional;type:decimal(38,18);not null"`
+	Leverage          string    `gorm:"column:leverage;type:decimal(38,18);not null;default:1"`
 	InitialMargin     string    `gorm:"column:initial_margin;type:decimal(38,18);not null"`
 	MaintenanceMargin string    `gorm:"column:maintenance_margin;type:decimal(38,18);not null"`
 	RealizedPnL       string    `gorm:"column:realized_pnl;type:decimal(38,18);not null"`
@@ -428,16 +443,19 @@ type LiquidationItemModel struct {
 func (LiquidationItemModel) TableName() string { return "liquidation_items" }
 
 type FundingBatchModel struct {
-	ID              uint64    `gorm:"primaryKey;autoIncrement"`
-	FundingBatchID  string    `gorm:"column:funding_batch_id;size:64;uniqueIndex;not null"`
-	SymbolID        uint64    `gorm:"column:symbol_id;not null;uniqueIndex:uk_funding_symbol_window,priority:1"`
-	TimeWindowStart time.Time `gorm:"column:time_window_start;not null;uniqueIndex:uk_funding_symbol_window,priority:2"`
-	TimeWindowEnd   time.Time `gorm:"column:time_window_end;not null;uniqueIndex:uk_funding_symbol_window,priority:3"`
-	NormalizedRate  string    `gorm:"column:normalized_rate;type:decimal(38,18);not null"`
-	SettlementPrice string    `gorm:"column:settlement_price;type:decimal(38,18);not null"`
-	Status          string    `gorm:"column:status;size:32;not null"`
-	CreatedAt       time.Time `gorm:"column:created_at;not null"`
-	UpdatedAt       time.Time `gorm:"column:updated_at;not null"`
+	ID              uint64     `gorm:"primaryKey;autoIncrement"`
+	FundingBatchID  string     `gorm:"column:funding_batch_id;size:64;uniqueIndex;not null"`
+	SymbolID        uint64     `gorm:"column:symbol_id;not null;uniqueIndex:uk_funding_symbol_window,priority:1"`
+	TimeWindowStart time.Time  `gorm:"column:time_window_start;not null;uniqueIndex:uk_funding_symbol_window,priority:2"`
+	TimeWindowEnd   time.Time  `gorm:"column:time_window_end;not null;uniqueIndex:uk_funding_symbol_window,priority:3"`
+	NormalizedRate  string     `gorm:"column:normalized_rate;type:decimal(38,18);not null"`
+	SettlementPrice string     `gorm:"column:settlement_price;type:decimal(38,18);not null"`
+	Status          string     `gorm:"column:status;size:32;not null"`
+	ReversedAt      *time.Time `gorm:"column:reversed_at"`
+	ReversedBy      *string    `gorm:"column:reversed_by;size:64"`
+	ReversalReason  *string    `gorm:"column:reversal_reason;size:255"`
+	CreatedAt       time.Time  `gorm:"column:created_at;not null"`
+	UpdatedAt       time.Time  `gorm:"column:updated_at;not null"`
 }
 
 func (FundingBatchModel) TableName() string { return "funding_batches" }
@@ -457,14 +475,16 @@ type FundingRateSnapshotModel struct {
 func (FundingRateSnapshotModel) TableName() string { return "funding_rate_snapshots" }
 
 type FundingBatchItemModel struct {
-	ID             uint64    `gorm:"primaryKey;autoIncrement"`
-	FundingBatchID string    `gorm:"column:funding_batch_id;size:64;not null;uniqueIndex:uk_batch_position,priority:1"`
-	PositionID     string    `gorm:"column:position_id;size:64;not null;uniqueIndex:uk_batch_position,priority:2"`
-	UserID         uint64    `gorm:"column:user_id;not null;index"`
-	FundingFee     string    `gorm:"column:funding_fee;type:decimal(38,18);not null"`
-	LedgerTxID     *string   `gorm:"column:ledger_tx_id;size:64"`
-	Status         string    `gorm:"column:status;size:32;not null"`
-	CreatedAt      time.Time `gorm:"column:created_at;not null"`
+	ID                 uint64     `gorm:"primaryKey;autoIncrement"`
+	FundingBatchID     string     `gorm:"column:funding_batch_id;size:64;not null;uniqueIndex:uk_batch_position,priority:1"`
+	PositionID         string     `gorm:"column:position_id;size:64;not null;uniqueIndex:uk_batch_position,priority:2"`
+	UserID             uint64     `gorm:"column:user_id;not null;index"`
+	FundingFee         string     `gorm:"column:funding_fee;type:decimal(38,18);not null"`
+	LedgerTxID         *string    `gorm:"column:ledger_tx_id;size:64"`
+	ReversalLedgerTxID *string    `gorm:"column:reversal_ledger_tx_id;size:64"`
+	Status             string     `gorm:"column:status;size:32;not null"`
+	CreatedAt          time.Time  `gorm:"column:created_at;not null"`
+	ReversedAt         *time.Time `gorm:"column:reversed_at"`
 }
 
 func (FundingBatchItemModel) TableName() string { return "funding_batch_items" }
@@ -528,7 +548,7 @@ type HedgePositionModel struct {
 func (HedgePositionModel) TableName() string { return "hedge_positions" }
 
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(
+	if err := db.AutoMigrate(
 		&UserModel{},
 		&LoginNonceModel{},
 		&SessionModel{},
@@ -545,6 +565,7 @@ func Migrate(db *gorm.DB) error {
 		&DepositAddressModel{},
 		&DepositChainTxModel{},
 		&WithdrawRequestModel{},
+		&SignerNonceStateModel{},
 		&SymbolModel{},
 		&SymbolMappingModel{},
 		&RiskTierModel{},
@@ -563,5 +584,46 @@ func Migrate(db *gorm.DB) error {
 		&HedgeOrderModel{},
 		&HedgeFillModel{},
 		&HedgePositionModel{},
-	)
+	); err != nil {
+		return err
+	}
+	if err := ensureDepositAddressIndexes(db); err != nil {
+		return err
+	}
+	return ensurePositionMarginModeIndexes(db)
+}
+
+func ensureDepositAddressIndexes(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if migrator.HasIndex(&DepositAddressModel{}, "address") {
+		if err := migrator.DropIndex(&DepositAddressModel{}, "address"); err != nil {
+			return err
+		}
+	}
+	if migrator.HasIndex(&DepositAddressModel{}, "uk_deposit_addresses_chain_address") {
+		if err := migrator.DropIndex(&DepositAddressModel{}, "uk_deposit_addresses_chain_address"); err != nil {
+			return err
+		}
+	}
+	if migrator.HasIndex(&DepositAddressModel{}, "uk_chain_address") {
+		if err := migrator.DropIndex(&DepositAddressModel{}, "uk_chain_address"); err != nil {
+			return err
+		}
+	}
+	return migrator.CreateIndex(&DepositAddressModel{}, "uk_chain_address")
+}
+
+func ensurePositionMarginModeIndexes(db *gorm.DB) error {
+	migrator := db.Migrator()
+	if migrator.HasIndex(&PositionModel{}, "uk_positions_user_symbol_side") {
+		if err := migrator.DropIndex(&PositionModel{}, "uk_positions_user_symbol_side"); err != nil {
+			return err
+		}
+	}
+	if migrator.HasIndex(&PositionModel{}, "uk_positions_user_symbol_side_mode") {
+		if err := migrator.DropIndex(&PositionModel{}, "uk_positions_user_symbol_side_mode"); err != nil {
+			return err
+		}
+	}
+	return migrator.CreateIndex(&PositionModel{}, "uk_positions_user_symbol_side_mode")
 }

@@ -57,8 +57,10 @@ func TestServiceSyncOnce_AggregatesWeightedIndexAndMark(t *testing.T) {
 			},
 		},
 		catalogRepoStub{symbols: []Symbol{{
-			ID:     1,
-			Symbol: "BTC-PERP",
+			ID:         1,
+			Symbol:     "BTC-PERP",
+			AssetClass: "CRYPTO",
+			Status:     "TRADING",
 			Mappings: []SymbolMapping{
 				{SourceName: "binance", SourceSymbol: "BTCUSDC", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
 				{SourceName: "hyperliquid", SourceSymbol: "BTC", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
@@ -161,6 +163,7 @@ func TestServiceSyncOnce_RejectsWhenTwoSourcesSeverelyDiverge(t *testing.T) {
 		catalogRepoStub{symbols: []Symbol{{
 			ID:     1,
 			Symbol: "ETH-PERP",
+			Status: "TRADING",
 			Mappings: []SymbolMapping{
 				{SourceName: "binance", SourceSymbol: "ETHUSDC", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
 				{SourceName: "hyperliquid", SourceSymbol: "ETH", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
@@ -188,8 +191,8 @@ func TestServiceSyncOnce_RejectsWhenTwoSourcesSeverelyDiverge(t *testing.T) {
 	if len(snapshotRepo.marks) != 0 {
 		t.Fatalf("expected no mark snapshot, got %d", len(snapshotRepo.marks))
 	}
-	if len(snapshotRepo.states) != 1 || snapshotRepo.states[0].DesiredStatus != "REDUCE_ONLY" {
-		t.Fatalf("expected reduce-only runtime state, got %+v", snapshotRepo.states)
+	if len(snapshotRepo.states) != 0 {
+		t.Fatalf("expected no runtime state change on first divergence failure, got %+v", snapshotRepo.states)
 	}
 }
 
@@ -236,5 +239,175 @@ func TestServiceSyncOnce_SkipsMalformedQuotesInsteadOfPanicking(t *testing.T) {
 	}
 	if len(snapshotRepo.marks) != 1 || snapshotRepo.marks[0].IndexPrice != "100" {
 		t.Fatalf("expected valid source to keep aggregation alive, got %+v", snapshotRepo.marks)
+	}
+}
+
+func TestServiceSyncOnce_CryptoRequiresTwoHealthySources(t *testing.T) {
+	now := time.Date(2026, 3, 22, 16, 0, 0, 0, time.UTC)
+	snapshotRepo := &snapshotRepoStub{}
+	service, err := NewService(
+		AggregationConfig{
+			MaxSourceAge:     10 * time.Second,
+			MaxDeviationBps:  "200",
+			MinHealthySource: 1,
+			MarkClampBps:     "200",
+			SourceHealth: map[string]SourceHealth{
+				"binance": {Enabled: true, Weight: "1"},
+			},
+		},
+		catalogRepoStub{symbols: []Symbol{{
+			ID:         1,
+			Symbol:     "BTC-PERP",
+			AssetClass: "CRYPTO",
+			Status:     "TRADING",
+			Mappings: []SymbolMapping{
+				{SourceName: "binance", SourceSymbol: "BTCUSDC", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
+			},
+		}}},
+		snapshotRepo,
+		[]SourceClient{
+			sourceClientStub{name: "binance", quotes: map[string]SourceQuote{
+				"BTCUSDC": {SourceName: "binance", SourceSymbol: "BTCUSDC", Bid: "100", Ask: "100", Last: "100", QuoteVolume: "1000", SourceTS: now, ReceivedTS: now},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	if err := service.SyncOnce(context.Background(), now); err == nil {
+		t.Fatal("expected crypto aggregation to fail when fewer than 2 healthy sources are available")
+	}
+	if len(snapshotRepo.states) != 0 {
+		t.Fatalf("expected no runtime state change on first insufficient-source failure, got %+v", snapshotRepo.states)
+	}
+}
+
+func TestServiceSyncOnce_DegradesOnlyAfterConsecutiveFailures(t *testing.T) {
+	now := time.Date(2026, 3, 22, 16, 0, 0, 0, time.UTC)
+	snapshotRepo := &snapshotRepoStub{}
+	service, err := NewService(
+		AggregationConfig{
+			MaxSourceAge:     10 * time.Second,
+			MaxDeviationBps:  "200",
+			MinHealthySource: 1,
+			MarkClampBps:     "200",
+			SourceHealth: map[string]SourceHealth{
+				"binance": {Enabled: true, Weight: "1"},
+			},
+		},
+		catalogRepoStub{symbols: []Symbol{{
+			ID:         1,
+			Symbol:     "ADA-USDC",
+			AssetClass: "CRYPTO",
+			Status:     "TRADING",
+			Mappings: []SymbolMapping{
+				{SourceName: "binance", SourceSymbol: "ADAUSDC", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
+			},
+		}}},
+		snapshotRepo,
+		[]SourceClient{
+			sourceClientStub{name: "binance", quotes: map[string]SourceQuote{
+				"ADAUSDC": {SourceName: "binance", SourceSymbol: "ADAUSDC", Bid: "0.25", Ask: "0.25", Last: "0.25", QuoteVolume: "1000", SourceTS: now, ReceivedTS: now},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	if err := service.SyncOnce(context.Background(), now); err == nil {
+		t.Fatal("expected first sync to fail when only one healthy source is available")
+	}
+	if len(snapshotRepo.states) != 0 {
+		t.Fatalf("expected no runtime state change on first failure, got %+v", snapshotRepo.states)
+	}
+
+	if err := service.SyncOnce(context.Background(), now.Add(time.Second)); err == nil {
+		t.Fatal("expected second sync to fail when only one healthy source is available")
+	}
+	if len(snapshotRepo.states) != 1 || snapshotRepo.states[0].DesiredStatus != "REDUCE_ONLY" {
+		t.Fatalf("expected reduce-only runtime state after consecutive failures, got %+v", snapshotRepo.states)
+	}
+}
+
+func TestServiceSyncOnce_DoesNotAutoRestorePausedSymbol(t *testing.T) {
+	now := time.Date(2026, 3, 22, 16, 0, 0, 0, time.UTC)
+	snapshotRepo := &snapshotRepoStub{}
+	service, err := NewService(
+		AggregationConfig{
+			MaxSourceAge:     10 * time.Second,
+			MaxDeviationBps:  "200",
+			MinHealthySource: 1,
+			MarkClampBps:     "200",
+			SourceHealth: map[string]SourceHealth{
+				"binance": {Enabled: true, Weight: "1"},
+			},
+		},
+		catalogRepoStub{symbols: []Symbol{{
+			ID:         1,
+			Symbol:     "AAPL-USDC",
+			AssetClass: "EQUITY",
+			Status:     "PAUSED",
+			Mappings: []SymbolMapping{
+				{SourceName: "binance", SourceSymbol: "AAPLUSDT", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
+			},
+		}}},
+		snapshotRepo,
+		[]SourceClient{
+			sourceClientStub{name: "binance", quotes: map[string]SourceQuote{
+				"AAPLUSDT": {SourceName: "binance", SourceSymbol: "AAPLUSDT", Bid: "190", Ask: "190.1", Last: "190.05", QuoteVolume: "1000", SourceTS: now, ReceivedTS: now},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	if err := service.SyncOnce(context.Background(), now); err != nil {
+		t.Fatalf("sync once: %v", err)
+	}
+	if len(snapshotRepo.marks) != 1 {
+		t.Fatalf("expected one aggregated mark, got %d", len(snapshotRepo.marks))
+	}
+	if len(snapshotRepo.states) != 0 {
+		t.Fatalf("expected paused symbol to remain unmanaged by market-data, got %+v", snapshotRepo.states)
+	}
+}
+
+func TestServiceSyncOnce_NonCryptoAllowsSingleHealthySource(t *testing.T) {
+	now := time.Date(2026, 3, 22, 16, 0, 0, 0, time.UTC)
+	snapshotRepo := &snapshotRepoStub{}
+	service, err := NewService(
+		AggregationConfig{
+			MaxSourceAge:     10 * time.Second,
+			MaxDeviationBps:  "200",
+			MinHealthySource: 3,
+			MarkClampBps:     "200",
+			SourceHealth: map[string]SourceHealth{
+				"binance": {Enabled: true, Weight: "1"},
+			},
+		},
+		catalogRepoStub{symbols: []Symbol{{
+			ID:         1,
+			Symbol:     "XAUUSD-USDC",
+			AssetClass: "COMMODITY",
+			Mappings: []SymbolMapping{
+				{SourceName: "binance", SourceSymbol: "XAUUSDT", PriceScale: "1", QtyScale: "1", Status: "ACTIVE"},
+			},
+		}}},
+		snapshotRepo,
+		[]SourceClient{
+			sourceClientStub{name: "binance", quotes: map[string]SourceQuote{
+				"XAUUSDT": {SourceName: "binance", SourceSymbol: "XAUUSDT", Bid: "3000", Ask: "3001", Last: "3000.5", QuoteVolume: "1000", SourceTS: now, ReceivedTS: now},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	if err := service.SyncOnce(context.Background(), now); err != nil {
+		t.Fatalf("expected non-crypto aggregation to succeed with one healthy source: %v", err)
+	}
+	if len(snapshotRepo.marks) != 1 {
+		t.Fatalf("expected one aggregated mark, got %d", len(snapshotRepo.marks))
 	}
 }

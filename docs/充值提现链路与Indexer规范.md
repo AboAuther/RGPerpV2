@@ -83,6 +83,12 @@ BROADCASTED/CONFIRMING -> FAILED -> REFUNDED
 withdraw_id
 ```
 
+nonce 分配唯一键：
+
+```text
+chain_id + signer_address
+```
+
 链上交易跟踪键：
 
 ```text
@@ -96,6 +102,7 @@ chain_id + tx_hash
 - Indexer 必须可通过 `WithdrawExecuted` 事件回补；
 - 回补流程必须关联 `withdraw_id`；
 - 回补时不得重复落账。
+- `SIGNING` 状态必须视为“已预留 nonce 待收敛”，发送结果不确定时不得改回 `APPROVED` 重新分配新 nonce。
 
 ## 5. MQ 事件
 

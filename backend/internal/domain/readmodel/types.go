@@ -81,6 +81,24 @@ type AdminWithdrawReviewItem struct {
 	RiskFlag    *string `json:"risk_flag,omitempty"`
 	TxHash      *string `json:"tx_hash,omitempty"`
 	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
+}
+
+type AdminLiquidationItem struct {
+	LiquidationID         string  `json:"liquidation_id"`
+	UserID                uint64  `json:"user_id"`
+	UserAddress           string  `json:"user_address"`
+	Symbol                *string `json:"symbol,omitempty"`
+	Mode                  string  `json:"mode"`
+	Status                string  `json:"status"`
+	TriggerRiskSnapshotID uint64  `json:"trigger_risk_snapshot_id"`
+	PositionCount         int     `json:"position_count"`
+	PenaltyAmount         string  `json:"penalty_amount"`
+	InsuranceFundUsed     string  `json:"insurance_fund_used"`
+	BankruptAmount        string  `json:"bankrupt_amount"`
+	AbortReason           *string `json:"abort_reason,omitempty"`
+	CreatedAt             string  `json:"created_at"`
+	UpdatedAt             string  `json:"updated_at"`
 }
 
 type LedgerAssetOverview struct {
@@ -176,31 +194,54 @@ type RiskMonitorDashboard struct {
 }
 
 type AdminRiskRecalculationResult struct {
-	UserID            uint64  `json:"user_id"`
-	RiskSnapshotID    uint64  `json:"risk_snapshot_id"`
-	MarginRatio       string  `json:"margin_ratio"`
-	RiskLevel         string  `json:"risk_level"`
-	TriggeredBy       string  `json:"triggered_by"`
-	LiquidationID     *string `json:"liquidation_id,omitempty"`
-	LiquidationStatus *string `json:"liquidation_status,omitempty"`
+	UserID                 uint64  `json:"user_id"`
+	RiskSnapshotID         uint64  `json:"risk_snapshot_id"`
+	MarginRatio            string  `json:"margin_ratio"`
+	RiskLevel              string  `json:"risk_level"`
+	TriggeredBy            string  `json:"triggered_by"`
+	LiquidationID          *string `json:"liquidation_id,omitempty"`
+	LiquidationStatus      *string `json:"liquidation_status,omitempty"`
+	RecalculationRequestID *string `json:"recalculation_request_id,omitempty"`
+	RecalculationStatus    *string `json:"recalculation_status,omitempty"`
 }
 
 type RuntimeConfigSnapshotView struct {
-	SystemMode                        string `json:"system_mode"`
-	ReadOnly                          bool   `json:"read_only"`
-	ReduceOnly                        bool   `json:"reduce_only"`
-	TraceHeaderRequired               bool   `json:"trace_header_required"`
-	RiskGlobalBufferRatio             string `json:"risk_global_buffer_ratio"`
-	RiskMarkPriceStaleSec             int    `json:"risk_mark_price_stale_sec"`
-	RiskForceReduceOnlyOnStalePrice   bool   `json:"risk_force_reduce_only_on_stale_price"`
-	RiskLiquidationPenaltyRate        string `json:"risk_liquidation_penalty_rate"`
-	RiskLiquidationExtraSlippageBps   int    `json:"risk_liquidation_extra_slippage_bps"`
-	RiskMaxOpenOrdersPerUserPerSymbol int    `json:"risk_max_open_orders_per_user_per_symbol"`
-	RiskNetExposureHardLimit          string `json:"risk_net_exposure_hard_limit"`
-	RiskMaxExposureSlippageBps        int    `json:"risk_max_exposure_slippage_bps"`
-	HedgeEnabled                      bool   `json:"hedge_enabled"`
-	HedgeSoftThresholdRatio           string `json:"hedge_soft_threshold_ratio"`
-	HedgeHardThresholdRatio           string `json:"hedge_hard_threshold_ratio"`
+	SystemMode                        string                                   `json:"system_mode"`
+	ReadOnly                          bool                                     `json:"read_only"`
+	ReduceOnly                        bool                                     `json:"reduce_only"`
+	TraceHeaderRequired               bool                                     `json:"trace_header_required"`
+	MarketTakerFeeRate                string                                   `json:"market_taker_fee_rate"`
+	MarketMakerFeeRate                string                                   `json:"market_maker_fee_rate"`
+	MarketDefaultMaxSlippageBps       int                                      `json:"market_default_max_slippage_bps"`
+	RiskGlobalBufferRatio             string                                   `json:"risk_global_buffer_ratio"`
+	RiskMarkPriceStaleSec             int                                      `json:"risk_mark_price_stale_sec"`
+	RiskForceReduceOnlyOnStalePrice   bool                                     `json:"risk_force_reduce_only_on_stale_price"`
+	RiskLiquidationPenaltyRate        string                                   `json:"risk_liquidation_penalty_rate"`
+	RiskMaintenanceMarginUpliftRatio  string                                   `json:"risk_maintenance_margin_uplift_ratio"`
+	RiskLiquidationExtraSlippageBps   int                                      `json:"risk_liquidation_extra_slippage_bps"`
+	RiskMaxOpenOrdersPerUserPerSymbol int                                      `json:"risk_max_open_orders_per_user_per_symbol"`
+	RiskNetExposureHardLimit          string                                   `json:"risk_net_exposure_hard_limit"`
+	RiskMaxExposureSlippageBps        int                                      `json:"risk_max_exposure_slippage_bps"`
+	FundingIntervalSec                int                                      `json:"funding_interval_sec"`
+	FundingSourcePollIntervalSec      int                                      `json:"funding_source_poll_interval_sec"`
+	FundingCapRatePerHour             string                                   `json:"funding_cap_rate_per_hour"`
+	FundingMinValidSourceCount        int                                      `json:"funding_min_valid_source_count"`
+	FundingDefaultModelCrypto         string                                   `json:"funding_default_model_crypto"`
+	HedgeEnabled                      bool                                     `json:"hedge_enabled"`
+	HedgeSoftThresholdRatio           string                                   `json:"hedge_soft_threshold_ratio"`
+	HedgeHardThresholdRatio           string                                   `json:"hedge_hard_threshold_ratio"`
+	PairOverrides                     map[string]RuntimeConfigPairOverrideView `json:"pair_overrides,omitempty"`
+}
+
+type RuntimeConfigPairOverrideView struct {
+	MaxLeverage                  *string `json:"max_leverage,omitempty"`
+	SessionPolicy                *string `json:"session_policy,omitempty"`
+	TakerFeeRate                 *string `json:"taker_fee_rate,omitempty"`
+	MakerFeeRate                 *string `json:"maker_fee_rate,omitempty"`
+	DefaultMaxSlippageBps        *int    `json:"default_max_slippage_bps,omitempty"`
+	LiquidationPenaltyRate       *string `json:"liquidation_penalty_rate,omitempty"`
+	FundingIntervalSec           *int    `json:"funding_interval_sec,omitempty"`
+	MaintenanceMarginUpliftRatio *string `json:"maintenance_margin_uplift_ratio,omitempty"`
 }
 
 type RuntimeConfigHistoryItem struct {
@@ -236,12 +277,14 @@ type TransferItem struct {
 }
 
 type SymbolItem struct {
-	Symbol      string `json:"symbol"`
-	AssetClass  string `json:"asset_class"`
-	TickSize    string `json:"tick_size"`
-	StepSize    string `json:"step_size"`
-	MinNotional string `json:"min_notional"`
-	Status      string `json:"status"`
+	Symbol        string `json:"symbol"`
+	AssetClass    string `json:"asset_class"`
+	TickSize      string `json:"tick_size"`
+	StepSize      string `json:"step_size"`
+	MinNotional   string `json:"min_notional"`
+	MaxLeverage   string `json:"max_leverage"`
+	SessionPolicy string `json:"session_policy"`
+	Status        string `json:"status"`
 }
 
 type TickerItem struct {
@@ -255,6 +298,15 @@ type TickerItem struct {
 	TS         string `json:"ts"`
 }
 
+type FundingQuoteItem struct {
+	Symbol        string  `json:"symbol"`
+	EstimatedRate *string `json:"estimated_rate,omitempty"`
+	NextFundingAt string  `json:"next_funding_at"`
+	CountdownSec  int64   `json:"countdown_sec"`
+	Status        string  `json:"status"`
+	SourceCount   int     `json:"source_count"`
+}
+
 type OrderItem struct {
 	OrderID        string  `json:"order_id"`
 	ClientOrderID  string  `json:"client_order_id"`
@@ -265,6 +317,8 @@ type OrderItem struct {
 	Qty            string  `json:"qty"`
 	FilledQty      string  `json:"filled_qty"`
 	AvgFillPrice   string  `json:"avg_fill_price"`
+	Leverage       string  `json:"leverage"`
+	MarginMode     string  `json:"margin_mode"`
 	Price          *string `json:"price"`
 	TriggerPrice   *string `json:"trigger_price"`
 	ReduceOnly     bool    `json:"reduce_only"`
@@ -291,6 +345,8 @@ type PositionItem struct {
 	Qty               string `json:"qty"`
 	AvgEntryPrice     string `json:"avg_entry_price"`
 	MarkPrice         string `json:"mark_price"`
+	Leverage          string `json:"leverage"`
+	MarginMode        string `json:"margin_mode"`
 	InitialMargin     string `json:"initial_margin"`
 	MaintenanceMargin string `json:"maintenance_margin"`
 	RealizedPnL       string `json:"realized_pnl"`
@@ -308,6 +364,24 @@ type FundingItem struct {
 	Amount    string `json:"amount"`
 	SettledAt string `json:"settled_at"`
 	BatchID   string `json:"batch_id"`
+}
+
+type AdminFundingBatchItem struct {
+	FundingBatchID  string  `json:"funding_batch_id"`
+	Symbol          string  `json:"symbol"`
+	TimeWindowStart string  `json:"time_window_start"`
+	TimeWindowEnd   string  `json:"time_window_end"`
+	NormalizedRate  string  `json:"normalized_rate"`
+	SettlementPrice string  `json:"settlement_price"`
+	Status          string  `json:"status"`
+	AppliedCount    int     `json:"applied_count"`
+	FailedCount     int     `json:"failed_count"`
+	ReversedCount   int     `json:"reversed_count"`
+	ReversedAt      *string `json:"reversed_at,omitempty"`
+	ReversedBy      *string `json:"reversed_by,omitempty"`
+	ReversalReason  *string `json:"reversal_reason,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
 }
 
 type ExplorerEvent struct {

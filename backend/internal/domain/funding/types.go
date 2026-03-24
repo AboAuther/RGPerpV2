@@ -10,13 +10,19 @@ const (
 	BatchStatusApplying = "APPLYING"
 	BatchStatusApplied  = "APPLIED"
 	BatchStatusFailed   = "FAILED"
+	BatchStatusReversed = "REVERSED"
 
-	ItemStatusPending = "PENDING"
-	ItemStatusApplied = "APPLIED"
-	ItemStatusFailed  = "FAILED"
+	ItemStatusPending  = "PENDING"
+	ItemStatusApplied  = "APPLIED"
+	ItemStatusFailed   = "FAILED"
+	ItemStatusReversed = "REVERSED"
 
 	PositionSideLong  = "LONG"
 	PositionSideShort = "SHORT"
+)
+
+const (
+	FailureReasonInsufficientSources = "INSUFFICIENT_SOURCES"
 )
 
 type SourceRate struct {
@@ -92,18 +98,23 @@ type Batch struct {
 	NormalizedRate  string
 	SettlementPrice string
 	Status          string
+	ReversedAt      *time.Time
+	ReversedBy      *string
+	ReversalReason  *string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
 
 type BatchItem struct {
-	FundingBatchID string
-	PositionID     string
-	UserID         uint64
-	FundingFee     string
-	LedgerTxID     *string
-	Status         string
-	CreatedAt      time.Time
+	FundingBatchID     string
+	PositionID         string
+	UserID             uint64
+	FundingFee         string
+	LedgerTxID         *string
+	ReversalLedgerTxID *string
+	Status             string
+	CreatedAt          time.Time
+	ReversedAt         *time.Time
 }
 
 type FundingAccounts struct {
@@ -112,6 +123,11 @@ type FundingAccounts struct {
 }
 
 type ApplyResult struct {
+	Batch   Batch
+	UserIDs []uint64
+}
+
+type ReverseResult struct {
 	Batch   Batch
 	UserIDs []uint64
 }
@@ -131,4 +147,34 @@ type BuildBatchInput struct {
 	Sources         []SourceRate
 	Positions       []PositionSnapshot
 	CreatedAt       time.Time
+}
+
+type BatchAppliedEvent struct {
+	FundingBatchID  string    `json:"funding_batch_id"`
+	Symbol          string    `json:"symbol"`
+	TimeWindowStart time.Time `json:"time_window_start"`
+	TimeWindowEnd   time.Time `json:"time_window_end"`
+	NormalizedRate  string    `json:"normalized_rate"`
+	Status          string    `json:"status"`
+	AppliedCount    int       `json:"applied_count"`
+}
+
+type BatchReversedEvent struct {
+	FundingBatchID  string    `json:"funding_batch_id"`
+	Symbol          string    `json:"symbol"`
+	TimeWindowStart time.Time `json:"time_window_start"`
+	TimeWindowEnd   time.Time `json:"time_window_end"`
+	NormalizedRate  string    `json:"normalized_rate"`
+	Status          string    `json:"status"`
+	ReversedCount   int       `json:"reversed_count"`
+	ReversedAt      time.Time `json:"reversed_at"`
+	ReversedBy      *string   `json:"reversed_by,omitempty"`
+	ReversalReason  *string   `json:"reversal_reason,omitempty"`
+}
+
+type ReverseBatchInput struct {
+	FundingBatchID string
+	OperatorID     string
+	TraceID        string
+	Reason         string
 }

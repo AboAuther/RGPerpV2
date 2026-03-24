@@ -34,6 +34,7 @@ type WithdrawRequest struct {
 	RiskFlag        string
 	HoldLedgerTxID  string
 	BroadcastTxHash string
+	BroadcastNonce  *uint64
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -130,6 +131,7 @@ type ReverseDepositInput struct {
 type BroadcastWithdrawInput struct {
 	WithdrawID     string
 	TxHash         string
+	BroadcastNonce *uint64
 	IdempotencyKey string
 	TraceID        string
 }
@@ -139,6 +141,18 @@ type ApproveWithdrawInput struct {
 	OperatorID     string
 	IdempotencyKey string
 	TraceID        string
+}
+
+type ReturnWithdrawToReviewInput struct {
+	WithdrawID string
+	OperatorID string
+	TraceID    string
+}
+
+type FailWithdrawInput struct {
+	WithdrawID string
+	RiskFlag   string
+	TraceID    string
 }
 
 type CompleteWithdrawInput struct {

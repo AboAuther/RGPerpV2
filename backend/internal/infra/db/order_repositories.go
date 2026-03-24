@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"errors"
+	"strings"
 
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	marketcache "github.com/xiaobao/rgperp/backend/internal/infra/marketcache"
@@ -22,27 +23,12 @@ func NewOrderExecutionRepository(db *gorm.DB, latestCache *marketcache.Cache) *O
 }
 
 func (r *OrderExecutionRepository) GetTradableSymbol(ctx context.Context, symbol string) (orderdomain.TradableSymbol, error) {
-	var symbolModel SymbolModel
 	if r.latestCache != nil {
 		if cached, err := r.latestCache.GetTradableSymbol(ctx, symbol); err == nil {
-			if err := DB(ctx, r.db).Where("id = ?", cached.SymbolID).First(&symbolModel).Error; err != nil {
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return orderdomain.TradableSymbol{}, errorsx.ErrNotFound
-				}
-				return orderdomain.TradableSymbol{}, err
-			}
-			tiersBySymbol, err := loadRiskTiersBySymbol(ctx, DB(ctx, r.db), []uint64{cached.SymbolID})
-			if err != nil {
-				return orderdomain.TradableSymbol{}, err
-			}
-			cached.RiskTiers = toOrderRiskTiers(tiersBySymbol[cached.SymbolID])
-			if len(cached.RiskTiers) > 0 {
-				cached.InitialMarginRate = cached.RiskTiers[0].InitialMarginRate
-				cached.MaintenanceMarginRate = cached.RiskTiers[0].MaintenanceRate
-			}
 			return cached, nil
 		}
 	}
+	var symbolModel SymbolModel
 	if err := DB(ctx, r.db).Where("symbol = ?", symbol).First(&symbolModel).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return orderdomain.TradableSymbol{}, errorsx.ErrNotFound
@@ -91,6 +77,7 @@ WHERE m1.symbol_id = ?
 		StepSize:              symbolModel.StepSize,
 		MinNotional:           symbolModel.MinNotional,
 		Status:                symbolModel.Status,
+		SessionPolicy:         symbolModel.SessionPolicy,
 		IndexPrice:            mark.IndexPrice,
 		MarkPrice:             mark.MarkPrice,
 		BestBid:               bestBid,
@@ -108,6 +95,7 @@ func toOrderRiskTiers(models []RiskTierModel) []orderdomain.RiskTier {
 		out = append(out, orderdomain.RiskTier{
 			TierLevel:          model.TierLevel,
 			MaxNotional:        model.MaxNotional,
+			MaxLeverage:        model.MaxLeverage,
 			InitialMarginRate:  model.IMR,
 			MaintenanceRate:    model.MMR,
 			LiquidationFeeRate: model.LiquidationFeeRate,
@@ -117,22 +105,16 @@ func toOrderRiskTiers(models []RiskTierModel) []orderdomain.RiskTier {
 }
 
 func (r *OrderExecutionRepository) GetByUserClientOrderID(ctx context.Context, userID uint64, clientOrderID string) (orderdomain.Order, error) {
-	var row struct {
-		OrderModel
-		Symbol string `gorm:"column:symbol"`
-	}
+	var row OrderModel
 	if err := DB(ctx, r.db).
-		Table("orders").
-		Select("orders.*, symbols.symbol").
-		Joins("JOIN symbols ON symbols.id = orders.symbol_id").
-		Where("orders.user_id = ? AND orders.client_order_id = ?", userID, clientOrderID).
+		Where("user_id = ? AND client_order_id = ?", userID, clientOrderID).
 		Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return orderdomain.Order{}, errorsx.ErrNotFound
 		}
 		return orderdomain.Order{}, err
 	}
-	return toOrderDomain(row.OrderModel, row.Symbol), nil
+	return toOrderDomain(row, ""), nil
 }
 
 func (r *OrderExecutionRepository) GetByUserOrderIDForUpdate(ctx context.Context, userID uint64, orderID string) (orderdomain.Order, error) {
@@ -199,6 +181,20 @@ func (r *OrderExecutionRepository) ListTriggerWaitingOrders(ctx context.Context,
 	return out, nil
 }
 
+func (r *OrderExecutionRepository) LockSymbolForUpdate(ctx context.Context, symbolID uint64) error {
+	var symbol SymbolModel
+	if err := DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", symbolID).
+		Take(&symbol).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errorsx.ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 func (r *OrderExecutionRepository) GetLatestRiskLevelForUpdate(ctx context.Context, userID uint64) (string, error) {
 	var row RiskSnapshotModel
 	if err := DB(ctx, r.db).
@@ -215,31 +211,25 @@ func (r *OrderExecutionRepository) GetLatestRiskLevelForUpdate(ctx context.Conte
 }
 
 func (r *OrderExecutionRepository) GetSymbolExposureForUpdate(ctx context.Context, symbolID uint64) (orderdomain.SymbolExposure, error) {
-	var rows []struct {
-		Side string `gorm:"column:side"`
-		Qty  string `gorm:"column:qty"`
+	var row struct {
+		LongQty  string `gorm:"column:long_qty"`
+		ShortQty string `gorm:"column:short_qty"`
 	}
 	if err := DB(ctx, r.db).
 		Table("positions").
-		Select("side, qty").
-		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select(`
+COALESCE(SUM(CASE WHEN side = ? THEN CAST(qty AS DECIMAL(38,18)) ELSE 0 END), 0) AS long_qty,
+COALESCE(SUM(CASE WHEN side = ? THEN CAST(qty AS DECIMAL(38,18)) ELSE 0 END), 0) AS short_qty
+`, orderdomain.PositionSideLong, orderdomain.PositionSideShort).
 		Where("symbol_id = ? AND status = ?", symbolID, orderdomain.PositionStatusOpen).
-		Scan(&rows).Error; err != nil {
+		Scan(&row).Error; err != nil {
 		return orderdomain.SymbolExposure{}, err
 	}
-	exposure := orderdomain.SymbolExposure{
+	return orderdomain.SymbolExposure{
 		SymbolID: symbolID,
-		LongQty:  "0",
-		ShortQty: "0",
-	}
-	for _, row := range rows {
-		if row.Side == orderdomain.PositionSideLong {
-			exposure.LongQty = decimalAdd(exposure.LongQty, row.Qty)
-			continue
-		}
-		exposure.ShortQty = decimalAdd(exposure.ShortQty, row.Qty)
-	}
-	return exposure, nil
+		LongQty:  strings.TrimSpace(row.LongQty),
+		ShortQty: strings.TrimSpace(row.ShortQty),
+	}, nil
 }
 
 func (r *OrderExecutionRepository) CreateOrder(ctx context.Context, order orderdomain.Order) error {
@@ -257,6 +247,8 @@ func (r *OrderExecutionRepository) CreateOrder(ctx context.Context, order orderd
 		Qty:                 order.Qty,
 		FilledQty:           order.FilledQty,
 		AvgFillPrice:        order.AvgFillPrice,
+		Leverage:            order.Leverage,
+		MarginMode:          order.MarginMode,
 		ReduceOnly:          order.ReduceOnly,
 		MaxSlippageBps:      order.MaxSlippageBps,
 		Status:              order.Status,
@@ -275,6 +267,7 @@ func (r *OrderExecutionRepository) UpdateOrder(ctx context.Context, order orderd
 		Updates(map[string]any{
 			"filled_qty":            order.FilledQty,
 			"avg_fill_price":        order.AvgFillPrice,
+			"leverage":              order.Leverage,
 			"status":                order.Status,
 			"reject_reason":         order.RejectReason,
 			"frozen_initial_margin": order.FrozenInitialMargin,
@@ -311,11 +304,11 @@ func (r *OrderExecutionRepository) CreateEvent(ctx context.Context, event orderd
 	})
 }
 
-func (r *OrderExecutionRepository) GetPositionForUpdate(ctx context.Context, userID uint64, symbolID uint64, side string) (orderdomain.Position, error) {
+func (r *OrderExecutionRepository) GetPositionForUpdate(ctx context.Context, userID uint64, symbolID uint64, side string, marginMode string) (orderdomain.Position, error) {
 	var row PositionModel
 	if err := DB(ctx, r.db).
 		Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("user_id = ? AND symbol_id = ? AND side = ?", userID, symbolID, side).
+		Where("user_id = ? AND symbol_id = ? AND side = ? AND margin_mode = ?", userID, symbolID, side, marginModeOrDefault(marginMode)).
 		Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return orderdomain.Position{}, errorsx.ErrNotFound
@@ -331,10 +324,12 @@ func (r *OrderExecutionRepository) UpsertPosition(ctx context.Context, position 
 		UserID:            position.UserID,
 		SymbolID:          position.SymbolID,
 		Side:              position.Side,
+		MarginMode:        marginModeOrDefault(position.MarginMode),
 		Qty:               position.Qty,
 		AvgEntryPrice:     position.AvgEntryPrice,
 		MarkPrice:         position.MarkPrice,
 		Notional:          position.Notional,
+		Leverage:          position.Leverage,
 		InitialMargin:     position.InitialMargin,
 		MaintenanceMargin: position.MaintenanceMargin,
 		RealizedPnL:       position.RealizedPnL,
@@ -347,12 +342,13 @@ func (r *OrderExecutionRepository) UpsertPosition(ctx context.Context, position 
 		UpdatedAt:         position.UpdatedAt,
 	}
 	return DB(ctx, r.db).Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "user_id"}, {Name: "symbol_id"}, {Name: "side"}},
+		Columns: []clause.Column{{Name: "user_id"}, {Name: "symbol_id"}, {Name: "side"}, {Name: "margin_mode"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"qty":                model.Qty,
 			"avg_entry_price":    model.AvgEntryPrice,
 			"mark_price":         model.MarkPrice,
 			"notional":           model.Notional,
+			"leverage":           model.Leverage,
 			"initial_margin":     model.InitialMargin,
 			"maintenance_margin": model.MaintenanceMargin,
 			"realized_pnl":       model.RealizedPnL,
@@ -364,6 +360,15 @@ func (r *OrderExecutionRepository) UpsertPosition(ctx context.Context, position 
 			"updated_at":         model.UpdatedAt,
 		}),
 	}).Create(&model).Error
+}
+
+func marginModeOrDefault(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case orderdomain.MarginModeIsolated:
+		return orderdomain.MarginModeIsolated
+	default:
+		return orderdomain.MarginModeCross
+	}
 }
 
 func toOrderDomain(model OrderModel, symbol string) orderdomain.Order {
@@ -382,6 +387,8 @@ func toOrderDomain(model OrderModel, symbol string) orderdomain.Order {
 		Qty:                 model.Qty,
 		FilledQty:           model.FilledQty,
 		AvgFillPrice:        model.AvgFillPrice,
+		Leverage:            model.Leverage,
+		MarginMode:          marginModeOrDefault(model.MarginMode),
 		ReduceOnly:          model.ReduceOnly,
 		MaxSlippageBps:      model.MaxSlippageBps,
 		Status:              model.Status,
@@ -404,6 +411,8 @@ func toPositionDomain(model PositionModel) orderdomain.Position {
 		AvgEntryPrice:     model.AvgEntryPrice,
 		MarkPrice:         model.MarkPrice,
 		Notional:          model.Notional,
+		Leverage:          model.Leverage,
+		MarginMode:        marginModeOrDefault(model.MarginMode),
 		InitialMargin:     model.InitialMargin,
 		MaintenanceMargin: model.MaintenanceMargin,
 		RealizedPnL:       model.RealizedPnL,

@@ -5,19 +5,21 @@ import (
 	"os"
 
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/marketsession"
 	"gopkg.in/yaml.v3"
 )
 
 type RuntimeConfigSnapshot struct {
-	Version int                  `yaml:"version"`
-	Global  GlobalRuntimeConfig  `yaml:"global"`
-	Auth    AuthRuntimeConfig    `yaml:"auth"`
-	Market  MarketRuntimeConfig  `yaml:"market"`
-	Wallet  WalletRuntimeConfig  `yaml:"wallet"`
-	Risk    RiskRuntimeConfig    `yaml:"risk"`
-	Funding FundingRuntimeConfig `yaml:"funding"`
-	Hedge   HedgeRuntimeConfig   `yaml:"hedge"`
-	Review  ReviewRuntimeConfig  `yaml:"review"`
+	Version int                          `yaml:"version"`
+	Global  GlobalRuntimeConfig          `yaml:"global"`
+	Auth    AuthRuntimeConfig            `yaml:"auth"`
+	Market  MarketRuntimeConfig          `yaml:"market"`
+	Wallet  WalletRuntimeConfig          `yaml:"wallet"`
+	Risk    RiskRuntimeConfig            `yaml:"risk"`
+	Funding FundingRuntimeConfig         `yaml:"funding"`
+	Hedge   HedgeRuntimeConfig           `yaml:"hedge"`
+	Review  ReviewRuntimeConfig          `yaml:"review"`
+	Pairs   map[string]PairRuntimeConfig `yaml:"pairs"`
 }
 
 type GlobalRuntimeConfig struct {
@@ -63,6 +65,7 @@ type RiskRuntimeConfig struct {
 	MarkPriceStaleSec             int    `yaml:"mark_price_stale_sec"`
 	ForceReduceOnlyOnStalePrice   bool   `yaml:"force_reduce_only_on_stale_price"`
 	LiquidationPenaltyRate        string `yaml:"liquidation_penalty_rate"`
+	MaintenanceMarginUpliftRatio  string `yaml:"maintenance_margin_uplift_ratio"`
 	LiquidationExtraSlippageBps   int    `yaml:"liquidation_extra_slippage_bps"`
 	MaxOpenOrdersPerUserPerSymbol int    `yaml:"max_open_orders_per_user_per_symbol"`
 	NetExposureHardLimit          string `yaml:"net_exposure_hard_limit"`
@@ -98,6 +101,17 @@ type FaucetRuntimeConfig struct {
 
 type MockMarketDataRuntimeConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type PairRuntimeConfig struct {
+	MaxLeverage                  *string `yaml:"max_leverage,omitempty"`
+	SessionPolicy                *string `yaml:"session_policy,omitempty"`
+	TakerFeeRate                 *string `yaml:"taker_fee_rate,omitempty"`
+	MakerFeeRate                 *string `yaml:"maker_fee_rate,omitempty"`
+	DefaultMaxSlippageBps        *int    `yaml:"default_max_slippage_bps,omitempty"`
+	LiquidationPenaltyRate       *string `yaml:"liquidation_penalty_rate,omitempty"`
+	FundingIntervalSec           *int    `yaml:"funding_interval_sec,omitempty"`
+	MaintenanceMarginUpliftRatio *string `yaml:"maintenance_margin_uplift_ratio,omitempty"`
 }
 
 func LoadRuntimeConfigSnapshot(path string) (RuntimeConfigSnapshot, error) {
@@ -191,6 +205,9 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	if c.Risk.LiquidationPenaltyRate == "" {
 		errs = append(errs, fmt.Errorf("%w: risk.liquidation_penalty_rate is required", errorsx.ErrInvalidArgument))
 	}
+	if c.Risk.MaintenanceMarginUpliftRatio == "" {
+		errs = append(errs, fmt.Errorf("%w: risk.maintenance_margin_uplift_ratio is required", errorsx.ErrInvalidArgument))
+	}
 	if c.Risk.LiquidationExtraSlippageBps < 0 {
 		errs = append(errs, fmt.Errorf("%w: risk.liquidation_extra_slippage_bps must be zero or positive", errorsx.ErrInvalidArgument))
 	}
@@ -229,6 +246,23 @@ func (c RuntimeConfigSnapshot) Validate() error {
 	}
 	if c.Review.Faucet.MaxRequestsPerDay <= 0 {
 		errs = append(errs, fmt.Errorf("%w: review.faucet.max_requests_per_day must be positive", errorsx.ErrInvalidArgument))
+	}
+	for pair, cfg := range c.Pairs {
+		if pair == "" {
+			errs = append(errs, fmt.Errorf("%w: pairs key must not be empty", errorsx.ErrInvalidArgument))
+			continue
+		}
+		if cfg.DefaultMaxSlippageBps != nil && *cfg.DefaultMaxSlippageBps <= 0 {
+			errs = append(errs, fmt.Errorf("%w: pairs.%s.default_max_slippage_bps must be positive", errorsx.ErrInvalidArgument, pair))
+		}
+		if cfg.SessionPolicy != nil {
+			if err := marketsession.ValidatePolicy(*cfg.SessionPolicy); err != nil {
+				errs = append(errs, fmt.Errorf("%w: pairs.%s.session_policy is invalid", err, pair))
+			}
+		}
+		if cfg.FundingIntervalSec != nil && *cfg.FundingIntervalSec <= 0 {
+			errs = append(errs, fmt.Errorf("%w: pairs.%s.funding_interval_sec must be positive", errorsx.ErrInvalidArgument, pair))
+		}
 	}
 
 	if len(errs) == 0 {

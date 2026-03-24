@@ -25,7 +25,9 @@ type Repository interface {
 	CreateLiquidation(ctx context.Context, liquidation Liquidation) error
 	UpdateLiquidation(ctx context.Context, liquidation Liquidation) error
 	CreateItem(ctx context.Context, item Item) error
+	LockSymbolForUpdate(ctx context.Context, symbolID uint64) error
 	ListOpenPositionsForUpdate(ctx context.Context, userID uint64) ([]Position, error)
+	GetPositionForLiquidationByID(ctx context.Context, userID uint64, positionID string) (Position, error)
 	ListRiskIncreaseOrdersForUpdate(ctx context.Context, userID uint64) ([]RiskIncreaseOrder, error)
 	CancelOrders(ctx context.Context, orderIDs []string, updatedAt time.Time) error
 	CreateOrder(ctx context.Context, order OrderRecord) error
@@ -43,7 +45,7 @@ type LedgerPoster interface {
 }
 
 type RuntimeConfigProvider interface {
-	CurrentLiquidationRuntimeConfig() ServiceConfig
+	CurrentLiquidationRuntimeConfig(symbol string) ServiceConfig
 }
 
 type RiskPreviewer interface {

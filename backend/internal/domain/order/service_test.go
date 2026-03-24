@@ -56,6 +56,14 @@ func (s stubBalances) GetAccountBalanceForUpdate(_ context.Context, _ uint64, _ 
 	return s.balance, nil
 }
 
+func (s stubBalances) GetAccountBalancesForUpdate(_ context.Context, accountIDs []uint64, _ string) (map[uint64]string, error) {
+	out := make(map[uint64]string, len(accountIDs))
+	for _, accountID := range accountIDs {
+		out[accountID] = s.balance
+	}
+	return out, nil
+}
+
 type stubLedger struct {
 	reqs []ledgerdomain.PostingRequest
 }
@@ -88,6 +96,22 @@ func (b *trackingBalances) GetAccountBalanceForUpdate(_ context.Context, account
 		return value, nil
 	}
 	return "0", nil
+}
+
+func (b *trackingBalances) GetAccountBalancesForUpdate(_ context.Context, accountIDs []uint64, _ string) (map[uint64]string, error) {
+	out := make(map[uint64]string, len(accountIDs))
+	for _, accountID := range accountIDs {
+		if b.values == nil {
+			out[accountID] = "0"
+			continue
+		}
+		if value, ok := b.values[accountID]; ok {
+			out[accountID] = value
+			continue
+		}
+		out[accountID] = "0"
+	}
+	return out, nil
 }
 
 func (b *trackingBalances) apply(entry ledgerdomain.LedgerEntry) {
@@ -129,6 +153,17 @@ func (s stubMarketRepo) GetTradableSymbol(_ context.Context, _ string) (Tradable
 	return s.symbol, s.err
 }
 
+type stubOrderRuntimeProvider struct {
+	bySymbol map[string]RuntimeConfig
+}
+
+func (s stubOrderRuntimeProvider) CurrentOrderRuntimeConfig(symbol string) RuntimeConfig {
+	if cfg, ok := s.bySymbol[symbol]; ok {
+		return cfg
+	}
+	return RuntimeConfig{}
+}
+
 func testServiceConfig() ServiceConfig {
 	return ServiceConfig{
 		Asset:                  "USDC",
@@ -150,6 +185,7 @@ func testTradableSymbol(ts time.Time) TradableSymbol {
 		StepSize:              "0.001",
 		MinNotional:           "10",
 		Status:                "TRADING",
+		SessionPolicy:         "ALWAYS_OPEN",
 		IndexPrice:            "100",
 		MarkPrice:             "100",
 		BestBid:               "99",
@@ -219,6 +255,10 @@ func (s *stubOrderRepo) ListTriggerWaitingOrders(_ context.Context, limit int) (
 	return out, nil
 }
 
+func (s *stubOrderRepo) LockSymbolForUpdate(_ context.Context, _ uint64) error {
+	return nil
+}
+
 func (s *stubOrderRepo) CreateOrder(_ context.Context, order Order) error {
 	s.byClient[order.ClientOrderID] = order
 	s.byOrderID[order.OrderID] = order
@@ -255,7 +295,7 @@ func (s *stubOrderRepo) GetLatestRiskLevelForUpdate(_ context.Context, _ uint64)
 	return s.latestRiskLevel, nil
 }
 
-func (s *stubOrderRepo) GetPositionForUpdate(_ context.Context, _ uint64, _ uint64, _ string) (Position, error) {
+func (s *stubOrderRepo) GetPositionForUpdate(_ context.Context, _ uint64, _ uint64, _ string, _ string) (Position, error) {
 	if s.position.PositionID == "" {
 		return Position{}, errorsx.ErrNotFound
 	}
@@ -287,6 +327,7 @@ func TestCreateOrder_MarketOpenFillsAndAllocatesMargin(t *testing.T) {
 			StepSize:              "0.001",
 			MinNotional:           "10",
 			Status:                "TRADING",
+			SessionPolicy:         "ALWAYS_OPEN",
 			IndexPrice:            "100",
 			MarkPrice:             "100",
 			BestBid:               "99",
@@ -338,7 +379,7 @@ func TestCreateOrder_MarketOpenFillsAndAllocatesMargin(t *testing.T) {
 	}
 }
 
-func TestCreateOrder_UsesHigherRiskTierForAdditionalMarginHold(t *testing.T) {
+func TestCreateOrder_DefaultsToTierMaxLeverageForMarginHold(t *testing.T) {
 	repo := newStubOrderRepo()
 	ledger := &stubLedger{}
 	svc, err := NewService(
@@ -357,6 +398,7 @@ func TestCreateOrder_UsesHigherRiskTierForAdditionalMarginHold(t *testing.T) {
 			StepSize:              "0.001",
 			MinNotional:           "10",
 			Status:                "TRADING",
+			SessionPolicy:         "ALWAYS_OPEN",
 			IndexPrice:            "100",
 			MarkPrice:             "100",
 			BestBid:               "99",
@@ -364,8 +406,8 @@ func TestCreateOrder_UsesHigherRiskTierForAdditionalMarginHold(t *testing.T) {
 			InitialMarginRate:     "0.1",
 			MaintenanceMarginRate: "0.05",
 			RiskTiers: []RiskTier{
-				{TierLevel: 1, MaxNotional: "100", InitialMarginRate: "0.1", MaintenanceRate: "0.05"},
-				{TierLevel: 2, MaxNotional: "1000", InitialMarginRate: "0.2", MaintenanceRate: "0.1"},
+				{TierLevel: 1, MaxNotional: "100", MaxLeverage: "10", InitialMarginRate: "0.1", MaintenanceRate: "0.05"},
+				{TierLevel: 2, MaxNotional: "1000", MaxLeverage: "5", InitialMarginRate: "0.2", MaintenanceRate: "0.1"},
 			},
 		}},
 		repo,
@@ -399,8 +441,262 @@ func TestCreateOrder_UsesHigherRiskTierForAdditionalMarginHold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create order: %v", err)
 	}
-	if order.FrozenMargin != "25.06" {
-		t.Fatalf("expected higher-tier frozen margin 25.06, got %s", order.FrozenMargin)
+	if order.FrozenMargin != "10.06" {
+		t.Fatalf("expected default frozen margin 10.06, got %s", order.FrozenMargin)
+	}
+}
+
+func TestCreateOrder_BlocksOpenOutsideSessionPolicy(t *testing.T) {
+	repo := newStubOrderRepo()
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 24, 21, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		&stubLedger{},
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              2,
+			Symbol:                "AAPL-USDC",
+			ContractMultiplier:    "1",
+			TickSize:              "0.01",
+			StepSize:              "0.01",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			SessionPolicy:         "US_EQUITY_REGULAR",
+			IndexPrice:            "180",
+			MarkPrice:             "180",
+			BestBid:               "179.9",
+			BestAsk:               "180.1",
+			InitialMarginRate:     "0.2",
+			MaintenanceMarginRate: "0.1",
+			SnapshotTS:            time.Date(2026, 3, 24, 20, 59, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_closed",
+		Symbol:         "AAPL-USDC",
+		Side:           "BUY",
+		PositionEffect: "OPEN",
+		Type:           "MARKET",
+		Qty:            "1",
+		IdempotencyKey: "idem_closed",
+		TraceID:        "trace_closed",
+	})
+	if err == nil || !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected forbidden outside session, got %v", err)
+	}
+}
+
+func TestCreateOrder_AllowsReduceOutsideSessionPolicy(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 24, 21, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_reduce", "fill_reduce", "ldg_fill", "evt_fill", "evt_pos"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              2,
+			Symbol:                "AAPL-USDC",
+			ContractMultiplier:    "1",
+			TickSize:              "0.01",
+			StepSize:              "0.01",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			SessionPolicy:         "US_EQUITY_REGULAR",
+			IndexPrice:            "180",
+			MarkPrice:             "180",
+			BestBid:               "179.9",
+			BestAsk:               "180.1",
+			InitialMarginRate:     "0.2",
+			MaintenanceMarginRate: "0.1",
+			SnapshotTS:            time.Date(2026, 3, 24, 20, 59, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	repo.position = Position{
+		PositionID:        "pos_1",
+		UserID:            7,
+		SymbolID:          2,
+		Side:              PositionSideLong,
+		Qty:               "2",
+		AvgEntryPrice:     "150",
+		MarkPrice:         "180",
+		Notional:          "360",
+		Leverage:          "3",
+		InitialMargin:     "120",
+		MaintenanceMargin: "30",
+		RealizedPnL:       "0",
+		UnrealizedPnL:     "60",
+		FundingAccrual:    "0",
+		LiquidationPrice:  "120",
+		BankruptcyPrice:   "90",
+		Status:            PositionStatusOpen,
+	}
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_reduce",
+		Symbol:         "AAPL-USDC",
+		Side:           "SELL",
+		PositionEffect: "REDUCE",
+		Type:           "MARKET",
+		Qty:            "1",
+		IdempotencyKey: "idem_reduce",
+		TraceID:        "trace_reduce",
+	})
+	if err != nil {
+		t.Fatalf("expected reduce outside session to succeed, got %v", err)
+	}
+	if order.Status != OrderStatusFilled {
+		t.Fatalf("expected reduce order filled, got %s", order.Status)
+	}
+}
+
+func TestExecuteRestingOrders_SkipsOpenFillOutsideSessionPolicy(t *testing.T) {
+	repo := newStubOrderRepo()
+	limitPrice := "180.00"
+	repo.byOrderID["ord_1"] = Order{
+		OrderID:        "ord_1",
+		ClientOrderID:  "cli_1",
+		UserID:         7,
+		SymbolID:       2,
+		Symbol:         "AAPL-USDC",
+		Side:           "BUY",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeLimit,
+		TimeInForce:    "GTC",
+		Price:          &limitPrice,
+		Qty:            "1",
+		Leverage:       "1",
+		Status:         OrderStatusResting,
+		CreatedAt:      time.Date(2026, 3, 24, 19, 0, 0, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, 3, 24, 19, 0, 0, 0, time.UTC),
+	}
+	repo.byClient["cli_1"] = repo.byOrderID["ord_1"]
+
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 24, 21, 0, 0, 0, time.UTC)},
+		&fakeIDGen{},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		&stubLedger{},
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              2,
+			Symbol:                "AAPL-USDC",
+			ContractMultiplier:    "1",
+			TickSize:              "0.01",
+			StepSize:              "0.01",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			SessionPolicy:         "US_EQUITY_REGULAR",
+			IndexPrice:            "180",
+			MarkPrice:             "180",
+			BestBid:               "179.9",
+			BestAsk:               "180.0",
+			InitialMarginRate:     "0.2",
+			MaintenanceMarginRate: "0.1",
+			SnapshotTS:            time.Date(2026, 3, 24, 20, 59, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	executed, err := svc.ExecuteRestingOrders(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ExecuteRestingOrders: %v", err)
+	}
+	if executed != 0 {
+		t.Fatalf("expected no resting order execution outside session, got %d", executed)
+	}
+	if repo.byOrderID["ord_1"].Status != OrderStatusResting {
+		t.Fatalf("expected resting order to remain pending, got %s", repo.byOrderID["ord_1"].Status)
+	}
+}
+
+func TestCreateOrder_UsesRequestedLeverageForRealMarginHold(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1", "ldg_hold", "evt_hold", "ldg_fill", "evt_fill", "fill_1", "pos_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "99",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "40", InitialMarginRate: "0.1", MaintenanceRate: "0.05"},
+			},
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_leverage",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: "OPEN",
+		Type:           "MARKET",
+		Qty:            "1",
+		Leverage:       strPtr("40"),
+		IdempotencyKey: "idem_leverage",
+		TraceID:        "trace_leverage",
+	})
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if order.Leverage != "40" {
+		t.Fatalf("expected order leverage 40, got %s", order.Leverage)
+	}
+	if len(repo.byOrderID) != 1 {
+		t.Fatalf("expected order persisted")
+	}
+	position := repo.position
+	if position.PositionID == "" {
+		t.Fatalf("expected position to be created")
+	}
+	if position.InitialMargin != "2.525" {
+		t.Fatalf("expected position initial margin 2.525, got %s", position.InitialMargin)
+	}
+	if position.Leverage != "40" {
+		t.Fatalf("expected position leverage 40, got %s", position.Leverage)
 	}
 }
 
@@ -1193,6 +1489,71 @@ func TestCreateOrder_CloseAllowedWhenSymbolIsReduceOnly(t *testing.T) {
 	}
 }
 
+func TestCreateOrder_CloseRejectedWhenPositionIsLiquidating(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.position = Position{
+		PositionID:        "pos_liq_close",
+		UserID:            7,
+		SymbolID:          1,
+		Side:              PositionSideLong,
+		Qty:               "1",
+		AvgEntryPrice:     "100",
+		MarkPrice:         "120",
+		Notional:          "120",
+		InitialMargin:     "10",
+		MaintenanceMargin: "5",
+		Status:            PositionStatusLiquidating,
+		CreatedAt:         time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 3, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "REDUCE_ONLY",
+			IndexPrice:            "120",
+			MarkPrice:             "120",
+			BestBid:               "119",
+			BestAsk:               "121",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_liq_close",
+		Symbol:         "BTC-PERP",
+		Side:           "SELL",
+		PositionEffect: "CLOSE",
+		Type:           "MARKET",
+		Qty:            "0.4",
+		IdempotencyKey: "idem_liq_close",
+		TraceID:        "trace_liq_close",
+	})
+	if err == nil || !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected close rejection for liquidating position, got %v", err)
+	}
+	if len(ledger.reqs) != 0 {
+		t.Fatalf("expected no ledger write when liquidating position is already under admin handling")
+	}
+}
+
 func TestCreateOrder_OpenForbiddenWhenMarketDataIsStale(t *testing.T) {
 	repo := newStubOrderRepo()
 	ledger := &stubLedger{}
@@ -1323,6 +1684,74 @@ func TestExecuteTriggerOrders_FillsTriggeredCloseOrder(t *testing.T) {
 	}
 }
 
+func TestExecuteTriggerOrders_CancelsTriggeredCloseWhenPositionIsLiquidating(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.byOrderID["ord_tp_liq"] = Order{
+		OrderID:        "ord_tp_liq",
+		ClientOrderID:  "cli_tp_liq",
+		UserID:         7,
+		SymbolID:       1,
+		Symbol:         "BTC-PERP",
+		Side:           "SELL",
+		PositionEffect: PositionEffectClose,
+		Type:           OrderTypeTakeProfitMarket,
+		Qty:            "0.4",
+		FilledQty:      "0",
+		AvgFillPrice:   "0",
+		MaxSlippageBps: 100,
+		Status:         OrderStatusTriggerWait,
+		TriggerPrice:   strPtr("90"),
+		CreatedAt:      time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:      time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	repo.byClient["cli_tp_liq"] = repo.byOrderID["ord_tp_liq"]
+	repo.position = Position{
+		PositionID:        "pos_liq",
+		UserID:            7,
+		SymbolID:          1,
+		Side:              PositionSideLong,
+		Qty:               "1",
+		AvgEntryPrice:     "100",
+		MarkPrice:         "100",
+		Notional:          "100",
+		InitialMargin:     "10",
+		MaintenanceMargin: "5",
+		Status:            PositionStatusLiquidating,
+		CreatedAt:         time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	ledger := &stubLedger{}
+	now := time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC)
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: now},
+		&fakeIDGen{values: []string{}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: testTradableSymbol(now)},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	executed, err := svc.ExecuteTriggerOrders(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("execute trigger orders: %v", err)
+	}
+	if executed != 0 {
+		t.Fatalf("expected no executed trigger order, got %d", executed)
+	}
+	order := repo.byOrderID["ord_tp_liq"]
+	if order.Status != OrderStatusCanceled {
+		t.Fatalf("expected triggered close to cancel when position is liquidating, got %+v", order)
+	}
+	if len(repo.fills) != 0 || len(ledger.reqs) != 0 {
+		t.Fatalf("expected no fills or ledger writes, fills=%d ledger=%d", len(repo.fills), len(ledger.reqs))
+	}
+}
+
 func TestExecuteTriggerOrders_OpenTriggerSkipsWhenSymbolIsReduceOnly(t *testing.T) {
 	repo := newStubOrderRepo()
 	repo.byOrderID["ord_stop_open"] = Order{
@@ -1439,22 +1868,25 @@ func TestExecuteTriggerOrders_SkipsWhenMarketDataIsStale(t *testing.T) {
 func TestExecuteRestingOrders_FillsExecutableOpenLimit(t *testing.T) {
 	repo := newStubOrderRepo()
 	repo.byOrderID["ord_limit"] = Order{
-		OrderID:        "ord_limit",
-		ClientOrderID:  "cli_limit",
-		UserID:         7,
-		SymbolID:       1,
-		Symbol:         "BTC-PERP",
-		Side:           "BUY",
-		PositionEffect: PositionEffectOpen,
-		Type:           OrderTypeLimit,
-		Qty:            "1",
-		FilledQty:      "0",
-		AvgFillPrice:   "0",
-		Status:         OrderStatusResting,
-		FrozenMargin:   "10.160600000000000000",
-		Price:          strPtr("102"),
-		CreatedAt:      time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
-		UpdatedAt:      time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		OrderID:             "ord_limit",
+		ClientOrderID:       "cli_limit",
+		UserID:              7,
+		SymbolID:            1,
+		Symbol:              "BTC-PERP",
+		Side:                "BUY",
+		PositionEffect:      PositionEffectOpen,
+		Type:                OrderTypeLimit,
+		Qty:                 "1",
+		FilledQty:           "0",
+		AvgFillPrice:        "0",
+		Leverage:            "10",
+		Status:              OrderStatusResting,
+		FrozenInitialMargin: "10.2",
+		FrozenFee:           "0.0612",
+		FrozenMargin:        "10.2612",
+		Price:               strPtr("102"),
+		CreatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
 	}
 	repo.byClient["cli_limit"] = repo.byOrderID["ord_limit"]
 	ledger := &stubLedger{}
@@ -1501,6 +1933,500 @@ func TestExecuteRestingOrders_FillsExecutableOpenLimit(t *testing.T) {
 	}
 	if len(repo.fills) != 1 {
 		t.Fatalf("expected fill written, got %d", len(repo.fills))
+	}
+}
+
+func TestCreateOrder_UsesPairRuntimeOverridesForOpenMarket(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1", "ldg_hold", "evt_hold", "ldg_fill", "evt_fill", "fill_1", "pos_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: testTradableSymbol(time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC))},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetRuntimeConfigProvider(stubOrderRuntimeProvider{bySymbol: map[string]RuntimeConfig{
+		"BTC-PERP": {
+			TakerFeeRate:                 "0.001",
+			DefaultMaxSlippageBps:        150,
+			MaxLeverage:                  "5",
+			MaintenanceMarginUpliftRatio: "0.1",
+		},
+	}})
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_pair",
+		IdempotencyKey: "idem_pair",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeMarket,
+		Qty:            "1",
+	})
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if order.MaxSlippageBps != 150 {
+		t.Fatalf("expected pair slippage override, got %d", order.MaxSlippageBps)
+	}
+	if order.Leverage != "5" {
+		t.Fatalf("expected pair max leverage to be applied, got %s", order.Leverage)
+	}
+	if len(repo.fills) != 1 || repo.fills[0].FeeAmount != "0.101" {
+		t.Fatalf("expected taker fee override to be applied, fills=%+v", repo.fills)
+	}
+	if repo.position.MaintenanceMargin != "5.5" {
+		t.Fatalf("expected maintenance uplift override, got %+v", repo.position)
+	}
+}
+
+func TestCreateOrder_AllowsRaisedPairMaxLeverageOverride(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1", "ldg_hold", "evt_hold", "ldg_fill", "evt_fill", "fill_1", "pos_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "99",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.025",
+			MaintenanceMarginRate: "0.0125",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "40", InitialMarginRate: "0.025", MaintenanceRate: "0.0125"},
+			},
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetRuntimeConfigProvider(stubOrderRuntimeProvider{bySymbol: map[string]RuntimeConfig{
+		"BTC-PERP": {
+			MaxLeverage: "2000",
+		},
+	}})
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_pair_raised",
+		IdempotencyKey: "idem_pair_raised",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeMarket,
+		Qty:            "1",
+		Leverage:       strPtr("2000"),
+	})
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if order.Leverage != "2000" {
+		t.Fatalf("expected raised pair max leverage to be applied, got %s", order.Leverage)
+	}
+	if repo.position.Leverage != "2000" {
+		t.Fatalf("expected position leverage 2000, got %+v", repo.position)
+	}
+}
+
+func TestCreateOrder_RejectsIsolatedOpenWhenItWouldEnterLiquidationImmediately(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "99",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.025",
+			MaintenanceMarginRate: "0.0125",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "40", InitialMarginRate: "0.025", MaintenanceRate: "0.0125", LiquidationFeeRate: "0.005"},
+			},
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetRuntimeConfigProvider(stubOrderRuntimeProvider{bySymbol: map[string]RuntimeConfig{
+		"BTC-PERP": {
+			MaxLeverage: "2000",
+		},
+	}})
+
+	_, err = svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_pair_raised_iso",
+		IdempotencyKey: "idem_pair_raised_iso",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeMarket,
+		Qty:            "1",
+		Leverage:       strPtr("2000"),
+		MarginMode:     MarginModeIsolated,
+	})
+	if err == nil || !errors.Is(err, errorsx.ErrInvalidArgument) {
+		t.Fatalf("expected immediate-liquidation rejection, got %v", err)
+	}
+	if len(ledger.reqs) != 0 {
+		t.Fatalf("expected no ledger postings on rejected isolated order")
+	}
+	if len(repo.byOrderID) != 0 || len(repo.fills) != 0 {
+		t.Fatalf("expected rejected order to avoid persistence, orders=%d fills=%d", len(repo.byOrderID), len(repo.fills))
+	}
+}
+
+func TestCreateOrder_RejectsOpenWhenTargetPositionIsLiquidating(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.position = Position{
+		PositionID: "pos_liq",
+		UserID:     7,
+		SymbolID:   1,
+		Side:       PositionSideLong,
+		MarginMode: MarginModeIsolated,
+		Qty:        "1",
+		Status:     PositionStatusLiquidating,
+	}
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "99",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "20", InitialMarginRate: "0.05", MaintenanceRate: "0.025", LiquidationFeeRate: "0.005"},
+			},
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	_, err = svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_liq_blocked",
+		IdempotencyKey: "idem_liq_blocked",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeMarket,
+		Qty:            "1",
+		Leverage:       strPtr("5"),
+		MarginMode:     MarginModeIsolated,
+	})
+	if err == nil || !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected liquidating-position rejection, got %v", err)
+	}
+	if len(ledger.reqs) != 0 {
+		t.Fatalf("expected no ledger postings on blocked open order")
+	}
+	if len(repo.byOrderID) != 0 || len(repo.fills) != 0 {
+		t.Fatalf("expected blocked open order to avoid persistence, orders=%d fills=%d", len(repo.byOrderID), len(repo.fills))
+	}
+}
+
+func TestExecuteRestingOrders_RejectsIsolatedOrderThatWouldEnterLiquidationImmediately(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.byOrderID["ord_limit_iso"] = Order{
+		OrderID:             "ord_limit_iso",
+		ClientOrderID:       "cli_limit_iso",
+		UserID:              7,
+		SymbolID:            1,
+		Symbol:              "BTC-PERP",
+		Side:                "BUY",
+		MarginMode:          MarginModeIsolated,
+		PositionEffect:      PositionEffectOpen,
+		Type:                OrderTypeLimit,
+		Qty:                 "1",
+		FilledQty:           "0",
+		AvgFillPrice:        "0",
+		Leverage:            "2000",
+		Status:              OrderStatusResting,
+		FrozenInitialMargin: "0.051",
+		FrozenFee:           "0.0612",
+		FrozenMargin:        "0.1122",
+		Price:               strPtr("102"),
+		CreatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	repo.byClient["cli_limit_iso"] = repo.byOrderID["ord_limit_iso"]
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ldg_reject", "evt_reject", "evt_order_rejected"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "100",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.025",
+			MaintenanceMarginRate: "0.0125",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "40", InitialMarginRate: "0.025", MaintenanceRate: "0.0125", LiquidationFeeRate: "0.005"},
+			},
+			SnapshotTS: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	executed, err := svc.ExecuteRestingOrders(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("execute resting orders: %v", err)
+	}
+	if executed != 0 {
+		t.Fatalf("expected rejected isolated order to not count as executed, got %d", executed)
+	}
+	order := repo.byOrderID["ord_limit_iso"]
+	if order.Status != OrderStatusRejected {
+		t.Fatalf("expected resting order to be rejected, got %+v", order)
+	}
+	if order.RejectReason == nil || *order.RejectReason != rejectReasonImmediateLiquidation {
+		t.Fatalf("unexpected reject reason: %+v", order.RejectReason)
+	}
+	if len(ledger.reqs) != 1 {
+		t.Fatalf("expected one release ledger posting, got %d", len(ledger.reqs))
+	}
+	if len(repo.fills) != 0 {
+		t.Fatalf("expected no fills for rejected isolated order, got %d", len(repo.fills))
+	}
+	if len(repo.events) != 1 || repo.events[0].EventType != "trade.order.rejected" {
+		t.Fatalf("expected rejected event, got %+v", repo.events)
+	}
+}
+
+func TestExecuteRestingOrders_RejectsOpenOrderWhenTargetPositionIsLiquidating(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.position = Position{
+		PositionID: "pos_liq",
+		UserID:     7,
+		SymbolID:   1,
+		Side:       PositionSideLong,
+		MarginMode: MarginModeIsolated,
+		Qty:        "1",
+		Status:     PositionStatusLiquidating,
+	}
+	repo.byOrderID["ord_limit_liq"] = Order{
+		OrderID:             "ord_limit_liq",
+		ClientOrderID:       "cli_limit_liq",
+		UserID:              7,
+		SymbolID:            1,
+		Symbol:              "BTC-PERP",
+		Side:                "BUY",
+		MarginMode:          MarginModeIsolated,
+		PositionEffect:      PositionEffectOpen,
+		Type:                OrderTypeLimit,
+		Qty:                 "1",
+		FilledQty:           "0",
+		AvgFillPrice:        "0",
+		Leverage:            "10",
+		Status:              OrderStatusResting,
+		FrozenInitialMargin: "10",
+		FrozenFee:           "0.06",
+		FrozenMargin:        "10.06",
+		Price:               strPtr("102"),
+		CreatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	repo.byClient["cli_limit_liq"] = repo.byOrderID["ord_limit_liq"]
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ldg_reject", "evt_reject", "evt_order_rejected"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "100",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.025",
+			MaintenanceMarginRate: "0.0125",
+			RiskTiers: []RiskTier{
+				{TierLevel: 1, MaxNotional: "1000", MaxLeverage: "40", InitialMarginRate: "0.025", MaintenanceRate: "0.0125", LiquidationFeeRate: "0.005"},
+			},
+			SnapshotTS: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	executed, err := svc.ExecuteRestingOrders(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("execute resting orders: %v", err)
+	}
+	if executed != 0 {
+		t.Fatalf("expected liquidating-position rejection to not count as executed, got %d", executed)
+	}
+	order := repo.byOrderID["ord_limit_liq"]
+	if order.Status != OrderStatusRejected {
+		t.Fatalf("expected resting order to be rejected, got %+v", order)
+	}
+	if order.RejectReason == nil || *order.RejectReason != rejectReasonPositionLiquidating {
+		t.Fatalf("unexpected reject reason: %+v", order.RejectReason)
+	}
+	if len(ledger.reqs) != 1 {
+		t.Fatalf("expected one release ledger posting, got %d", len(ledger.reqs))
+	}
+	if len(repo.fills) != 0 {
+		t.Fatalf("expected no fills for rejected liquidating-position order, got %d", len(repo.fills))
+	}
+	if len(repo.events) != 1 || repo.events[0].EventType != "trade.order.rejected" {
+		t.Fatalf("expected rejected event, got %+v", repo.events)
+	}
+}
+
+func TestExecuteRestingOrders_UsesPairMakerFeeOverride(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.byOrderID["ord_limit"] = Order{
+		OrderID:             "ord_limit",
+		ClientOrderID:       "cli_limit",
+		UserID:              7,
+		SymbolID:            1,
+		Symbol:              "BTC-PERP",
+		Side:                "BUY",
+		PositionEffect:      PositionEffectOpen,
+		Type:                OrderTypeLimit,
+		Qty:                 "1",
+		FilledQty:           "0",
+		AvgFillPrice:        "0",
+		Leverage:            "10",
+		Status:              OrderStatusResting,
+		FrozenInitialMargin: "10.2",
+		FrozenFee:           "0.0612",
+		FrozenMargin:        "10.2612",
+		Price:               strPtr("102"),
+		CreatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		UpdatedAt:           time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	repo.byClient["cli_limit"] = repo.byOrderID["ord_limit"]
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ldg_fill", "evt_fill", "fill_1", "pos_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "100",
+			BestAsk:               "101",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+			SnapshotTS:            time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC),
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetRuntimeConfigProvider(stubOrderRuntimeProvider{bySymbol: map[string]RuntimeConfig{
+		"BTC-PERP": {
+			MakerFeeRate: "0.0001",
+		},
+	}})
+
+	executed, err := svc.ExecuteRestingOrders(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("execute resting orders: %v", err)
+	}
+	if executed != 1 {
+		t.Fatalf("expected 1 executed order, got %d", executed)
+	}
+	if len(repo.fills) != 1 || repo.fills[0].FeeAmount != "0.0101" {
+		t.Fatalf("expected maker fee override to be applied, fills=%+v", repo.fills)
 	}
 }
 

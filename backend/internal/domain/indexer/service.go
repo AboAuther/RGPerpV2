@@ -323,6 +323,26 @@ func (s *Service) HandleWithdrawExecuted(ctx context.Context, event WithdrawExec
 		switch withdraw.Status {
 		case walletdomain.StatusCompleted, walletdomain.StatusRefunded:
 			return nil
+		}
+
+		if !strings.EqualFold(withdraw.Asset, rule.Asset) {
+			return s.publishAnomaly(txCtx, "withdraw_asset_mismatch", event.TraceID, map[string]any{
+				"chain_id":       event.ChainID,
+				"withdraw_id":    withdraw.WithdrawID,
+				"withdraw_asset": withdraw.Asset,
+				"expected_asset": rule.Asset,
+				"tx_hash":        event.TxHash,
+			})
+		}
+		if err := validateExecutedWithdrawMatches(withdraw, event); err != nil {
+			var anomaly anomalyError
+			if errors.As(err, &anomaly) {
+				return s.publishAnomaly(txCtx, anomaly.kind, event.TraceID, anomaly.payload)
+			}
+			return err
+		}
+
+		switch withdraw.Status {
 		case walletdomain.StatusApproved, walletdomain.StatusSigning:
 			if err := s.wallet.MarkWithdrawBroadcasted(txCtx, walletdomain.BroadcastWithdrawInput{
 				WithdrawID:     withdraw.WithdrawID,
@@ -357,16 +377,6 @@ func (s *Service) HandleWithdrawExecuted(ctx context.Context, event WithdrawExec
 				"withdraw_id": withdraw.WithdrawID,
 				"tx_hash":     event.TxHash,
 				"status":      withdraw.Status,
-			})
-		}
-
-		if !strings.EqualFold(withdraw.Asset, rule.Asset) {
-			return s.publishAnomaly(txCtx, "withdraw_asset_mismatch", event.TraceID, map[string]any{
-				"chain_id":       event.ChainID,
-				"withdraw_id":    withdraw.WithdrawID,
-				"withdraw_asset": withdraw.Asset,
-				"expected_asset": rule.Asset,
-				"tx_hash":        event.TxHash,
 			})
 		}
 		if err := s.wallet.CompleteWithdraw(txCtx, walletdomain.CompleteWithdrawInput{
@@ -418,10 +428,7 @@ func (s *Service) HandleWithdrawFailed(ctx context.Context, event WithdrawFailed
 			})
 		case walletdomain.StatusRefunded:
 			return nil
-		case walletdomain.StatusApproved, walletdomain.StatusBroadcasted:
-			if err := s.withdraws.UpdateStatus(txCtx, withdraw.WithdrawID, []string{withdraw.Status}, walletdomain.StatusFailed); err != nil {
-				return err
-			}
+		case walletdomain.StatusApproved, walletdomain.StatusSigning, walletdomain.StatusBroadcasted:
 			if err := s.publish(txCtx, EventEnvelope{
 				EventID:       s.idgen.NewID("evt"),
 				EventType:     "wallet.withdraw.failed",
@@ -432,11 +439,12 @@ func (s *Service) HandleWithdrawFailed(ctx context.Context, event WithdrawFailed
 				Version:       1,
 				OccurredAt:    s.occurredAt(event.ObservedAt),
 				Payload: map[string]any{
-					"withdraw_id": withdraw.WithdrawID,
-					"chain_id":    withdraw.ChainID,
-					"tx_hash":     event.TxHash,
-					"reason":      event.Reason,
-					"status":      walletdomain.StatusFailed,
+					"withdraw_id":     withdraw.WithdrawID,
+					"chain_id":        withdraw.ChainID,
+					"tx_hash":         event.TxHash,
+					"reason":          event.Reason,
+					"previous_status": withdraw.Status,
+					"status":          walletdomain.StatusFailed,
 				},
 			}); err != nil {
 				return err
@@ -642,6 +650,51 @@ func (s *Service) validateWithdrawExecution(event WithdrawExecuted) (ChainRule, 
 		}}
 	}
 	return rule, nil
+}
+
+func validateExecutedWithdrawMatches(withdraw walletdomain.WithdrawRequest, event WithdrawExecuted) error {
+	expectedTo, err := authx.NormalizeEVMAddress(withdraw.ToAddress)
+	if err != nil {
+		return err
+	}
+	eventTo, err := authx.NormalizeEVMAddress(event.ToAddress)
+	if err != nil {
+		return err
+	}
+	if expectedTo != eventTo {
+		return anomalyError{kind: "withdraw_to_mismatch", payload: map[string]any{
+			"chain_id":       event.ChainID,
+			"withdraw_id":    withdraw.WithdrawID,
+			"expected_to":    expectedTo,
+			"event_to":       eventTo,
+			"tx_hash":        event.TxHash,
+			"broadcast_hash": withdraw.BroadcastTxHash,
+		}}
+	}
+	expectedAmount, err := decimalx.NewFromString(withdraw.Amount)
+	if err != nil {
+		return err
+	}
+	feeAmount, err := decimalx.NewFromString(withdraw.FeeAmount)
+	if err != nil {
+		return err
+	}
+	netAmount := expectedAmount.Sub(feeAmount)
+	eventAmount, err := decimalx.NewFromString(event.Amount)
+	if err != nil {
+		return err
+	}
+	if !netAmount.Equal(eventAmount) {
+		return anomalyError{kind: "withdraw_amount_mismatch", payload: map[string]any{
+			"chain_id":        event.ChainID,
+			"withdraw_id":     withdraw.WithdrawID,
+			"expected_amount": netAmount.String(),
+			"event_amount":    eventAmount.String(),
+			"tx_hash":         event.TxHash,
+			"broadcast_hash":  withdraw.BroadcastTxHash,
+		}}
+	}
+	return nil
 }
 
 func (s *Service) publish(ctx context.Context, envelope EventEnvelope) error {
@@ -923,6 +976,17 @@ func (r *Runner) syncStuckSigningWithdrawals(ctx context.Context, chainID int64)
 	deadline := r.clock.Now().Add(-30 * time.Second)
 	for _, withdraw := range pending {
 		if withdraw.BroadcastTxHash != "" || withdraw.UpdatedAt.After(deadline) {
+			continue
+		}
+		if withdraw.BroadcastNonce != nil {
+			if err := r.service.publishAnomaly(ctx, "withdraw_stuck_signing", fmt.Sprintf("withdraw:stuck:%s", withdraw.WithdrawID), map[string]any{
+				"chain_id":        chainID,
+				"withdraw_id":     withdraw.WithdrawID,
+				"status":          walletdomain.StatusSigning,
+				"broadcast_nonce": *withdraw.BroadcastNonce,
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		if err := r.service.withdraws.UpdateStatus(ctx, withdraw.WithdrawID, []string{walletdomain.StatusSigning}, walletdomain.StatusRiskReview); err != nil {

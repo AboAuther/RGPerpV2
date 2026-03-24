@@ -14,7 +14,6 @@
 - `src/pages`: 页面级入口
 - `src/features`: 业务模块
 - `src/shared/api`: HTTP client 与 DTO
-- `src/shared/ws`: WebSocket client
 - `src/shared/components`: 通用组件
 - `src/shared/types`: 全局类型
 

@@ -46,6 +46,8 @@ type createOrderRequest struct {
 	PositionEffect string  `json:"position_effect"`
 	Type           string  `json:"type"`
 	Qty            string  `json:"qty"`
+	Leverage       *string `json:"leverage"`
+	MarginMode     string  `json:"margin_mode"`
 	Price          *string `json:"price"`
 	TriggerPrice   *string `json:"trigger_price"`
 	ReduceOnly     bool    `json:"reduce_only"`
@@ -77,6 +79,8 @@ func (h *TradingHandler) createOrder(c *gin.Context) {
 		Price:          req.Price,
 		TriggerPrice:   req.TriggerPrice,
 		Qty:            req.Qty,
+		Leverage:       req.Leverage,
+		MarginMode:     req.MarginMode,
 		ReduceOnly:     req.ReduceOnly,
 		MaxSlippageBps: req.MaxSlippageBps,
 		IdempotencyKey: c.GetHeader("Idempotency-Key"),
@@ -96,6 +100,8 @@ func (h *TradingHandler) createOrder(c *gin.Context) {
 		Qty:            order.Qty,
 		FilledQty:      order.FilledQty,
 		AvgFillPrice:   order.AvgFillPrice,
+		Leverage:       order.Leverage,
+		MarginMode:     order.MarginMode,
 		Price:          order.Price,
 		TriggerPrice:   order.TriggerPrice,
 		ReduceOnly:     order.ReduceOnly,

@@ -27,6 +27,7 @@ type PositionExposure struct {
 	SymbolID           uint64
 	Symbol             string
 	Side               string
+	MarginMode         string
 	Qty                string
 	AvgEntryPrice      string
 	MarkPrice          string
@@ -35,6 +36,7 @@ type PositionExposure struct {
 	MaintenanceMargin  string
 	UnrealizedPnL      string
 	FundingAccrual     string
+	LiquidationPrice   string
 	LiquidationFeeRate string
 	ContractMultiplier string
 	MarkPriceUpdatedAt time.Time
@@ -72,6 +74,9 @@ type Snapshot struct {
 type LiquidationTrigger struct {
 	LiquidationID     string
 	UserID            uint64
+	Mode              string
+	PositionID        string
+	Symbol            string
 	MarginRatio       string
 	Equity            string
 	MaintenanceMargin string

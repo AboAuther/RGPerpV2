@@ -3,6 +3,7 @@ package liquidation
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
@@ -69,10 +70,20 @@ func (s *Service) SetRuntimeConfigProvider(provider RuntimeConfigProvider) {
 }
 
 func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation, error) {
+	input.Mode = strings.ToUpper(strings.TrimSpace(input.Mode))
+	if input.Mode == "" {
+		input.Mode = ModeFull
+	}
 	if strings.TrimSpace(input.LiquidationID) == "" || input.UserID == 0 || input.TriggerRiskSnapshotID == 0 {
 		return Liquidation{}, fmt.Errorf("%w: invalid liquidation input", errorsx.ErrInvalidArgument)
 	}
-	cfg := s.currentConfig()
+	if input.Mode != ModeFull && input.Mode != ModeIsolated {
+		return Liquidation{}, fmt.Errorf("%w: invalid liquidation mode", errorsx.ErrInvalidArgument)
+	}
+	if input.Mode == ModeIsolated && strings.TrimSpace(input.PositionID) == "" {
+		return Liquidation{}, fmt.Errorf("%w: invalid liquidation input", errorsx.ErrInvalidArgument)
+	}
+	cfg := s.currentConfig("")
 
 	var liquidation Liquidation
 	now := s.clock.Now().UTC()
@@ -89,7 +100,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			liquidation = Liquidation{
 				ID:                    input.LiquidationID,
 				UserID:                input.UserID,
-				Mode:                  ModeFull,
+				Mode:                  input.Mode,
 				Status:                StatusExecuting,
 				TriggerRiskSnapshotID: input.TriggerRiskSnapshotID,
 				PenaltyAmount:         "0",
@@ -104,7 +115,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			}
 		}
 
-		positions, err := s.repo.ListOpenPositionsForUpdate(txCtx, input.UserID)
+		positions, err := s.loadTargetPositions(txCtx, input)
 		if err != nil {
 			return err
 		}
@@ -134,6 +145,9 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 				CreatedAt: now,
 			})
 		}
+		if err := s.lockSymbolsForUpdate(txCtx, positions); err != nil {
+			return err
+		}
 
 		resolvedAccounts, err := s.accounts.ResolveLiquidationAccounts(txCtx, input.UserID, s.cfg.Asset)
 		if err != nil {
@@ -148,15 +162,19 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			return err
 		}
 
-		orders, err := s.repo.ListRiskIncreaseOrdersForUpdate(txCtx, input.UserID)
-		if err != nil {
-			return err
-		}
+		orders := make([]RiskIncreaseOrder, 0)
 		releasedOrderMargin := decimalx.MustFromString("0")
-		orderIDs := make([]string, 0, len(orders))
-		for _, order := range orders {
-			orderIDs = append(orderIDs, order.OrderID)
-			releasedOrderMargin = releasedOrderMargin.Add(decimalx.MustFromString(order.FrozenMargin))
+		orderIDs := make([]string, 0)
+		if input.Mode == ModeFull {
+			orders, err = s.repo.ListRiskIncreaseOrdersForUpdate(txCtx, input.UserID)
+			if err != nil {
+				return err
+			}
+			orderIDs = make([]string, 0, len(orders))
+			for _, order := range orders {
+				orderIDs = append(orderIDs, order.OrderID)
+				releasedOrderMargin = releasedOrderMargin.Add(decimalx.MustFromString(order.FrozenMargin))
+			}
 		}
 		liquidation.ConfigSnapshot = buildConfigSnapshot(cfg)
 		liquidation.PreAccountSnapshot = buildAccountSnapshot(prePreview, preCoverageBalances)
@@ -201,7 +219,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			return err
 		}
 		liquidation.PostAccountSnapshot = buildAccountSnapshot(preview, coverageBalances)
-		if preview.RiskLevel != riskdomain.RiskLevelLiquidating {
+		if input.Mode == ModeFull && preview.RiskLevel != riskdomain.RiskLevelLiquidating {
 			liquidation.Status = StatusAborted
 			liquidation.AbortReason = stringPtr(abortReasonAfterRelease)
 			liquidation.PostPositionsSnapshot = buildPositionSnapshots(positions, nil)
@@ -231,6 +249,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 		totalPenalty := decimalx.MustFromString("0")
 		totalRealizedPnL := decimalx.MustFromString("0")
 		for _, position := range positions {
+			positionCfg := s.currentConfig(position.Symbol)
 			executionPrice := s.worsenedExecutionPrice(position.Side, position.MarkPrice)
 			qty := decimalx.MustFromString(position.Qty)
 			entryPrice := decimalx.MustFromString(position.AvgEntryPrice)
@@ -238,7 +257,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			multiplier := decimalx.MustFromString(position.ContractMultiplier)
 			realizedPnL := realizedPnL(position.Side, qty, executionPrice, entryPrice, multiplier)
 			liquidatedNotional := qty.Mul(executionPrice).Mul(multiplier)
-			penalty := liquidatedNotional.Mul(decimalx.MustFromString(cfg.PenaltyRate))
+			penalty := liquidatedNotional.Mul(decimalx.MustFromString(positionCfg.PenaltyRate))
 
 			executions = append(executions, liquidationExecution{
 				position:       position,
@@ -262,8 +281,11 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			walletCredit = settlementNet
 		} else if settlementNet.LessThan(decimalx.MustFromString("0")) {
 			deficit := settlementNet.Abs()
-			walletDebit = minDecimal(walletBalance, deficit)
-			remainingAfterWallet := deficit.Sub(walletDebit)
+			remainingAfterWallet := deficit
+			if input.Mode == ModeFull {
+				walletDebit = minDecimal(walletBalance, deficit)
+				remainingAfterWallet = deficit.Sub(walletDebit)
+			}
 			insuranceDebit = minDecimal(insuranceBalance, remainingAfterWallet)
 			bankruptAmount = remainingAfterWallet.Sub(insuranceDebit)
 		}
@@ -383,6 +405,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 				UserID:         input.UserID,
 				SymbolID:       position.SymbolID,
 				Side:           oppositeSide(position.Side),
+				MarginMode:     position.MarginMode,
 				PositionEffect: "CLOSE",
 				Type:           "MARKET",
 				TimeInForce:    "IOC",
@@ -513,6 +536,7 @@ func buildPositionSnapshots(positions []Position, executions []liquidationExecut
 			SymbolID:          position.SymbolID,
 			Symbol:            position.Symbol,
 			Side:              position.Side,
+			MarginMode:        position.MarginMode,
 			Qty:               position.Qty,
 			AvgEntryPrice:     position.AvgEntryPrice,
 			MarkPrice:         position.MarkPrice,
@@ -542,6 +566,45 @@ func buildPositionSnapshots(positions []Position, executions []liquidationExecut
 		snapshots = append(snapshots, snapshot)
 	}
 	return snapshots
+}
+
+func (s *Service) loadTargetPositions(ctx context.Context, input ExecuteInput) ([]Position, error) {
+	if input.Mode == ModeIsolated {
+		position, err := s.repo.GetPositionForLiquidationByID(ctx, input.UserID, input.PositionID)
+		if err != nil {
+			if err == errorsx.ErrNotFound {
+				return []Position{}, nil
+			}
+			return nil, err
+		}
+		return []Position{position}, nil
+	}
+	return s.repo.ListOpenPositionsForUpdate(ctx, input.UserID)
+}
+
+func (s *Service) lockSymbolsForUpdate(ctx context.Context, positions []Position) error {
+	if len(positions) == 0 {
+		return nil
+	}
+	unique := make(map[uint64]struct{}, len(positions))
+	symbolIDs := make([]uint64, 0, len(positions))
+	for _, position := range positions {
+		if position.SymbolID == 0 {
+			continue
+		}
+		if _, ok := unique[position.SymbolID]; ok {
+			continue
+		}
+		unique[position.SymbolID] = struct{}{}
+		symbolIDs = append(symbolIDs, position.SymbolID)
+	}
+	slices.Sort(symbolIDs)
+	for _, symbolID := range symbolIDs {
+		if err := s.repo.LockSymbolForUpdate(ctx, symbolID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func buildReleasedOrderSnapshots(orders []RiskIncreaseOrder) []ReleasedOrderSnapshot {
@@ -615,11 +678,11 @@ func buildSettlementSnapshot(
 	}
 }
 
-func (s *Service) currentConfig() ServiceConfig {
+func (s *Service) currentConfig(symbol string) ServiceConfig {
 	if s.runtime == nil {
 		return s.cfg
 	}
-	cfg := s.runtime.CurrentLiquidationRuntimeConfig()
+	cfg := s.runtime.CurrentLiquidationRuntimeConfig(symbol)
 	if cfg.Asset == "" || cfg.PenaltyRate == "" {
 		return s.cfg
 	}
@@ -641,7 +704,7 @@ func minDecimal(left decimalx.Decimal, right decimalx.Decimal) decimalx.Decimal 
 }
 
 func (s *Service) worsenedExecutionPrice(positionSide string, markPrice string) decimalx.Decimal {
-	cfg := s.currentConfig()
+	cfg := s.currentConfig("")
 	mark := decimalx.MustFromString(markPrice)
 	factor := decimalx.MustFromString(fmt.Sprintf("%d", cfg.ExtraSlippageBps)).Div(decimalx.MustFromString("10000"))
 	if strings.ToUpper(positionSide) == "LONG" {

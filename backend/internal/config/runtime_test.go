@@ -53,6 +53,7 @@ risk:
   mark_price_stale_sec: 3
   force_reduce_only_on_stale_price: true
   liquidation_penalty_rate: "0.01"
+  maintenance_margin_uplift_ratio: "0"
   liquidation_extra_slippage_bps: 20
   max_open_orders_per_user_per_symbol: 20
   net_exposure_hard_limit: "250000"

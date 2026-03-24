@@ -7,8 +7,14 @@ import (
 	"time"
 
 	hedgedomain "github.com/xiaobao/rgperp/backend/internal/domain/hedge"
+	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
+)
+
+const (
+	liquidationModeFull     = "FULL"
+	liquidationModeIsolated = "ISOLATED"
 )
 
 type ServiceConfig struct {
@@ -109,34 +115,67 @@ func (s *Service) recalculateAccountRisk(ctx context.Context, userID uint64, tri
 		}
 		snapshot = saved
 
-		if err := s.outbox.Publish(txCtx, DomainEvent{
-			EventID:       s.idgen.NewID("evt"),
-			AggregateType: "risk_snapshot",
-			AggregateID:   fmt.Sprintf("%d", snapshot.ID),
-			EventType:     "risk.snapshot.updated",
-			Payload: map[string]any{
-				"risk_snapshot_id":   snapshot.ID,
-				"user_id":            snapshot.UserID,
-				"equity":             snapshot.Equity,
-				"available_balance":  snapshot.AvailableBalance,
-				"maintenance_margin": snapshot.MaintenanceMargin,
-				"margin_ratio":       snapshot.MarginRatio,
-				"risk_level":         snapshot.RiskLevel,
-				"triggered_by":       snapshot.TriggeredBy,
-			},
-			CreatedAt: now,
-		}); err != nil {
-			return err
+		riskLevelChanged := prevErr == nil && previous.RiskLevel != snapshot.RiskLevel
+		if riskLevelChanged {
+			if err := s.outbox.Publish(txCtx, DomainEvent{
+				EventID:       s.idgen.NewID("evt"),
+				AggregateType: "risk_snapshot",
+				AggregateID:   fmt.Sprintf("%d", snapshot.ID),
+				EventType:     "risk.snapshot.updated",
+				Payload: map[string]any{
+					"risk_snapshot_id":    snapshot.ID,
+					"user_id":             snapshot.UserID,
+					"equity":              snapshot.Equity,
+					"available_balance":   snapshot.AvailableBalance,
+					"maintenance_margin":  snapshot.MaintenanceMargin,
+					"margin_ratio":        snapshot.MarginRatio,
+					"risk_level":          snapshot.RiskLevel,
+					"previous_risk_level": previous.RiskLevel,
+					"triggered_by":        snapshot.TriggeredBy,
+				},
+				CreatedAt: now,
+			}); err != nil {
+				return err
+			}
 		}
 
-		shouldTrigger := allowLiquidationTrigger && snapshot.RiskLevel == RiskLevelLiquidating && (prevErr == errorsx.ErrNotFound || previous.RiskLevel != RiskLevelLiquidating)
-		if !shouldTrigger {
+		if !allowLiquidationTrigger {
 			return nil
 		}
 
+		shouldTriggerFull := snapshot.RiskLevel == RiskLevelLiquidating && (prevErr == errorsx.ErrNotFound || previous.RiskLevel != RiskLevelLiquidating)
+		if shouldTriggerFull {
+			trigger = &LiquidationTrigger{
+				LiquidationID:     s.idgen.NewID("liq"),
+				UserID:            userID,
+				Mode:              liquidationModeFull,
+				MarginRatio:       snapshot.MarginRatio,
+				Equity:            snapshot.Equity,
+				MaintenanceMargin: snapshot.MaintenanceMargin,
+				TriggeredAt:       now,
+				Status:            "TRIGGERED",
+				SnapshotID:        snapshot.ID,
+			}
+			return s.publishLiquidationTriggered(txCtx, trigger)
+		}
+
+		position := findTriggeredIsolatedPosition(state)
+		if position == nil {
+			return nil
+		}
+		claimed, err := s.repo.MarkPositionLiquidating(txCtx, position.PositionID, now)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return nil
+		}
 		trigger = &LiquidationTrigger{
 			LiquidationID:     s.idgen.NewID("liq"),
 			UserID:            userID,
+			Mode:              liquidationModeIsolated,
+			PositionID:        position.PositionID,
+			Symbol:            position.Symbol,
 			MarginRatio:       snapshot.MarginRatio,
 			Equity:            snapshot.Equity,
 			MaintenanceMargin: snapshot.MaintenanceMargin,
@@ -144,23 +183,7 @@ func (s *Service) recalculateAccountRisk(ctx context.Context, userID uint64, tri
 			Status:            "TRIGGERED",
 			SnapshotID:        snapshot.ID,
 		}
-		return s.outbox.Publish(txCtx, DomainEvent{
-			EventID:       s.idgen.NewID("evt"),
-			AggregateType: "risk_liquidation",
-			AggregateID:   trigger.LiquidationID,
-			EventType:     "risk.liquidation.triggered",
-			Payload: map[string]any{
-				"liquidation_id":     trigger.LiquidationID,
-				"user_id":            trigger.UserID,
-				"margin_ratio":       trigger.MarginRatio,
-				"equity":             trigger.Equity,
-				"maintenance_margin": trigger.MaintenanceMargin,
-				"trigger_price_ts":   trigger.TriggeredAt,
-				"status":             trigger.Status,
-				"risk_snapshot_id":   trigger.SnapshotID,
-			},
-			CreatedAt: now,
-		})
+		return s.publishLiquidationTriggered(txCtx, trigger)
 	})
 	if err != nil {
 		return Snapshot{}, nil, err
@@ -184,6 +207,61 @@ func (s *Service) EvaluateAllHedges(ctx context.Context) ([]HedgeDecision, error
 		}
 	}
 	return out, nil
+}
+
+func (s *Service) publishLiquidationTriggered(ctx context.Context, trigger *LiquidationTrigger) error {
+	payload := map[string]any{
+		"liquidation_id":     trigger.LiquidationID,
+		"user_id":            trigger.UserID,
+		"mode":               trigger.Mode,
+		"margin_ratio":       trigger.MarginRatio,
+		"equity":             trigger.Equity,
+		"maintenance_margin": trigger.MaintenanceMargin,
+		"trigger_price_ts":   trigger.TriggeredAt,
+		"status":             trigger.Status,
+		"risk_snapshot_id":   trigger.SnapshotID,
+	}
+	if strings.TrimSpace(trigger.PositionID) != "" {
+		payload["position_id"] = trigger.PositionID
+	}
+	if strings.TrimSpace(trigger.Symbol) != "" {
+		payload["symbol"] = trigger.Symbol
+	}
+	return s.outbox.Publish(ctx, DomainEvent{
+		EventID:       s.idgen.NewID("evt"),
+		AggregateType: "risk_liquidation",
+		AggregateID:   trigger.LiquidationID,
+		EventType:     "risk.liquidation.triggered",
+		Payload:       payload,
+		CreatedAt:     trigger.TriggeredAt,
+	})
+}
+
+func findTriggeredIsolatedPosition(state AccountState) *PositionExposure {
+	for idx := range state.Positions {
+		position := &state.Positions[idx]
+		if position.MarginMode != orderdomain.MarginModeIsolated {
+			continue
+		}
+		if !isolatedPositionShouldLiquidate(*position) {
+			continue
+		}
+		return position
+	}
+	return nil
+}
+
+func isolatedPositionShouldLiquidate(position PositionExposure) bool {
+	liqPrice := strings.TrimSpace(position.LiquidationPrice)
+	if liqPrice == "" || liqPrice == "0" {
+		return false
+	}
+	mark := decimalx.MustFromString(position.MarkPrice)
+	threshold := decimalx.MustFromString(liqPrice)
+	if position.Side == orderdomain.PositionSideShort {
+		return mark.GreaterThanOrEqual(threshold)
+	}
+	return mark.LessThanOrEqual(threshold)
 }
 
 func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*HedgeDecision, error) {

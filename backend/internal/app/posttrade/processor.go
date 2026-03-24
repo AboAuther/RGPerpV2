@@ -2,106 +2,90 @@ package posttrade
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
-	liquidationdomain "github.com/xiaobao/rgperp/backend/internal/domain/liquidation"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	riskdomain "github.com/xiaobao/rgperp/backend/internal/domain/risk"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
-type riskRecalculator interface {
-	RecalculateAccountRisk(ctx context.Context, userID uint64, triggeredBy string) (riskdomain.Snapshot, *riskdomain.LiquidationTrigger, error)
-	RefreshAccountRisk(ctx context.Context, userID uint64, triggeredBy string) (riskdomain.Snapshot, error)
+const recalculateRequestedEventType = "risk.recalculate.requested"
+
+type Clock interface {
+	Now() time.Time
 }
 
-type liquidationExecutor interface {
-	Execute(ctx context.Context, input liquidationdomain.ExecuteInput) (liquidationdomain.Liquidation, error)
+type IDGenerator interface {
+	NewID(prefix string) string
 }
 
 type Processor struct {
-	risk        riskRecalculator
-	liquidation liquidationExecutor
+	clock  Clock
+	idgen  IDGenerator
+	outbox riskdomain.OutboxPublisher
 }
 
-func NewProcessor(risk riskRecalculator, liquidation liquidationExecutor) *Processor {
-	if risk == nil || liquidation == nil {
+func NewProcessor(clock Clock, idgen IDGenerator, outbox riskdomain.OutboxPublisher) *Processor {
+	if clock == nil || idgen == nil || outbox == nil {
 		return nil
 	}
-	return &Processor{risk: risk, liquidation: liquidation}
+	return &Processor{
+		clock:  clock,
+		idgen:  idgen,
+		outbox: outbox,
+	}
 }
 
 func (p *Processor) RecalculateAfterTrade(ctx context.Context, userID uint64, traceID string) error {
-	_, _, err := p.recalculateAndMaybeLiquidate(ctx, userID, "trade_fill", traceID)
+	_, err := p.QueueRecalculation(ctx, userID, "trade_fill", traceID)
 	return err
 }
 
-func (p *Processor) EvaluateAccount(ctx context.Context, userID uint64, triggeredBy string, traceID string) (riskdomain.Snapshot, *liquidationdomain.Liquidation, error) {
-	return p.recalculateAndMaybeLiquidate(ctx, userID, triggeredBy, traceID)
-}
-
 func (p *Processor) RecalculateAccount(ctx context.Context, userID uint64, operatorID string) (readmodel.AdminRiskRecalculationResult, error) {
-	snapshot, liquidation, err := p.recalculateAndMaybeLiquidate(ctx, userID, "admin", "admin:"+operatorID+":risk_recalc")
+	requestID, err := p.QueueRecalculation(ctx, userID, "admin", "admin:"+strings.TrimSpace(operatorID))
 	if err != nil {
 		return readmodel.AdminRiskRecalculationResult{}, err
 	}
-	result := readmodel.AdminRiskRecalculationResult{
-		UserID:         userID,
-		RiskSnapshotID: snapshot.ID,
-		MarginRatio:    snapshot.MarginRatio,
-		RiskLevel:      snapshot.RiskLevel,
-		TriggeredBy:    snapshot.TriggeredBy,
-	}
-	if liquidation != nil {
-		result.LiquidationID = &liquidation.ID
-		result.LiquidationStatus = &liquidation.Status
-	}
-	return result, nil
+	return readmodel.AdminRiskRecalculationResult{
+		UserID:                 userID,
+		TriggeredBy:            "admin",
+		RecalculationRequestID: &requestID,
+		RecalculationStatus:    stringPtr("QUEUED"),
+	}, nil
 }
 
-func (p *Processor) recalculateAndMaybeLiquidate(ctx context.Context, userID uint64, triggeredBy string, traceID string) (riskdomain.Snapshot, *liquidationdomain.Liquidation, error) {
-	if p == nil || p.risk == nil || p.liquidation == nil {
-		return riskdomain.Snapshot{}, nil, nil
+func (p *Processor) QueueRecalculation(ctx context.Context, userID uint64, triggeredBy string, traceID string) (string, error) {
+	if p == nil || p.clock == nil || p.idgen == nil || p.outbox == nil {
+		return "", nil
 	}
-	snapshot, trigger, err := p.risk.RecalculateAccountRisk(ctx, userID, triggeredBy)
-	if err != nil {
-		return riskdomain.Snapshot{}, nil, err
+	if userID == 0 {
+		return "", fmt.Errorf("%w: user id is required", errorsx.ErrInvalidArgument)
 	}
-	if trigger == nil {
-		return snapshot, nil, nil
+	triggeredBy = strings.TrimSpace(triggeredBy)
+	if triggeredBy == "" {
+		triggeredBy = "manual"
 	}
-	if strings.TrimSpace(traceID) == "" {
-		traceID = triggeredBy + ":" + trigger.LiquidationID
+	requestID := p.idgen.NewID("rrq")
+	if err := p.outbox.Publish(ctx, riskdomain.DomainEvent{
+		EventID:       p.idgen.NewID("evt"),
+		AggregateType: "risk_recalculation",
+		AggregateID:   requestID,
+		EventType:     recalculateRequestedEventType,
+		Payload: map[string]any{
+			"request_id":   requestID,
+			"user_id":      userID,
+			"triggered_by": triggeredBy,
+			"trace_id":     strings.TrimSpace(traceID),
+		},
+		CreatedAt: p.clock.Now().UTC(),
+	}); err != nil {
+		return "", err
 	}
-	liquidation, err := p.liquidation.Execute(ctx, liquidationdomain.ExecuteInput{
-		LiquidationID:         trigger.LiquidationID,
-		UserID:                userID,
-		TriggerRiskSnapshotID: snapshot.ID,
-		TraceID:               traceID,
-	})
-	if err != nil {
-		return riskdomain.Snapshot{}, nil, err
-	}
-	if refreshed, err := p.refreshRiskSnapshotAfterLiquidation(ctx, userID, liquidation); err != nil {
-		return riskdomain.Snapshot{}, nil, err
-	} else if refreshed != nil {
-		snapshot = *refreshed
-	}
-	return snapshot, &liquidation, nil
+	return requestID, nil
 }
 
-func (p *Processor) refreshRiskSnapshotAfterLiquidation(ctx context.Context, userID uint64, liquidation liquidationdomain.Liquidation) (*riskdomain.Snapshot, error) {
-	var triggeredBy string
-	switch liquidation.Status {
-	case liquidationdomain.StatusExecuted:
-		triggeredBy = "liquidation_executed"
-	case liquidationdomain.StatusAborted:
-		triggeredBy = "liquidation_aborted"
-	default:
-		return nil, nil
-	}
-	snapshot, err := p.risk.RefreshAccountRisk(ctx, userID, triggeredBy)
-	if err != nil {
-		return nil, err
-	}
-	return &snapshot, nil
+func stringPtr(value string) *string {
+	return &value
 }

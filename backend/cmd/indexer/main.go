@@ -34,6 +34,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("open mysql: %v", err)
 	}
+	if err := db.ConfigureMySQLConnectionPool(gormDB, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, time.Duration(cfg.MySQL.ConnMaxLifetimeSec)*time.Second); err != nil {
+		log.Fatalf("configure mysql pool: %v", err)
+	}
 	if err := waitForSchema(context.Background(), gormDB, 60*time.Second); err != nil {
 		log.Fatalf("wait schema: %v", err)
 	}
@@ -48,7 +51,7 @@ func main() {
 	confirmations := config.EnabledChainConfirmations(cfg)
 	depositAddressRepo := db.NewDepositAddressRepository(gormDB, confirmations)
 	walletService := walletdomain.NewService(
-		db.NewDepositRepository(gormDB),
+		db.NewDepositRepository(gormDB, confirmations),
 		db.NewWithdrawRepository(gormDB),
 		db.NewUserRepository(gormDB),
 		ledgerService,
@@ -70,7 +73,7 @@ func main() {
 
 	indexerService, err := indexerdomain.NewService(
 		walletService,
-		db.NewDepositRepository(gormDB),
+		db.NewDepositRepository(gormDB, confirmations),
 		db.NewWithdrawRepository(gormDB),
 		depositAddressRepo,
 		db.NewIndexerEventPublisher(gormDB),

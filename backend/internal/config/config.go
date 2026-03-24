@@ -17,15 +17,16 @@ type LoadOptions struct {
 
 // StaticConfig contains startup-time configuration shared by backend processes.
 type StaticConfig struct {
-	App      AppConfig
-	MySQL    MySQLConfig
-	Redis    RedisConfig
-	RabbitMQ RabbitMQConfig
-	Auth     AuthConfig
-	Admin    AdminConfig
-	Chains   ChainConfigs
-	Hedge    HedgeConfig
-	Review   ReviewConfig
+	App        AppConfig
+	MySQL      MySQLConfig
+	Redis      RedisConfig
+	RabbitMQ   RabbitMQConfig
+	Auth       AuthConfig
+	Admin      AdminConfig
+	Chains     ChainConfigs
+	MarketData MarketDataConfig
+	Hedge      HedgeConfig
+	Review     ReviewConfig
 }
 
 type AppConfig struct {
@@ -38,7 +39,10 @@ type AppConfig struct {
 }
 
 type MySQLConfig struct {
-	DSN string
+	DSN                string
+	MaxOpenConns       int
+	MaxIdleConns       int
+	ConnMaxLifetimeSec int
 }
 
 type RedisConfig struct {
@@ -61,7 +65,15 @@ type AdminConfig struct {
 	Wallets []string
 }
 
+type MarketDataConfig struct {
+	TwelveDataAPIKey string
+}
+
 type ChainConfig struct {
+	Enabled        bool
+	ChainID        int64
+	DisplayName    string
+	LocalTestnet   bool
 	RPCURL         string
 	Confirmations  int
 	USDCAddress    string
@@ -96,6 +108,9 @@ var knownEnvKeys = []string{
 	"TZ",
 	"RUNTIME_CONFIG_PATH",
 	"MYSQL_DSN",
+	"MYSQL_MAX_OPEN_CONNS",
+	"MYSQL_MAX_IDLE_CONNS",
+	"MYSQL_CONN_MAX_LIFETIME_SEC",
 	"REDIS_ADDR",
 	"REDIS_PASSWORD",
 	"REDIS_DB",
@@ -104,16 +119,29 @@ var knownEnvKeys = []string{
 	"JWT_ACCESS_SECRET",
 	"JWT_REFRESH_SECRET",
 	"ADMIN_WALLETS",
+	"TWELVE_DATA_API_KEY",
+	"ETH_ENABLED",
+	"ETH_CHAIN_ID",
+	"ETH_DISPLAY_NAME",
+	"ETH_LOCAL_TESTNET",
 	"ETH_RPC_URL",
 	"ETH_CONFIRMATIONS",
 	"ETH_USDC_ADDRESS",
 	"ETH_VAULT_ADDRESS",
 	"ETH_FACTORY_ADDRESS",
+	"ARB_ENABLED",
+	"ARB_CHAIN_ID",
+	"ARB_DISPLAY_NAME",
+	"ARB_LOCAL_TESTNET",
 	"ARB_RPC_URL",
 	"ARB_CONFIRMATIONS",
 	"ARB_USDC_ADDRESS",
 	"ARB_VAULT_ADDRESS",
 	"ARB_FACTORY_ADDRESS",
+	"BASE_ENABLED",
+	"BASE_CHAIN_ID",
+	"BASE_DISPLAY_NAME",
+	"BASE_LOCAL_TESTNET",
 	"BASE_RPC_URL",
 	"BASE_CONFIRMATIONS",
 	"BASE_USDC_ADDRESS",
@@ -172,7 +200,10 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 			RuntimeConfigPath: strings.TrimSpace(getenv("RUNTIME_CONFIG_PATH")),
 		},
 		MySQL: MySQLConfig{
-			DSN: strings.TrimSpace(getenv("MYSQL_DSN")),
+			DSN:                strings.TrimSpace(getenv("MYSQL_DSN")),
+			MaxOpenConns:       getInt(getenv, "MYSQL_MAX_OPEN_CONNS", 50),
+			MaxIdleConns:       getInt(getenv, "MYSQL_MAX_IDLE_CONNS", 25),
+			ConnMaxLifetimeSec: getInt(getenv, "MYSQL_CONN_MAX_LIFETIME_SEC", 300),
 		},
 		Redis: RedisConfig{
 			Addr:     strings.TrimSpace(getenv("REDIS_ADDR")),
@@ -190,24 +221,39 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 		Admin: AdminConfig{
 			Wallets: splitCSV(getenv("ADMIN_WALLETS")),
 		},
+		MarketData: MarketDataConfig{
+			TwelveDataAPIKey: strings.TrimSpace(getenv("TWELVE_DATA_API_KEY")),
+		},
 		Chains: ChainConfigs{
 			Ethereum: ChainConfig{
+				Enabled:        getBool(getenv, "ETH_ENABLED", strings.TrimSpace(getenv("ETH_RPC_URL")) != ""),
+				ChainID:        getInt64(getenv, "ETH_CHAIN_ID", 0),
+				DisplayName:    strings.TrimSpace(getenv("ETH_DISPLAY_NAME")),
+				LocalTestnet:   getBool(getenv, "ETH_LOCAL_TESTNET", false),
 				RPCURL:         strings.TrimSpace(getenv("ETH_RPC_URL")),
-				Confirmations:  getInt(getenv, "ETH_CONFIRMATIONS", 12),
+				Confirmations:  getInt(getenv, "ETH_CONFIRMATIONS", 0),
 				USDCAddress:    strings.TrimSpace(getenv("ETH_USDC_ADDRESS")),
 				VaultAddress:   strings.TrimSpace(getenv("ETH_VAULT_ADDRESS")),
 				FactoryAddress: strings.TrimSpace(getenv("ETH_FACTORY_ADDRESS")),
 			},
 			Arbitrum: ChainConfig{
+				Enabled:        getBool(getenv, "ARB_ENABLED", strings.TrimSpace(getenv("ARB_RPC_URL")) != ""),
+				ChainID:        getInt64(getenv, "ARB_CHAIN_ID", 0),
+				DisplayName:    strings.TrimSpace(getenv("ARB_DISPLAY_NAME")),
+				LocalTestnet:   getBool(getenv, "ARB_LOCAL_TESTNET", false),
 				RPCURL:         strings.TrimSpace(getenv("ARB_RPC_URL")),
-				Confirmations:  getInt(getenv, "ARB_CONFIRMATIONS", 20),
+				Confirmations:  getInt(getenv, "ARB_CONFIRMATIONS", 0),
 				USDCAddress:    strings.TrimSpace(getenv("ARB_USDC_ADDRESS")),
 				VaultAddress:   strings.TrimSpace(getenv("ARB_VAULT_ADDRESS")),
 				FactoryAddress: strings.TrimSpace(getenv("ARB_FACTORY_ADDRESS")),
 			},
 			Base: ChainConfig{
+				Enabled:        getBool(getenv, "BASE_ENABLED", strings.TrimSpace(getenv("BASE_RPC_URL")) != ""),
+				ChainID:        getInt64(getenv, "BASE_CHAIN_ID", 0),
+				DisplayName:    strings.TrimSpace(getenv("BASE_DISPLAY_NAME")),
+				LocalTestnet:   getBool(getenv, "BASE_LOCAL_TESTNET", false),
 				RPCURL:         strings.TrimSpace(getenv("BASE_RPC_URL")),
-				Confirmations:  getInt(getenv, "BASE_CONFIRMATIONS", 20),
+				Confirmations:  getInt(getenv, "BASE_CONFIRMATIONS", 0),
 				USDCAddress:    strings.TrimSpace(getenv("BASE_USDC_ADDRESS")),
 				VaultAddress:   strings.TrimSpace(getenv("BASE_VAULT_ADDRESS")),
 				FactoryAddress: strings.TrimSpace(getenv("BASE_FACTORY_ADDRESS")),
@@ -246,6 +292,18 @@ func (c StaticConfig) Validate() error {
 	if c.MySQL.DSN == "" {
 		errs = append(errs, fmt.Errorf("%w: MYSQL_DSN is required", errorsx.ErrInvalidArgument))
 	}
+	if c.MySQL.MaxOpenConns <= 0 {
+		errs = append(errs, fmt.Errorf("%w: MYSQL_MAX_OPEN_CONNS must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.MySQL.MaxIdleConns <= 0 {
+		errs = append(errs, fmt.Errorf("%w: MYSQL_MAX_IDLE_CONNS must be positive", errorsx.ErrInvalidArgument))
+	}
+	if c.MySQL.MaxIdleConns > c.MySQL.MaxOpenConns {
+		errs = append(errs, fmt.Errorf("%w: MYSQL_MAX_IDLE_CONNS must not exceed MYSQL_MAX_OPEN_CONNS", errorsx.ErrInvalidArgument))
+	}
+	if c.MySQL.ConnMaxLifetimeSec <= 0 {
+		errs = append(errs, fmt.Errorf("%w: MYSQL_CONN_MAX_LIFETIME_SEC must be positive", errorsx.ErrInvalidArgument))
+	}
 	if c.RabbitMQ.URL == "" {
 		errs = append(errs, fmt.Errorf("%w: RABBITMQ_URL is required", errorsx.ErrInvalidArgument))
 	}
@@ -267,12 +325,33 @@ func (c StaticConfig) Validate() error {
 		{name: "arbitrum", cfg: c.Chains.Arbitrum},
 		{name: "base", cfg: c.Chains.Base},
 	} {
-		if chain.cfg.RPCURL == "" {
+		if !chain.cfg.Enabled {
 			continue
+		}
+		if chain.cfg.ChainID <= 0 {
+			errs = append(errs, fmt.Errorf("%w: %s chain_id must be positive", errorsx.ErrInvalidArgument, chain.name))
+		}
+		if strings.TrimSpace(chain.cfg.DisplayName) == "" {
+			errs = append(errs, fmt.Errorf("%w: %s display name is required when chain is enabled", errorsx.ErrInvalidArgument, chain.name))
+		}
+		if chain.cfg.RPCURL == "" {
+			errs = append(errs, fmt.Errorf("%w: %s rpc url is required when chain is enabled", errorsx.ErrInvalidArgument, chain.name))
+			continue
+		}
+		if chain.cfg.Confirmations <= 0 {
+			errs = append(errs, fmt.Errorf("%w: %s confirmations must be positive", errorsx.ErrInvalidArgument, chain.name))
 		}
 		if chain.cfg.USDCAddress == "" || chain.cfg.VaultAddress == "" || chain.cfg.FactoryAddress == "" {
 			errs = append(errs, fmt.Errorf("%w: %s chain config is incomplete", errorsx.ErrInvalidArgument, chain.name))
 		}
+	}
+	seenChainIDs := make(map[int64]string, 3)
+	for _, chain := range EnabledChains(c) {
+		if existing, ok := seenChainIDs[chain.ChainID]; ok {
+			errs = append(errs, fmt.Errorf("%w: duplicate enabled chain_id %d for %s and %s", errorsx.ErrInvalidArgument, chain.ChainID, existing, chain.Key))
+			continue
+		}
+		seenChainIDs[chain.ChainID] = chain.Key
 	}
 
 	if c.App.Env == "prod" {
@@ -319,6 +398,22 @@ func loadMergedStaticEnv(rootDir string, getenv func(string) string) (map[string
 		}
 	}
 
+	chainEnvPath := strings.TrimSpace(getenv("CHAIN_ENV_FILE"))
+	if chainEnvPath == "" {
+		chainEnvPath = defaultChainEnvPath(rootDir)
+	} else {
+		chainEnvPath = normalizeConfigPath(rootDir, chainEnvPath)
+	}
+	if chainEnvPath != "" {
+		chainValues, err := parseEnvFile(chainEnvPath)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range chainValues {
+			merged[key] = value
+		}
+	}
+
 	for _, key := range knownEnvKeys {
 		if value := strings.TrimSpace(getenv(key)); value != "" {
 			merged[key] = value
@@ -336,14 +431,27 @@ func loadMergedStaticEnv(rootDir string, getenv func(string) string) (map[string
 
 func staticDefaults() map[string]string {
 	return map[string]string{
-		"APP_PORT":           "8080",
-		"LOG_LEVEL":          "info",
-		"TZ":                 "UTC",
-		"REDIS_DB":           "0",
-		"ETH_CONFIRMATIONS":  "12",
-		"ARB_CONFIRMATIONS":  "20",
-		"BASE_CONFIRMATIONS": "20",
+		"APP_PORT":  "8080",
+		"LOG_LEVEL": "info",
+		"TZ":        "UTC",
+		"REDIS_DB":  "0",
 	}
+}
+
+func defaultChainEnvPath(rootDir string) string {
+	if rootDir == "" {
+		return ""
+	}
+	candidates := []string{
+		filepath.Join(rootDir, "deploy", "env", "local-chains.env"),
+		filepath.Join(rootDir, ".local", "contracts.env"),
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return candidates[0]
 }
 
 func resolveProjectRoot(startDir string) (string, error) {
@@ -447,6 +555,18 @@ func getInt(getenv func(string) string, key string, fallback int) int {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func getInt64(getenv func(string) string, key string, fallback int64) int64 {
+	raw := strings.TrimSpace(getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return fallback
 	}

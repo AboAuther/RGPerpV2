@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,7 +12,13 @@ import (
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/exposurex"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/marketsession"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/positionrisk"
+)
+
+const (
+	rejectReasonImmediateLiquidation = "WOULD_ENTER_LIQUIDATION_IMMEDIATELY"
+	rejectReasonPositionLiquidating  = "POSITION_IS_LIQUIDATING"
 )
 
 type ServiceConfig struct {
@@ -80,10 +87,14 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 	if input.UserID == 0 || input.ClientOrderID == "" || input.Symbol == "" || input.Side == "" || input.PositionEffect == "" || input.Type == "" || input.Qty == "" {
 		return Order{}, fmt.Errorf("%w: missing order fields", errorsx.ErrInvalidArgument)
 	}
+	input.MarginMode = normalizeMarginMode(input.MarginMode)
 	if strings.TrimSpace(input.IdempotencyKey) == "" {
 		input.IdempotencyKey = input.ClientOrderID
 	}
 	if existing, err := s.repo.GetByUserClientOrderID(ctx, input.UserID, input.ClientOrderID); err == nil {
+		if existing.Symbol == "" {
+			existing.Symbol = input.Symbol
+		}
 		return existing, nil
 	} else if err != nil && !isNotFound(err) {
 		return Order{}, err
@@ -93,7 +104,7 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 	if err != nil {
 		return Order{}, err
 	}
-	runtimeCfg := s.currentRuntimeConfig()
+	runtimeCfg := s.currentRuntimeConfig(input.Symbol)
 	positionEffect := normalizePositionEffect(input.PositionEffect, input.ReduceOnly)
 	if positionEffect == "" {
 		return Order{}, fmt.Errorf("%w: unsupported position_effect", errorsx.ErrInvalidArgument)
@@ -101,13 +112,7 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 	if runtimeCfg.GlobalReadOnly {
 		return Order{}, fmt.Errorf("%w: system is read only", errorsx.ErrForbidden)
 	}
-	effectiveStatus := market.Status
-	if runtimeCfg.GlobalReduceOnly {
-		effectiveStatus = "REDUCE_ONLY"
-	}
-	if market.SnapshotTS.IsZero() || s.clock.Now().UTC().Sub(market.SnapshotTS) > runtimeCfg.MaxMarketDataAge {
-		effectiveStatus = "REDUCE_ONLY"
-	}
+	effectiveStatus := s.effectiveTradableStatus(market, runtimeCfg, s.clock.Now().UTC())
 	if !canTradeUnderSymbolStatus(effectiveStatus, positionEffect) {
 		return Order{}, fmt.Errorf("%w: symbol %s is not tradable for %s", errorsx.ErrForbidden, input.Symbol, positionEffect)
 	}
@@ -134,7 +139,7 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 
 	maxSlippageBps := input.MaxSlippageBps
 	if maxSlippageBps <= 0 {
-		maxSlippageBps = s.cfg.DefaultMaxSlippageBps
+		maxSlippageBps = runtimeCfg.DefaultMaxSlippageBps
 	}
 
 	var limitPrice *decimalx.Decimal
@@ -188,6 +193,8 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 		Qty:                 qty.String(),
 		FilledQty:           "0",
 		AvgFillPrice:        "0",
+		Leverage:            "1",
+		MarginMode:          input.MarginMode,
 		ReduceOnly:          input.ReduceOnly,
 		MaxSlippageBps:      maxSlippageBps,
 		Status:              OrderStatusResting,
@@ -211,8 +218,15 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 		if err != nil {
 			return err
 		}
+		if err := s.repo.LockSymbolForUpdate(txCtx, market.SymbolID); err != nil {
+			return err
+		}
 
 		if positionEffect == PositionEffectOpen {
+			availableBalance, err := s.lockOpenTradeBalances(txCtx, tradeAccounts)
+			if err != nil {
+				return err
+			}
 			if err := s.assertCanOpenRisk(txCtx, input.UserID); err != nil {
 				return err
 			}
@@ -220,16 +234,23 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 			if err != nil {
 				return err
 			}
-			currentPosition, err := s.loadPosition(txCtx, input.UserID, market.SymbolID, orderSideToPositionSide(side))
+			currentPosition, err := s.loadPosition(txCtx, input.UserID, market.SymbolID, orderSideToPositionSide(side), input.MarginMode)
 			if err != nil {
 				return err
 			}
-			_, executionPrice, holdInitialMargin, holdFee, err := s.resolveOpenRiskPricing(market, exposure, currentPosition, side, orderType, limitPrice, triggerPrice, qty, maxSlippageBps)
+			if err := ensurePositionCanAcceptOpenRisk(currentPosition); err != nil {
+				return err
+			}
+			_, executionPrice, leverage, holdInitialMargin, holdFee, err := s.resolveOpenRiskPricing(market, exposure, currentPosition, side, orderType, limitPrice, triggerPrice, qty, input.Leverage, maxSlippageBps, runtimeCfg)
 			if err != nil {
 				return err
 			}
-			feeRate := decimalx.MustFromString(s.cfg.TakerFeeRate)
-			created, err := s.createOpenOrder(txCtx, input, market, order, currentPosition, exposure, qty, executionPrice, holdInitialMargin, holdFee, feeRate, now, tradeAccounts.UserWalletAccountID, tradeAccounts.UserOrderMarginAccountID, tradeAccounts.UserPositionMarginAccountID, tradeAccounts.TradingFeeAccountID)
+			order.Leverage = leverage.String()
+			feeRate := decimalx.MustFromString(runtimeCfg.TakerFeeRate)
+			if err := s.ensureSufficientAvailableBalance(availableBalance, holdInitialMargin.Add(holdFee)); err != nil {
+				return err
+			}
+			created, err := s.createOpenOrder(txCtx, input, market, order, currentPosition, exposure, qty, executionPrice, holdInitialMargin, holdFee, feeRate, runtimeCfg, now, tradeAccounts.UserWalletAccountID, tradeAccounts.UserOrderMarginAccountID, tradeAccounts.UserPositionMarginAccountID, tradeAccounts.TradingFeeAccountID)
 			if err != nil {
 				return err
 			}
@@ -244,8 +265,8 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 		if notional.LessThan(decimalx.MustFromString(market.MinNotional)) {
 			return fmt.Errorf("%w: notional below minimum", errorsx.ErrInvalidArgument)
 		}
-		feeRate := decimalx.MustFromString(s.cfg.TakerFeeRate)
-		created, err := s.createCloseOrder(txCtx, input, market, order, qty, executionPrice, feeRate, now, tradeAccounts.UserWalletAccountID, tradeAccounts.UserPositionMarginAccountID, tradeAccounts.SystemPoolAccountID, tradeAccounts.TradingFeeAccountID)
+		feeRate := decimalx.MustFromString(runtimeCfg.TakerFeeRate)
+		created, err := s.createCloseOrder(txCtx, input, market, order, qty, executionPrice, feeRate, runtimeCfg, now, tradeAccounts.UserWalletAccountID, tradeAccounts.UserPositionMarginAccountID, tradeAccounts.SystemPoolAccountID, tradeAccounts.TradingFeeAccountID)
 		if err != nil {
 			return err
 		}
@@ -270,54 +291,34 @@ func (s *Service) createOpenOrder(
 	holdInitialMargin decimalx.Decimal,
 	holdFee decimalx.Decimal,
 	feeRate decimalx.Decimal,
+	runtimeCfg RuntimeConfig,
 	now time.Time,
 	walletAccountID uint64,
 	orderMarginAccountID uint64,
 	positionMarginAccountID uint64,
 	tradingFeeAccountID uint64,
 ) (Order, error) {
-	holdAmount := holdInitialMargin.Add(holdFee)
-	available, err := s.balances.GetAccountBalanceForUpdate(txCtx, walletAccountID, s.cfg.Asset)
-	if err != nil {
+	if err := ensurePositionCanAcceptOpenRisk(currentPosition); err != nil {
 		return Order{}, err
 	}
-	if decimalx.MustFromString(available).LessThan(holdAmount) {
-		return Order{}, fmt.Errorf("%w: insufficient available balance", errorsx.ErrConflict)
-	}
-
-	if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
-		LedgerTx: ledgerdomain.LedgerTx{
-			ID:             s.idgen.NewID("ldg"),
-			EventID:        s.idgen.NewID("evt"),
-			BizType:        "trade.order.hold",
-			BizRefID:       order.OrderID,
-			Asset:          s.cfg.Asset,
-			IdempotencyKey: input.IdempotencyKey + ":hold",
-			OperatorType:   "USER",
-			OperatorID:     fmt.Sprintf("%d", input.UserID),
-			TraceID:        input.TraceID,
-			Status:         "COMMITTED",
-			CreatedAt:      now,
-		},
-		Entries: []ledgerdomain.LedgerEntry{
-			{AccountID: walletAccountID, UserID: uint64Ptr(input.UserID), Asset: s.cfg.Asset, Amount: holdAmount.Neg().String(), EntryType: "TRADE_ORDER_HOLD"},
-			{AccountID: orderMarginAccountID, UserID: uint64Ptr(input.UserID), Asset: s.cfg.Asset, Amount: holdAmount.String(), EntryType: "TRADE_ORDER_HOLD"},
-		},
-	}); err != nil {
-		return Order{}, err
-	}
-	order.FrozenInitialMargin = holdInitialMargin.String()
-	order.FrozenFee = holdFee.String()
-	order.FrozenMargin = holdAmount.String()
-
 	if order.Type == OrderTypeLimit {
-		fillPrice, executable, err := s.resolveOpenLimitFillPrice(market, exposure, order.Side, order.Qty, decimalx.MustFromString(derefString(order.Price)))
+		fillPrice, executable, err := s.resolveOpenLimitFillPrice(market, exposure, order.Side, order.Qty, decimalx.MustFromString(derefString(order.Price)), runtimeCfg)
 		if err != nil {
 			return Order{}, err
 		}
 		if executable {
-			return s.fillNewOpenOrder(txCtx, input, market, order, currentPosition, qty, fillPrice, feeRate, holdAmount, now, walletAccountID, orderMarginAccountID, positionMarginAccountID, tradingFeeAccountID)
+			if s.wouldOpenPositionLiquidateImmediately(currentPosition, input.UserID, market, order.Side, order.MarginMode, qty, fillPrice, holdInitialMargin, runtimeCfg, now) {
+				return Order{}, fmt.Errorf("%w: order would enter liquidation immediately", errorsx.ErrInvalidArgument)
+			}
+			return s.fillNewOpenOrder(txCtx, input, market, order, currentPosition, qty, fillPrice, holdInitialMargin, feeRate, holdInitialMargin.Add(holdFee), runtimeCfg, now, walletAccountID, orderMarginAccountID, positionMarginAccountID, tradingFeeAccountID)
 		}
+		holdAmount := holdInitialMargin.Add(holdFee)
+		if err := s.postOpenOrderHold(txCtx, input, order, holdAmount, now, walletAccountID, orderMarginAccountID); err != nil {
+			return Order{}, err
+		}
+		order.FrozenInitialMargin = holdInitialMargin.String()
+		order.FrozenFee = holdFee.String()
+		order.FrozenMargin = holdAmount.String()
 		if err := s.repo.CreateOrder(txCtx, order); err != nil {
 			return Order{}, err
 		}
@@ -328,6 +329,13 @@ func (s *Service) createOpenOrder(
 	}
 
 	if isTriggerOrderType(order.Type) {
+		holdAmount := holdInitialMargin.Add(holdFee)
+		if err := s.postOpenOrderHold(txCtx, input, order, holdAmount, now, walletAccountID, orderMarginAccountID); err != nil {
+			return Order{}, err
+		}
+		order.FrozenInitialMargin = holdInitialMargin.String()
+		order.FrozenFee = holdFee.String()
+		order.FrozenMargin = holdAmount.String()
 		order.Status = OrderStatusTriggerWait
 		if err := s.repo.CreateOrder(txCtx, order); err != nil {
 			return Order{}, err
@@ -338,7 +346,10 @@ func (s *Service) createOpenOrder(
 		return order, nil
 	}
 
-	return s.fillNewOpenOrder(txCtx, input, market, order, currentPosition, qty, executionPrice, feeRate, holdAmount, now, walletAccountID, orderMarginAccountID, positionMarginAccountID, tradingFeeAccountID)
+	if s.wouldOpenPositionLiquidateImmediately(currentPosition, input.UserID, market, order.Side, order.MarginMode, qty, executionPrice, holdInitialMargin, runtimeCfg, now) {
+		return Order{}, fmt.Errorf("%w: order would enter liquidation immediately", errorsx.ErrInvalidArgument)
+	}
+	return s.fillNewOpenOrder(txCtx, input, market, order, currentPosition, qty, executionPrice, holdInitialMargin, feeRate, holdInitialMargin.Add(holdFee), runtimeCfg, now, walletAccountID, orderMarginAccountID, positionMarginAccountID, tradingFeeAccountID)
 }
 
 func (s *Service) fillNewOpenOrder(
@@ -349,20 +360,28 @@ func (s *Service) fillNewOpenOrder(
 	currentPosition Position,
 	fillQty decimalx.Decimal,
 	fillPrice decimalx.Decimal,
+	fillMargin decimalx.Decimal,
 	feeRate decimalx.Decimal,
 	holdAmount decimalx.Decimal,
+	runtimeCfg RuntimeConfig,
 	now time.Time,
 	walletAccountID uint64,
 	orderMarginAccountID uint64,
 	positionMarginAccountID uint64,
 	tradingFeeAccountID uint64,
 ) (Order, error) {
+	if err := ensurePositionCanAcceptOpenRisk(currentPosition); err != nil {
+		return Order{}, err
+	}
 	fillNotional := fillQty.Mul(fillPrice).Mul(decimalx.MustFromString(market.ContractMultiplier))
 	fillFee := fillNotional.Mul(feeRate)
-	fillMargin := openMarginDelta(currentPosition, market, fillQty, fillPrice)
 	refund := holdAmount.Sub(fillMargin.Add(fillFee))
 	if refund.LessThan(decimalx.MustFromString("0")) {
 		return Order{}, fmt.Errorf("%w: execution exceeded held margin", errorsx.ErrConflict)
+	}
+
+	if err := s.postOpenOrderHold(txCtx, input, order, holdAmount, now, walletAccountID, orderMarginAccountID); err != nil {
+		return Order{}, err
 	}
 
 	order.Status = OrderStatusFilled
@@ -430,11 +449,11 @@ func (s *Service) fillNewOpenOrder(
 	}
 
 	positionSide := orderSideToPositionSide(order.Side)
-	position, err := s.repo.GetPositionForUpdate(txCtx, input.UserID, market.SymbolID, positionSide)
+	position, err := s.repo.GetPositionForUpdate(txCtx, input.UserID, market.SymbolID, positionSide, input.MarginMode)
 	if err != nil && !isNotFound(err) {
 		return Order{}, err
 	}
-	position = applyOpenFill(position, input.UserID, market, positionSide, fillQty, fillPrice, fillMargin, now, s.idgen)
+	position = applyOpenFill(position, input.UserID, market, positionSide, input.MarginMode, fillQty, fillPrice, fillMargin, runtimeCfg, now, s.idgen)
 	if err := s.repo.UpsertPosition(txCtx, position); err != nil {
 		return Order{}, err
 	}
@@ -455,6 +474,7 @@ func (s *Service) createCloseOrder(
 	requestQty decimalx.Decimal,
 	executionPrice decimalx.Decimal,
 	feeRate decimalx.Decimal,
+	runtimeCfg RuntimeConfig,
 	now time.Time,
 	walletAccountID uint64,
 	positionMarginAccountID uint64,
@@ -462,8 +482,11 @@ func (s *Service) createCloseOrder(
 	tradingFeeAccountID uint64,
 ) (Order, error) {
 	targetPositionSide := closingTargetPositionSide(order.Side)
-	position, err := s.repo.GetPositionForUpdate(txCtx, input.UserID, market.SymbolID, targetPositionSide)
+	position, err := s.repo.GetPositionForUpdate(txCtx, input.UserID, market.SymbolID, targetPositionSide, input.MarginMode)
 	if err != nil {
+		return Order{}, err
+	}
+	if err := ensurePositionCanBeUserManaged(position); err != nil {
 		return Order{}, err
 	}
 	currentQty := decimalx.MustFromString(position.Qty)
@@ -570,7 +593,7 @@ func (s *Service) createCloseOrder(
 		return Order{}, err
 	}
 
-	position = applyCloseFill(position, market, closeQty, executionPrice, releasedMargin, realizedPnL, now)
+	position = applyCloseFill(position, market, closeQty, executionPrice, releasedMargin, realizedPnL, runtimeCfg, now)
 	if err := s.repo.UpsertPosition(txCtx, position); err != nil {
 		return Order{}, err
 	}
@@ -587,7 +610,7 @@ func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) error
 	if input.UserID == 0 || input.OrderID == "" {
 		return fmt.Errorf("%w: missing cancel order fields", errorsx.ErrInvalidArgument)
 	}
-	if s.currentRuntimeConfig().GlobalReadOnly {
+	if s.currentRuntimeConfig("").GlobalReadOnly {
 		return fmt.Errorf("%w: system is read only", errorsx.ErrForbidden)
 	}
 	if strings.TrimSpace(input.IdempotencyKey) == "" {
@@ -595,6 +618,13 @@ func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) error
 	}
 	now := s.clock.Now().UTC()
 	return s.txm.WithinTransaction(ctx, func(txCtx context.Context) error {
+		tradeAccounts, err := s.accounts.ResolveTradeAccounts(txCtx, input.UserID, s.cfg.Asset)
+		if err != nil {
+			return err
+		}
+		if _, err := s.lockOpenTradeBalances(txCtx, tradeAccounts); err != nil {
+			return err
+		}
 		order, err := s.repo.GetByUserOrderIDForUpdate(txCtx, input.UserID, input.OrderID)
 		if err != nil {
 			return err
@@ -604,11 +634,6 @@ func (s *Service) CancelOrder(ctx context.Context, input CancelOrderInput) error
 		}
 		if order.Status != OrderStatusResting && order.Status != OrderStatusTriggerWait {
 			return fmt.Errorf("%w: order is not cancelable", errorsx.ErrConflict)
-		}
-
-		tradeAccounts, err := s.accounts.ResolveTradeAccounts(txCtx, input.UserID, s.cfg.Asset)
-		if err != nil {
-			return err
 		}
 
 		releaseAmount := decimalx.MustFromString(order.FrozenMargin)
@@ -658,7 +683,7 @@ func (s *Service) ExecuteTriggerOrders(ctx context.Context, batchSize int) (int,
 	}
 	executed := 0
 	for _, candidate := range orders {
-		runtimeCfg := s.currentRuntimeConfig()
+		runtimeCfg := s.currentRuntimeConfig(candidate.Symbol)
 		market, err := s.markets.GetTradableSymbol(ctx, candidate.Symbol)
 		if err != nil {
 			return executed, err
@@ -681,17 +706,18 @@ func (s *Service) ExecuteTriggerOrders(ctx context.Context, batchSize int) (int,
 			if order.Symbol == "" {
 				order.Symbol = candidate.Symbol
 			}
+			if err := s.repo.LockSymbolForUpdate(txCtx, order.SymbolID); err != nil {
+				return err
+			}
 			lockedMarket, err := s.markets.GetTradableSymbol(txCtx, order.Symbol)
 			if err != nil {
 				return err
 			}
-			if lockedMarket.SnapshotTS.IsZero() || s.clock.Now().UTC().Sub(lockedMarket.SnapshotTS) > runtimeCfg.MaxMarketDataAge {
+			orderRuntimeCfg := s.currentRuntimeConfig(order.Symbol)
+			if lockedMarket.SnapshotTS.IsZero() || s.clock.Now().UTC().Sub(lockedMarket.SnapshotTS) > orderRuntimeCfg.MaxMarketDataAge {
 				return nil
 			}
-			lockedStatus := lockedMarket.Status
-			if runtimeCfg.GlobalReduceOnly {
-				lockedStatus = "REDUCE_ONLY"
-			}
+			lockedStatus := s.effectiveTradableStatus(lockedMarket, orderRuntimeCfg, s.clock.Now().UTC())
 			if !canTradeUnderSymbolStatus(lockedStatus, order.PositionEffect) {
 				return nil
 			}
@@ -720,18 +746,12 @@ func (s *Service) ExecuteRestingOrders(ctx context.Context, batchSize int) (int,
 	}
 	executed := 0
 	for _, candidate := range orders {
-		runtimeCfg := s.currentRuntimeConfig()
+		runtimeCfg := s.currentRuntimeConfig(candidate.Symbol)
 		market, err := s.markets.GetTradableSymbol(ctx, candidate.Symbol)
 		if err != nil {
 			return executed, err
 		}
-		effectiveStatus := market.Status
-		if runtimeCfg.GlobalReduceOnly {
-			effectiveStatus = "REDUCE_ONLY"
-		}
-		if market.SnapshotTS.IsZero() || s.clock.Now().UTC().Sub(market.SnapshotTS) > runtimeCfg.MaxMarketDataAge {
-			effectiveStatus = "REDUCE_ONLY"
-		}
+		effectiveStatus := s.effectiveTradableStatus(market, runtimeCfg, s.clock.Now().UTC())
 		if !canTradeUnderSymbolStatus(effectiveStatus, candidate.PositionEffect) {
 			continue
 		}
@@ -751,19 +771,24 @@ func (s *Service) ExecuteRestingOrders(ctx context.Context, batchSize int) (int,
 			if order.Symbol == "" {
 				order.Symbol = candidate.Symbol
 			}
+			if err := s.repo.LockSymbolForUpdate(txCtx, order.SymbolID); err != nil {
+				return err
+			}
 			lockedMarket, err := s.markets.GetTradableSymbol(txCtx, order.Symbol)
 			if err != nil {
 				return err
 			}
-			lockedStatus := lockedMarket.Status
-			if runtimeCfg.GlobalReduceOnly {
-				lockedStatus = "REDUCE_ONLY"
-			}
-			if lockedMarket.SnapshotTS.IsZero() || s.clock.Now().UTC().Sub(lockedMarket.SnapshotTS) > runtimeCfg.MaxMarketDataAge {
-				lockedStatus = "REDUCE_ONLY"
-			}
+			orderRuntimeCfg := s.currentRuntimeConfig(order.Symbol)
+			lockedStatus := s.effectiveTradableStatus(lockedMarket, orderRuntimeCfg, s.clock.Now().UTC())
 			if !canTradeUnderSymbolStatus(lockedStatus, order.PositionEffect) {
 				return nil
+			}
+			tradeAccounts, err := s.accounts.ResolveTradeAccounts(txCtx, order.UserID, s.cfg.Asset)
+			if err != nil {
+				return err
+			}
+			if _, err := s.lockOpenTradeBalances(txCtx, tradeAccounts); err != nil {
+				return err
 			}
 			if err := s.assertCanOpenRisk(txCtx, order.UserID); err != nil {
 				if errors.Is(err, errorsx.ErrForbidden) {
@@ -776,28 +801,24 @@ func (s *Service) ExecuteRestingOrders(ctx context.Context, batchSize int) (int,
 				return err
 			}
 			currentLimit := decimalx.MustFromString(derefString(order.Price))
-			fillPrice, executable, err := s.resolveOpenLimitFillPrice(lockedMarket, exposure, order.Side, order.Qty, currentLimit)
+			fillPrice, executable, err := s.resolveOpenLimitFillPrice(lockedMarket, exposure, order.Side, order.Qty, currentLimit, orderRuntimeCfg)
 			if err != nil {
 				return err
 			}
 			if !executable {
 				return nil
 			}
-			tradeAccounts, err := s.accounts.ResolveTradeAccounts(txCtx, order.UserID, s.cfg.Asset)
-			if err != nil {
-				return err
-			}
 			qty := decimalx.MustFromString(order.Qty)
-			currentPosition, err := s.loadPosition(txCtx, order.UserID, lockedMarket.SymbolID, orderSideToPositionSide(order.Side))
+			currentPosition, err := s.loadPosition(txCtx, order.UserID, lockedMarket.SymbolID, orderSideToPositionSide(order.Side), order.MarginMode)
 			if err != nil {
 				return err
 			}
-			feeRate := decimalx.MustFromString(s.cfg.TakerFeeRate)
-			updated, err := s.executeExistingOpenLimitOrder(txCtx, order, lockedMarket, currentPosition, qty, fillPrice, feeRate, s.clock.Now().UTC(), tradeAccounts)
+			feeRate := decimalx.MustFromString(orderRuntimeCfg.MakerFeeRate)
+			updated, err := s.executeExistingOpenLimitOrder(txCtx, order, lockedMarket, currentPosition, qty, fillPrice, feeRate, orderRuntimeCfg, s.clock.Now().UTC(), tradeAccounts)
 			if err != nil {
 				return err
 			}
-			if updated.OrderID != "" {
+			if updated.OrderID != "" && updated.Status == OrderStatusFilled {
 				executed++
 			}
 			return nil
@@ -809,30 +830,33 @@ func (s *Service) ExecuteRestingOrders(ctx context.Context, batchSize int) (int,
 	return executed, nil
 }
 
-func (s *Service) resolveOpenRiskPricing(market TradableSymbol, exposure SymbolExposure, currentPosition Position, side string, orderType string, limitPrice *decimalx.Decimal, triggerPrice *decimalx.Decimal, qty decimalx.Decimal, maxSlippageBps int) (decimalx.Decimal, decimalx.Decimal, decimalx.Decimal, decimalx.Decimal, error) {
-	runtimeCfg := s.currentRuntimeConfig()
+func (s *Service) resolveOpenRiskPricing(market TradableSymbol, exposure SymbolExposure, currentPosition Position, side string, orderType string, limitPrice *decimalx.Decimal, triggerPrice *decimalx.Decimal, qty decimalx.Decimal, requestedLeverage *string, maxSlippageBps int, runtimeCfg RuntimeConfig) (decimalx.Decimal, decimalx.Decimal, decimalx.Decimal, decimalx.Decimal, decimalx.Decimal, error) {
 	referencePrice, executionPrice, err := s.resolvePrices(market, side, orderType, limitPrice, triggerPrice, maxSlippageBps, 0)
 	if err != nil {
-		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
+		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
 	}
 	currentSigned := exposurex.SignedNetNotional(exposure.LongQty, exposure.ShortQty, market.MarkPrice, market.ContractMultiplier)
 	deltaSigned := exposurex.SignedDeltaNotional(side, qty.String(), referencePrice.String(), market.ContractMultiplier)
 	if exposurex.ExceedsHardLimit(currentSigned, deltaSigned, runtimeCfg.NetExposureHardLimit) {
-		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, fmt.Errorf("%w: symbol net exposure hard limit reached", errorsx.ErrForbidden)
+		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, fmt.Errorf("%w: symbol net exposure hard limit reached", errorsx.ErrForbidden)
 	}
 	adjustmentBps := exposurex.DirectionAdjustmentBps(currentSigned, side, runtimeCfg.NetExposureHardLimit, runtimeCfg.MaxExposureSlippageBps)
 	referencePrice, executionPrice, err = s.resolvePrices(market, side, orderType, limitPrice, triggerPrice, maxSlippageBps, adjustmentBps)
 	if err != nil {
-		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
+		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
 	}
 	notional := qty.Mul(referencePrice).Mul(decimalx.MustFromString(market.ContractMultiplier))
 	if notional.LessThan(decimalx.MustFromString(market.MinNotional)) {
-		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, fmt.Errorf("%w: notional below minimum", errorsx.ErrInvalidArgument)
+		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, fmt.Errorf("%w: notional below minimum", errorsx.ErrInvalidArgument)
 	}
-	feeRate := decimalx.MustFromString(s.cfg.TakerFeeRate)
-	holdInitialMargin := openMarginDelta(currentPosition, market, qty, referencePrice)
+	feeRate := decimalx.MustFromString(runtimeCfg.TakerFeeRate)
+	leverage, err := resolveOrderLeverage(market, notional, requestedLeverage, runtimeCfg.MaxLeverage)
+	if err != nil {
+		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
+	}
+	holdInitialMargin := requiredInitialMarginForLeverage(notional, leverage)
 	holdFee := notional.Mul(feeRate)
-	return referencePrice, executionPrice, holdInitialMargin, holdFee, nil
+	return referencePrice, executionPrice, leverage, holdInitialMargin, holdFee, nil
 }
 
 func (s *Service) resolvePrices(market TradableSymbol, side string, orderType string, limitPrice *decimalx.Decimal, triggerPrice *decimalx.Decimal, maxSlippageBps int, exposureAdjustmentBps int) (decimalx.Decimal, decimalx.Decimal, error) {
@@ -884,17 +908,24 @@ func (s *Service) executeExistingOpenLimitOrder(
 	fillQty decimalx.Decimal,
 	fillPrice decimalx.Decimal,
 	feeRate decimalx.Decimal,
+	runtimeCfg RuntimeConfig,
 	now time.Time,
 	tradeAccounts TradeAccounts,
 ) (Order, error) {
 	holdInitialMargin, holdFee := orderFrozenHoldComponents(order, feeRate)
 	holdAmount := holdInitialMargin.Add(holdFee)
+	if err := ensurePositionCanAcceptOpenRisk(currentPosition); err != nil {
+		return s.rejectOpenOrder(txCtx, order, tradeAccounts, rejectReasonPositionLiquidating, now)
+	}
 	fillNotional := fillQty.Mul(fillPrice).Mul(decimalx.MustFromString(market.ContractMultiplier))
 	fillFee := fillNotional.Mul(feeRate)
-	fillMargin := openMarginDelta(currentPosition, market, fillQty, fillPrice)
+	fillMargin := holdInitialMargin
 	refund := holdAmount.Sub(fillMargin.Add(fillFee))
 	if refund.LessThan(decimalx.MustFromString("0")) {
 		return Order{}, fmt.Errorf("%w: execution exceeded held margin", errorsx.ErrConflict)
+	}
+	if s.wouldOpenPositionLiquidateImmediately(currentPosition, order.UserID, market, order.Side, order.MarginMode, fillQty, fillPrice, fillMargin, runtimeCfg, now) {
+		return s.rejectOpenOrder(txCtx, order, tradeAccounts, rejectReasonImmediateLiquidation, now)
 	}
 
 	order.Status = OrderStatusFilled
@@ -959,11 +990,11 @@ func (s *Service) executeExistingOpenLimitOrder(
 	}
 
 	positionSide := orderSideToPositionSide(order.Side)
-	position, err := s.repo.GetPositionForUpdate(txCtx, order.UserID, market.SymbolID, positionSide)
+	position, err := s.repo.GetPositionForUpdate(txCtx, order.UserID, market.SymbolID, positionSide, order.MarginMode)
 	if err != nil && !isNotFound(err) {
 		return Order{}, err
 	}
-	position = applyOpenFill(position, order.UserID, market, positionSide, fillQty, fillPrice, fillMargin, now, s.idgen)
+	position = applyOpenFill(position, order.UserID, market, positionSide, order.MarginMode, fillQty, fillPrice, fillMargin, runtimeCfg, now, s.idgen)
 	if err := s.repo.UpsertPosition(txCtx, position); err != nil {
 		return Order{}, err
 	}
@@ -980,31 +1011,48 @@ func (s *Service) executeTriggeredOpenOrder(txCtx context.Context, order Order, 
 	if order.Type != OrderTypeStopMarket && order.Type != OrderTypeTakeProfitMarket {
 		return fmt.Errorf("%w: unsupported trigger open order type", errorsx.ErrInvalidArgument)
 	}
-	if err := s.assertCanOpenRisk(txCtx, order.UserID); err != nil {
-		return err
-	}
 	tradeAccounts, err := s.accounts.ResolveTradeAccounts(txCtx, order.UserID, s.cfg.Asset)
 	if err != nil {
+		return err
+	}
+	if _, err := s.lockOpenTradeBalances(txCtx, tradeAccounts); err != nil {
+		return err
+	}
+	if err := s.assertCanOpenRisk(txCtx, order.UserID); err != nil {
 		return err
 	}
 	exposure, err := s.repo.GetSymbolExposureForUpdate(txCtx, market.SymbolID)
 	if err != nil {
 		return err
 	}
-	currentPosition, err := s.loadPosition(txCtx, order.UserID, market.SymbolID, orderSideToPositionSide(order.Side))
+	currentPosition, err := s.loadPosition(txCtx, order.UserID, market.SymbolID, orderSideToPositionSide(order.Side), order.MarginMode)
 	if err != nil {
 		return err
 	}
-	_, executionPrice, _, _, err := s.resolveOpenRiskPricing(market, exposure, currentPosition, order.Side, OrderTypeMarket, nil, nil, decimalx.MustFromString(order.Qty), order.MaxSlippageBps)
+	if err := ensurePositionCanAcceptOpenRisk(currentPosition); err != nil {
+		updatedOrder, rejectErr := s.rejectOpenOrder(txCtx, order, tradeAccounts, rejectReasonPositionLiquidating, now)
+		if rejectErr != nil {
+			return rejectErr
+		}
+		if updatedOrder.Status == OrderStatusFilled {
+			*executed = *executed + 1
+		}
+		return nil
+	}
+	runtimeCfg := s.currentRuntimeConfig(market.Symbol)
+	_, executionPrice, _, _, _, err := s.resolveOpenRiskPricing(market, exposure, currentPosition, order.Side, OrderTypeMarket, nil, nil, decimalx.MustFromString(order.Qty), stringPtr(order.Leverage), order.MaxSlippageBps, runtimeCfg)
 	if err != nil {
 		return err
 	}
 	qty := decimalx.MustFromString(order.Qty)
-	feeRate := decimalx.MustFromString(s.cfg.TakerFeeRate)
-	if _, err := s.executeExistingOpenLimitOrder(txCtx, order, market, currentPosition, qty, executionPrice, feeRate, now, tradeAccounts); err != nil {
+	feeRate := decimalx.MustFromString(runtimeCfg.TakerFeeRate)
+	updatedOrder, err := s.executeExistingOpenLimitOrder(txCtx, order, market, currentPosition, qty, executionPrice, feeRate, runtimeCfg, now, tradeAccounts)
+	if err != nil {
 		return err
 	}
-	*executed = *executed + 1
+	if updatedOrder.Status == OrderStatusFilled {
+		*executed = *executed + 1
+	}
 	return nil
 }
 
@@ -1013,7 +1061,7 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 		return fmt.Errorf("%w: unsupported trigger close order type", errorsx.ErrInvalidArgument)
 	}
 	targetPositionSide := closingTargetPositionSide(order.Side)
-	position, err := s.repo.GetPositionForUpdate(txCtx, order.UserID, market.SymbolID, targetPositionSide)
+	position, err := s.repo.GetPositionForUpdate(txCtx, order.UserID, market.SymbolID, targetPositionSide, order.MarginMode)
 	if err != nil {
 		if isNotFound(err) {
 			order.Status = OrderStatusCanceled
@@ -1021,6 +1069,11 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 			return s.repo.UpdateOrder(txCtx, order)
 		}
 		return err
+	}
+	if err := ensurePositionCanBeUserManaged(position); err != nil {
+		order.Status = OrderStatusCanceled
+		order.UpdatedAt = now
+		return s.repo.UpdateOrder(txCtx, order)
 	}
 	currentQty := decimalx.MustFromString(position.Qty)
 	if !currentQty.GreaterThan(decimalx.MustFromString("0")) {
@@ -1032,6 +1085,7 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 	if closeQty.GreaterThan(currentQty) {
 		closeQty = currentQty
 	}
+	runtimeCfg := s.currentRuntimeConfig(market.Symbol)
 	_, executionPrice, err := s.resolvePrices(market, order.Side, OrderTypeMarket, nil, nil, order.MaxSlippageBps, 0)
 	if err != nil {
 		return err
@@ -1039,7 +1093,7 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 	entryPrice := decimalx.MustFromString(position.AvgEntryPrice)
 	multiplier := decimalx.MustFromString(market.ContractMultiplier)
 	closeNotional := closeQty.Mul(executionPrice).Mul(multiplier)
-	closeFee := closeNotional.Mul(decimalx.MustFromString(s.cfg.TakerFeeRate))
+	closeFee := closeNotional.Mul(decimalx.MustFromString(runtimeCfg.TakerFeeRate))
 	releasedMargin := closeMarginRelease(position, market, closeQty)
 	realizedPnL := realizedPnLDelta(targetPositionSide, closeQty, executionPrice, entryPrice, multiplier)
 
@@ -1112,7 +1166,7 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 	if err := s.repo.CreateFill(txCtx, fill); err != nil {
 		return err
 	}
-	position = applyCloseFill(position, market, closeQty, executionPrice, releasedMargin, realizedPnL, now)
+	position = applyCloseFill(position, market, closeQty, executionPrice, releasedMargin, realizedPnL, runtimeCfg, now)
 	if err := s.repo.UpsertPosition(txCtx, position); err != nil {
 		return err
 	}
@@ -1180,6 +1234,31 @@ func (s *Service) publishOrderCanceled(ctx context.Context, order Order, now tim
 	})
 }
 
+func (s *Service) publishOrderRejected(ctx context.Context, order Order, now time.Time) error {
+	payload := map[string]any{
+		"order_id":              order.OrderID,
+		"client_order_id":       order.ClientOrderID,
+		"user_id":               order.UserID,
+		"asset":                 s.cfg.Asset,
+		"symbol":                order.Symbol,
+		"status":                order.Status,
+		"frozen_initial_margin": order.FrozenInitialMargin,
+		"frozen_fee":            order.FrozenFee,
+		"frozen_margin":         order.FrozenMargin,
+	}
+	if order.RejectReason != nil {
+		payload["reject_reason"] = *order.RejectReason
+	}
+	return s.repo.CreateEvent(ctx, Event{
+		EventID:       s.idgen.NewID("evt"),
+		AggregateType: "order",
+		AggregateID:   order.OrderID,
+		EventType:     "trade.order.rejected",
+		Payload:       payload,
+		CreatedAt:     now,
+	})
+}
+
 func (s *Service) publishExecutionEvents(ctx context.Context, order Order, fill Fill, position Position, symbol string, now time.Time) error {
 	if err := s.repo.CreateEvent(ctx, Event{
 		EventID:       s.idgen.NewID("evt"),
@@ -1228,7 +1307,7 @@ func (s *Service) publishExecutionEvents(ctx context.Context, order Order, fill 
 	})
 }
 
-func applyOpenFill(current Position, userID uint64, market TradableSymbol, positionSide string, fillQty decimalx.Decimal, fillPrice decimalx.Decimal, fillMargin decimalx.Decimal, now time.Time, idgen IDGenerator) Position {
+func applyOpenFill(current Position, userID uint64, market TradableSymbol, positionSide string, marginMode string, fillQty decimalx.Decimal, fillPrice decimalx.Decimal, fillMargin decimalx.Decimal, runtimeCfg RuntimeConfig, now time.Time, idgen IDGenerator) Position {
 	if current.Qty == "" {
 		current.Qty = "0"
 	}
@@ -1253,10 +1332,12 @@ func applyOpenFill(current Position, userID uint64, market TradableSymbol, posit
 			UserID:            userID,
 			SymbolID:          market.SymbolID,
 			Side:              positionSide,
+			MarginMode:        marginMode,
 			Qty:               "0",
 			AvgEntryPrice:     "0",
 			MarkPrice:         market.MarkPrice,
 			Notional:          "0",
+			Leverage:          "0",
 			InitialMargin:     "0",
 			MaintenanceMargin: "0",
 			RealizedPnL:       "0",
@@ -1285,22 +1366,27 @@ func applyOpenFill(current Position, userID uint64, market TradableSymbol, posit
 	current.UserID = userID
 	current.SymbolID = market.SymbolID
 	current.Side = positionSide
+	current.MarginMode = marginMode
 	current.Qty = newQty.String()
 	current.AvgEntryPrice = currentAvg.String()
 	current.MarkPrice = mark.String()
 	current.Notional = notional.String()
 	current.InitialMargin = decimalx.MustFromString(current.InitialMargin).Add(fillMargin).String()
-	current.MaintenanceMargin = requiredMaintenanceMargin(market, notional).String()
+	current.Leverage = effectivePositionLeverage(newQty, currentAvg, decimalx.MustFromString(market.ContractMultiplier), decimalx.MustFromString(current.InitialMargin)).String()
+	current.MaintenanceMargin = requiredMaintenanceMargin(market, notional, runtimeCfg.MaintenanceMarginUpliftRatio).String()
 	current.UnrealizedPnL = unrealized.String()
 	tier := selectOrderRiskTier(market, notional)
+	maintenanceRate := effectiveMaintenanceRate(tier.MaintenanceRate, runtimeCfg.MaintenanceMarginUpliftRatio)
+	liquidationPenaltyRate := effectiveLiquidationPenaltyRate(runtimeCfg, tier.LiquidationFeeRate)
 	current.LiquidationPrice, current.BankruptcyPrice = positionrisk.ComputeDisplayPrices(
 		current.Side,
 		current.Qty,
 		current.AvgEntryPrice,
 		current.InitialMargin,
-		tier.MaintenanceRate,
-		tier.LiquidationFeeRate,
+		maintenanceRate,
+		liquidationPenaltyRate,
 		market.ContractMultiplier,
+		runtimeCfg.LiquidationExtraSlippageBps,
 	)
 	current.Status = PositionStatusOpen
 	current.UpdatedAt = now
@@ -1310,7 +1396,7 @@ func applyOpenFill(current Position, userID uint64, market TradableSymbol, posit
 	return current
 }
 
-func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.Decimal, closePrice decimalx.Decimal, releasedMargin decimalx.Decimal, realizedPnL decimalx.Decimal, now time.Time) Position {
+func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.Decimal, closePrice decimalx.Decimal, releasedMargin decimalx.Decimal, realizedPnL decimalx.Decimal, runtimeCfg RuntimeConfig, now time.Time) Position {
 	currentQty := decimalx.MustFromString(current.Qty)
 	remainingQty := currentQty.Sub(closeQty)
 	currentInitialMargin := decimalx.MustFromString(current.InitialMargin)
@@ -1327,6 +1413,7 @@ func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.D
 	current.MarkPrice = mark.String()
 	if remainingQty.IsZero() {
 		current.Notional = "0"
+		current.Leverage = "0"
 		current.MaintenanceMargin = "0"
 		current.UnrealizedPnL = "0"
 		current.LiquidationPrice = "0"
@@ -1342,25 +1429,29 @@ func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.D
 	notional := remainingQty.Mul(mark).Mul(multiplier)
 	unrealized := sign.Mul(remainingQty).Mul(mark.Sub(entryPrice)).Mul(multiplier)
 	current.Notional = notional.String()
-	current.MaintenanceMargin = requiredMaintenanceMargin(market, notional).String()
+	current.Leverage = effectivePositionLeverage(remainingQty, entryPrice, multiplier, decimalx.MustFromString(current.InitialMargin)).String()
+	current.MaintenanceMargin = requiredMaintenanceMargin(market, notional, runtimeCfg.MaintenanceMarginUpliftRatio).String()
 	current.UnrealizedPnL = unrealized.String()
 	tier := selectOrderRiskTier(market, notional)
+	maintenanceRate := effectiveMaintenanceRate(tier.MaintenanceRate, runtimeCfg.MaintenanceMarginUpliftRatio)
+	liquidationPenaltyRate := effectiveLiquidationPenaltyRate(runtimeCfg, tier.LiquidationFeeRate)
 	current.LiquidationPrice, current.BankruptcyPrice = positionrisk.ComputeDisplayPrices(
 		current.Side,
 		current.Qty,
 		current.AvgEntryPrice,
 		current.InitialMargin,
-		tier.MaintenanceRate,
-		tier.LiquidationFeeRate,
+		maintenanceRate,
+		liquidationPenaltyRate,
 		market.ContractMultiplier,
+		runtimeCfg.LiquidationExtraSlippageBps,
 	)
 	current.Status = PositionStatusOpen
 	current.UpdatedAt = now
 	return current
 }
 
-func (s *Service) loadPosition(ctx context.Context, userID uint64, symbolID uint64, side string) (Position, error) {
-	position, err := s.repo.GetPositionForUpdate(ctx, userID, symbolID, side)
+func (s *Service) loadPosition(ctx context.Context, userID uint64, symbolID uint64, side string, marginMode string) (Position, error) {
+	position, err := s.repo.GetPositionForUpdate(ctx, userID, symbolID, side, marginMode)
 	if err != nil {
 		if isNotFound(err) {
 			return Position{}, nil
@@ -1368,6 +1459,15 @@ func (s *Service) loadPosition(ctx context.Context, userID uint64, symbolID uint
 		return Position{}, err
 	}
 	return position, nil
+}
+
+func normalizeMarginMode(value string) string {
+	switch strings.ToUpper(strings.TrimSpace(value)) {
+	case MarginModeIsolated:
+		return MarginModeIsolated
+	default:
+		return MarginModeCross
+	}
 }
 
 func (s *Service) handlePostTradeRisk(ctx context.Context, userID uint64, traceID string, orderID string) error {
@@ -1380,37 +1480,16 @@ func (s *Service) handlePostTradeRisk(ctx context.Context, userID uint64, traceI
 	return s.risk.RecalculateAfterTrade(ctx, userID, traceID)
 }
 
-func openMarginDelta(current Position, market TradableSymbol, fillQty decimalx.Decimal, referencePrice decimalx.Decimal) decimalx.Decimal {
-	currentInitialMargin := decimalx.MustFromString(defaultDecimalString(current.InitialMargin))
-	currentQty := decimalx.MustFromString(defaultDecimalString(current.Qty))
-	newQty := currentQty.Add(fillQty)
-	if !newQty.GreaterThan(decimalx.MustFromString("0")) {
-		return decimalx.MustFromString("0")
-	}
-	targetNotional := newQty.Mul(referencePrice).Mul(decimalx.MustFromString(market.ContractMultiplier))
-	targetRequirement := requiredInitialMargin(market, targetNotional)
-	if targetRequirement.LessThanOrEqual(currentInitialMargin) {
-		return decimalx.MustFromString("0")
-	}
-	return targetRequirement.Sub(currentInitialMargin)
-}
-
 func closeMarginRelease(current Position, market TradableSymbol, closeQty decimalx.Decimal) decimalx.Decimal {
 	currentQty := decimalx.MustFromString(defaultDecimalString(current.Qty))
 	currentInitialMargin := decimalx.MustFromString(defaultDecimalString(current.InitialMargin))
-	remainingQty := currentQty.Sub(closeQty)
-	if remainingQty.LessThan(decimalx.MustFromString("0")) {
-		remainingQty = decimalx.MustFromString("0")
-	}
-	if remainingQty.IsZero() {
-		return currentInitialMargin
-	}
-	remainingNotional := remainingQty.Mul(decimalx.MustFromString(market.MarkPrice)).Mul(decimalx.MustFromString(market.ContractMultiplier))
-	remainingRequirement := requiredInitialMargin(market, remainingNotional)
-	if currentInitialMargin.LessThanOrEqual(remainingRequirement) {
+	if !currentQty.GreaterThan(decimalx.MustFromString("0")) {
 		return decimalx.MustFromString("0")
 	}
-	return currentInitialMargin.Sub(remainingRequirement)
+	if closeQty.GreaterThanOrEqual(currentQty) {
+		return currentInitialMargin
+	}
+	return currentInitialMargin.Mul(closeQty).Div(currentQty)
 }
 
 func requiredInitialMargin(market TradableSymbol, notional decimalx.Decimal) decimalx.Decimal {
@@ -1418,16 +1497,67 @@ func requiredInitialMargin(market TradableSymbol, notional decimalx.Decimal) dec
 	return notional.Mul(decimalx.MustFromString(tier.InitialMarginRate))
 }
 
-func requiredMaintenanceMargin(market TradableSymbol, notional decimalx.Decimal) decimalx.Decimal {
+func requiredInitialMarginForLeverage(notional decimalx.Decimal, leverage decimalx.Decimal) decimalx.Decimal {
+	if !leverage.GreaterThan(decimalx.MustFromString("0")) {
+		return decimalx.MustFromString("0")
+	}
+	return notional.Div(leverage)
+}
+
+func requiredMaintenanceMargin(market TradableSymbol, notional decimalx.Decimal, upliftRatio string) decimalx.Decimal {
 	tier := selectOrderRiskTier(market, notional)
-	return notional.Mul(decimalx.MustFromString(tier.MaintenanceRate))
+	return notional.Mul(decimalx.MustFromString(effectiveMaintenanceRate(tier.MaintenanceRate, upliftRatio)))
+}
+
+func resolveOrderLeverage(market TradableSymbol, notional decimalx.Decimal, requested *string, runtimeMaxLeverage string) (decimalx.Decimal, error) {
+	tier := selectOrderRiskTier(market, notional)
+	maxLeverage := decimalx.MustFromString(defaultDecimalString(tier.MaxLeverage))
+	if !maxLeverage.GreaterThan(decimalx.MustFromString("0")) {
+		imr := decimalx.MustFromString(defaultDecimalString(tier.InitialMarginRate))
+		if !imr.GreaterThan(decimalx.MustFromString("0")) {
+			return decimalx.Decimal{}, fmt.Errorf("%w: invalid leverage config", errorsx.ErrConflict)
+		}
+		maxLeverage = decimalx.MustFromString("1").Div(imr)
+	}
+	if strings.TrimSpace(runtimeMaxLeverage) != "" {
+		override := decimalx.MustFromString(runtimeMaxLeverage)
+		if override.GreaterThan(decimalx.MustFromString("0")) {
+			maxLeverage = override
+		}
+	}
+	if requested == nil || strings.TrimSpace(*requested) == "" {
+		return maxLeverage, nil
+	}
+	leverage, err := decimalx.NewFromString(strings.TrimSpace(*requested))
+	if err != nil {
+		return decimalx.Decimal{}, fmt.Errorf("%w: invalid leverage", errorsx.ErrInvalidArgument)
+	}
+	if !leverage.GreaterThan(decimalx.MustFromString("0")) {
+		return decimalx.Decimal{}, fmt.Errorf("%w: leverage must be positive", errorsx.ErrInvalidArgument)
+	}
+	if leverage.GreaterThan(maxLeverage) {
+		return decimalx.Decimal{}, fmt.Errorf("%w: leverage exceeds max %s", errorsx.ErrInvalidArgument, maxLeverage.String())
+	}
+	return leverage, nil
+}
+
+func effectivePositionLeverage(qty decimalx.Decimal, entryPrice decimalx.Decimal, contractMultiplier decimalx.Decimal, initialMargin decimalx.Decimal) decimalx.Decimal {
+	if !initialMargin.GreaterThan(decimalx.MustFromString("0")) {
+		return decimalx.MustFromString("0")
+	}
+	return qty.Abs().Mul(entryPrice).Mul(contractMultiplier).Div(initialMargin)
 }
 
 func selectOrderRiskTier(market TradableSymbol, notional decimalx.Decimal) RiskTier {
 	if len(market.RiskTiers) == 0 {
+		maxLeverage := "0"
+		if decimalx.MustFromString(defaultDecimalString(market.InitialMarginRate)).GreaterThan(decimalx.MustFromString("0")) {
+			maxLeverage = decimalx.MustFromString("1").Div(decimalx.MustFromString(defaultDecimalString(market.InitialMarginRate))).String()
+		}
 		return RiskTier{
 			TierLevel:         1,
 			MaxNotional:       "0",
+			MaxLeverage:       maxLeverage,
 			InitialMarginRate: market.InitialMarginRate,
 			MaintenanceRate:   market.MaintenanceMarginRate,
 		}
@@ -1465,6 +1595,10 @@ func normalizeSide(side string) string {
 	default:
 		return ""
 	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func normalizeOrderType(orderType string) string {
@@ -1546,6 +1680,38 @@ func canTradeUnderSymbolStatus(symbolStatus string, positionEffect string) bool 
 	}
 }
 
+func (s *Service) effectiveTradableStatus(market TradableSymbol, runtimeCfg RuntimeConfig, now time.Time) string {
+	status := market.Status
+	if runtimeCfg.GlobalReduceOnly {
+		status = degradeTradableStatus(status)
+	}
+	if market.SnapshotTS.IsZero() || now.UTC().Sub(market.SnapshotTS) > runtimeCfg.MaxMarketDataAge {
+		status = degradeTradableStatus(status)
+	}
+	sessionOpen, err := sessionAllowsOpen(market, runtimeCfg, now)
+	if err != nil || !sessionOpen {
+		status = degradeTradableStatus(status)
+	}
+	return status
+}
+
+func degradeTradableStatus(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "", "TRADING", "REDUCE_ONLY":
+		return "REDUCE_ONLY"
+	default:
+		return status
+	}
+}
+
+func sessionAllowsOpen(market TradableSymbol, runtimeCfg RuntimeConfig, now time.Time) (bool, error) {
+	policy := strings.TrimSpace(runtimeCfg.SessionPolicy)
+	if policy == "" {
+		policy = market.SessionPolicy
+	}
+	return marketsession.AllowsOpenAt(policy, now)
+}
+
 func closingTargetPositionSide(orderSide string) string {
 	if orderSide == "SELL" {
 		return PositionSideLong
@@ -1574,8 +1740,7 @@ func executableLimitPrice(side string, limitPrice decimalx.Decimal, bestBid deci
 	return decimalx.Decimal{}, false
 }
 
-func (s *Service) resolveOpenLimitFillPrice(market TradableSymbol, exposure SymbolExposure, side string, qty string, limitPrice decimalx.Decimal) (decimalx.Decimal, bool, error) {
-	runtimeCfg := s.currentRuntimeConfig()
+func (s *Service) resolveOpenLimitFillPrice(market TradableSymbol, exposure SymbolExposure, side string, qty string, limitPrice decimalx.Decimal, runtimeCfg RuntimeConfig) (decimalx.Decimal, bool, error) {
 	basePrice, executable := executableLimitPrice(side, limitPrice, decimalx.MustFromString(market.BestBid), decimalx.MustFromString(market.BestAsk))
 	if !executable {
 		return decimalx.Decimal{}, false, nil
@@ -1612,11 +1777,100 @@ func orderFrozenHoldComponents(order Order, feeRate decimalx.Decimal) (decimalx.
 	return legacyTotal, decimalx.MustFromString("0")
 }
 
+func (s *Service) postOpenOrderHold(txCtx context.Context, input CreateOrderInput, order Order, holdAmount decimalx.Decimal, now time.Time, walletAccountID uint64, orderMarginAccountID uint64) error {
+	return s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+		LedgerTx: ledgerdomain.LedgerTx{
+			ID:             s.idgen.NewID("ldg"),
+			EventID:        s.idgen.NewID("evt"),
+			BizType:        "trade.order.hold",
+			BizRefID:       order.OrderID,
+			Asset:          s.cfg.Asset,
+			IdempotencyKey: input.IdempotencyKey + ":hold",
+			OperatorType:   "USER",
+			OperatorID:     fmt.Sprintf("%d", input.UserID),
+			TraceID:        input.TraceID,
+			Status:         "COMMITTED",
+			CreatedAt:      now,
+		},
+		Entries: []ledgerdomain.LedgerEntry{
+			{AccountID: walletAccountID, UserID: uint64Ptr(input.UserID), Asset: s.cfg.Asset, Amount: holdAmount.Neg().String(), EntryType: "TRADE_ORDER_HOLD"},
+			{AccountID: orderMarginAccountID, UserID: uint64Ptr(input.UserID), Asset: s.cfg.Asset, Amount: holdAmount.String(), EntryType: "TRADE_ORDER_HOLD"},
+		},
+	})
+}
+
+func (s *Service) rejectOpenOrder(txCtx context.Context, order Order, tradeAccounts TradeAccounts, reason string, now time.Time) (Order, error) {
+	releaseAmount := decimalx.MustFromString(defaultDecimal(order.FrozenMargin))
+	if releaseAmount.GreaterThan(decimalx.MustFromString("0")) {
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+			LedgerTx: ledgerdomain.LedgerTx{
+				ID:             s.idgen.NewID("ldg"),
+				EventID:        s.idgen.NewID("evt"),
+				BizType:        "trade.order.reject",
+				BizRefID:       order.OrderID,
+				Asset:          s.cfg.Asset,
+				IdempotencyKey: order.OrderID + ":reject-release",
+				OperatorType:   "SYSTEM",
+				OperatorID:     "order-engine",
+				Status:         "COMMITTED",
+				CreatedAt:      now,
+			},
+			Entries: []ledgerdomain.LedgerEntry{
+				{AccountID: tradeAccounts.UserOrderMarginAccountID, UserID: uint64Ptr(order.UserID), Asset: s.cfg.Asset, Amount: releaseAmount.Neg().String(), EntryType: "TRADE_ORDER_RELEASE"},
+				{AccountID: tradeAccounts.UserWalletAccountID, UserID: uint64Ptr(order.UserID), Asset: s.cfg.Asset, Amount: releaseAmount.String(), EntryType: "TRADE_ORDER_RELEASE"},
+			},
+		}); err != nil {
+			return Order{}, err
+		}
+	}
+	order.Status = OrderStatusRejected
+	order.RejectReason = stringPtr(reason)
+	order.FrozenInitialMargin = "0"
+	order.FrozenFee = "0"
+	order.FrozenMargin = "0"
+	order.UpdatedAt = now
+	if err := s.repo.UpdateOrder(txCtx, order); err != nil {
+		return Order{}, err
+	}
+	if err := s.publishOrderRejected(txCtx, order, now); err != nil {
+		return Order{}, err
+	}
+	return order, nil
+}
+
+func (s *Service) wouldOpenPositionLiquidateImmediately(current Position, userID uint64, market TradableSymbol, side string, marginMode string, fillQty decimalx.Decimal, fillPrice decimalx.Decimal, fillMargin decimalx.Decimal, runtimeCfg RuntimeConfig, now time.Time) bool {
+	if marginMode != MarginModeIsolated {
+		return false
+	}
+	position := applyOpenFill(current, userID, market, orderSideToPositionSide(side), marginMode, fillQty, fillPrice, fillMargin, runtimeCfg, now, previewIDGenerator{})
+	return positionrisk.IsAtOrBeyondLiquidation(position.Side, position.MarkPrice, position.LiquidationPrice)
+}
+
+type previewIDGenerator struct{}
+
+func (previewIDGenerator) NewID(prefix string) string {
+	return prefix + "_preview"
+}
+
 func defaultDecimal(value string) string {
 	if strings.TrimSpace(value) == "" {
 		return "0"
 	}
 	return value
+}
+
+func ensurePositionCanAcceptOpenRisk(position Position) error {
+	if position.PositionID != "" && position.Status == PositionStatusLiquidating {
+		return fmt.Errorf("%w: position is liquidating", errorsx.ErrForbidden)
+	}
+	return nil
+}
+
+func ensurePositionCanBeUserManaged(position Position) error {
+	if position.PositionID != "" && position.Status == PositionStatusLiquidating {
+		return fmt.Errorf("%w: position is in liquidation review", errorsx.ErrForbidden)
+	}
+	return nil
 }
 
 func adjustExecutionPrice(side string, price decimalx.Decimal, adjustmentBps int) decimalx.Decimal {
@@ -1644,6 +1898,27 @@ func (s *Service) assertCanOpenRisk(ctx context.Context, userID uint64) error {
 	return nil
 }
 
+func (s *Service) ensureSufficientAvailableBalance(available string, required decimalx.Decimal) error {
+	if decimalx.MustFromString(available).LessThan(required) {
+		return fmt.Errorf("%w: insufficient available balance", errorsx.ErrConflict)
+	}
+	return nil
+}
+
+func (s *Service) lockOpenTradeBalances(ctx context.Context, accounts TradeAccounts) (string, error) {
+	accountIDs := []uint64{
+		accounts.UserWalletAccountID,
+		accounts.UserOrderMarginAccountID,
+		accounts.UserPositionMarginAccountID,
+	}
+	sort.Slice(accountIDs, func(i, j int) bool { return accountIDs[i] < accountIDs[j] })
+	balances, err := s.balances.GetAccountBalancesForUpdate(ctx, accountIDs, s.cfg.Asset)
+	if err != nil {
+		return "", err
+	}
+	return balances[accounts.UserWalletAccountID], nil
+}
+
 func maxDecimal(first decimalx.Decimal, rest ...decimalx.Decimal) decimalx.Decimal {
 	maxValue := first
 	for _, value := range rest {
@@ -1661,16 +1936,21 @@ func proportionalAmount(total decimalx.Decimal, part decimalx.Decimal, whole dec
 	return total.Mul(part).Div(whole)
 }
 
-func (s *Service) currentRuntimeConfig() RuntimeConfig {
+func (s *Service) currentRuntimeConfig(symbol string) RuntimeConfig {
 	current := RuntimeConfig{
-		MaxMarketDataAge:       s.cfg.MaxMarketDataAge,
-		NetExposureHardLimit:   s.cfg.NetExposureHardLimit,
-		MaxExposureSlippageBps: s.cfg.MaxExposureSlippageBps,
+		MaxMarketDataAge:             s.cfg.MaxMarketDataAge,
+		NetExposureHardLimit:         s.cfg.NetExposureHardLimit,
+		MaxExposureSlippageBps:       s.cfg.MaxExposureSlippageBps,
+		TakerFeeRate:                 s.cfg.TakerFeeRate,
+		MakerFeeRate:                 s.cfg.MakerFeeRate,
+		DefaultMaxSlippageBps:        s.cfg.DefaultMaxSlippageBps,
+		LiquidationExtraSlippageBps:  0,
+		MaintenanceMarginUpliftRatio: "",
 	}
 	if s.runtime == nil {
 		return current
 	}
-	override := s.runtime.CurrentOrderRuntimeConfig()
+	override := s.runtime.CurrentOrderRuntimeConfig(symbol)
 	if override.MaxMarketDataAge > 0 {
 		current.MaxMarketDataAge = override.MaxMarketDataAge
 	}
@@ -1680,9 +1960,46 @@ func (s *Service) currentRuntimeConfig() RuntimeConfig {
 	if override.MaxExposureSlippageBps >= 0 {
 		current.MaxExposureSlippageBps = override.MaxExposureSlippageBps
 	}
+	if strings.TrimSpace(override.TakerFeeRate) != "" {
+		current.TakerFeeRate = override.TakerFeeRate
+	}
+	if strings.TrimSpace(override.MakerFeeRate) != "" {
+		current.MakerFeeRate = override.MakerFeeRate
+	}
+	if override.DefaultMaxSlippageBps > 0 {
+		current.DefaultMaxSlippageBps = override.DefaultMaxSlippageBps
+	}
+	if strings.TrimSpace(override.MaxLeverage) != "" {
+		current.MaxLeverage = override.MaxLeverage
+	}
+	if strings.TrimSpace(override.LiquidationPenaltyRate) != "" {
+		current.LiquidationPenaltyRate = override.LiquidationPenaltyRate
+	}
+	if override.LiquidationExtraSlippageBps >= 0 {
+		current.LiquidationExtraSlippageBps = override.LiquidationExtraSlippageBps
+	}
+	if strings.TrimSpace(override.MaintenanceMarginUpliftRatio) != "" {
+		current.MaintenanceMarginUpliftRatio = override.MaintenanceMarginUpliftRatio
+	}
 	current.GlobalReadOnly = override.GlobalReadOnly
 	current.GlobalReduceOnly = override.GlobalReduceOnly
 	return current
+}
+
+func effectiveMaintenanceRate(baseRate string, upliftRatio string) string {
+	rate := decimalx.MustFromString(defaultDecimalString(baseRate))
+	uplift := decimalx.MustFromString(defaultDecimalString(upliftRatio))
+	if !uplift.GreaterThan(decimalx.MustFromString("0")) {
+		return rate.String()
+	}
+	return rate.Mul(decimalx.MustFromString("1").Add(uplift)).String()
+}
+
+func effectiveLiquidationPenaltyRate(runtimeCfg RuntimeConfig, fallback string) string {
+	if strings.TrimSpace(runtimeCfg.LiquidationPenaltyRate) != "" {
+		return runtimeCfg.LiquidationPenaltyRate
+	}
+	return fallback
 }
 
 func isNotFound(err error) bool {

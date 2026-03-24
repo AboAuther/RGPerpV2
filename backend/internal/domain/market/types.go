@@ -12,6 +12,7 @@ type Symbol struct {
 	TickSize           string
 	StepSize           string
 	MinNotional        string
+	MaxLeverage        string
 	Status             string
 	SessionPolicy      string
 	Mappings           []SymbolMapping

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,10 +14,11 @@ import (
 )
 
 type Service struct {
-	cfg      AggregationConfig
-	catalog  CatalogRepository
-	snapshot SnapshotRepository
-	clients  map[string]SourceClient
+	cfg                AggregationConfig
+	catalog            CatalogRepository
+	snapshot           SnapshotRepository
+	clients            map[string]SourceClient
+	consecutiveFailure map[uint64]int
 }
 
 type weightedQuote struct {
@@ -43,10 +45,11 @@ func NewService(cfg AggregationConfig, catalog CatalogRepository, snapshot Snaps
 		clientMap[client.Name()] = client
 	}
 	return &Service{
-		cfg:      cfg,
-		catalog:  catalog,
-		snapshot: snapshot,
-		clients:  clientMap,
+		cfg:                cfg,
+		catalog:            catalog,
+		snapshot:           snapshot,
+		clients:            clientMap,
+		consecutiveFailure: make(map[uint64]int),
 	}, nil
 }
 
@@ -108,18 +111,24 @@ func (s *Service) SyncOnce(ctx context.Context, now time.Time) error {
 		sourceSnapshots = append(sourceSnapshots, rawSnapshots...)
 		if err != nil {
 			aggregateErrs = append(aggregateErrs, fmt.Errorf("%s aggregate failed: %w", symbol.Symbol, err))
-			runtimeStates = append(runtimeStates, SymbolRuntimeState{
-				SymbolID:       symbol.ID,
-				DesiredStatus:  "REDUCE_ONLY",
-				DegradedReason: err.Error(),
-			})
+			s.consecutiveFailure[symbol.ID]++
+			if s.consecutiveFailure[symbol.ID] >= 2 {
+				runtimeStates = append(runtimeStates, SymbolRuntimeState{
+					SymbolID:       symbol.ID,
+					DesiredStatus:  "REDUCE_ONLY",
+					DegradedReason: err.Error(),
+				})
+			}
 			continue
 		}
+		s.consecutiveFailure[symbol.ID] = 0
 		aggregatedSnapshots = append(aggregatedSnapshots, aggregated)
-		runtimeStates = append(runtimeStates, SymbolRuntimeState{
-			SymbolID:      symbol.ID,
-			DesiredStatus: "TRADING",
-		})
+		if symbol.Status == "TRADING" || symbol.Status == "REDUCE_ONLY" {
+			runtimeStates = append(runtimeStates, SymbolRuntimeState{
+				SymbolID:      symbol.ID,
+				DesiredStatus: "TRADING",
+			})
+		}
 	}
 
 	if len(sourceSnapshots) > 0 {
@@ -148,6 +157,7 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 	rawSnapshots := make([]SourcePriceSnapshot, 0, len(symbol.Mappings))
 	candidates := make([]weightedQuote, 0, len(symbol.Mappings))
 	mids := make([]decimalx.Decimal, 0, len(symbol.Mappings))
+	requiredHealthySources := s.requiredHealthySources(symbol)
 
 	for _, mapping := range symbol.Mappings {
 		quotesBySource, ok := fetchedQuotes[mapping.SourceName]
@@ -215,7 +225,7 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 		mids = append(mids, mid)
 	}
 
-	if len(candidates) < s.cfg.MinHealthySource {
+	if len(candidates) < requiredHealthySources {
 		return AggregatedPrice{}, rawSnapshots, fmt.Errorf("%w: insufficient healthy sources", errorsx.ErrConflict)
 	}
 
@@ -227,7 +237,7 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 			accepted = append(accepted, candidate)
 		}
 	}
-	if len(accepted) < s.cfg.MinHealthySource {
+	if len(accepted) < requiredHealthySources {
 		return AggregatedPrice{}, rawSnapshots, fmt.Errorf("%w: all quotes diverged", errorsx.ErrConflict)
 	}
 
@@ -267,6 +277,16 @@ func (s *Service) aggregateSymbol(now time.Time, symbol Symbol, fetchedQuotes ma
 		HealthyCount:  len(candidates),
 		AcceptedCount: len(accepted),
 	}, rawSnapshots, nil
+}
+
+func (s *Service) requiredHealthySources(symbol Symbol) int {
+	if strings.EqualFold(symbol.AssetClass, "CRYPTO") {
+		if s.cfg.MinHealthySource > 2 {
+			return s.cfg.MinHealthySource
+		}
+		return 2
+	}
+	return 1
 }
 
 func parseScaledQuoteValue(raw string, scale decimalx.Decimal) (decimalx.Decimal, bool) {

@@ -3,7 +3,7 @@ set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
 RPC_URL="${RPC_URL:-http://127.0.0.1:8545}"
-OUTPUT_FILE="${OUTPUT_FILE:-$ROOT_DIR/.local/contracts.env}"
+OUTPUT_FILE="${OUTPUT_FILE:-$ROOT_DIR/deploy/env/local-chains.env}"
 FRONTEND_ENV_FILE="${FRONTEND_ENV_FILE:-$ROOT_DIR/frontend/.env.local}"
 
 mkdir -p "$(dirname "$OUTPUT_FILE")"

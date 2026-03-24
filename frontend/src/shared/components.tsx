@@ -21,6 +21,7 @@ import ShinyText from '../components/landing/ShinyText';
 import VariableProximityText from '../components/landing/VariableProximityText';
 import { hasAdminAccess, useAuth } from './auth';
 import { appConfig } from './env';
+import { ApiError } from './api';
 import { formatAddress } from './format';
 
 const { Header, Content, Footer } = Layout;
@@ -194,14 +195,15 @@ export function ErrorAlert({ error }: { error: unknown }) {
     return null;
   }
 
-  const message = error instanceof Error ? error.message : '请求失败';
+  const message = normalizeErrorAlertMessage(error instanceof Error ? error.message : '请求失败');
   const traceId = typeof error === 'object' && error && 'traceId' in error ? String(error.traceId || '') : '';
+  const title = deriveErrorAlertTitle(error, message);
 
   return (
     <Alert
       showIcon
       type="error"
-      message="请求失败"
+      message={title}
       description={
         traceId ? (
           <Space direction="vertical" size={0}>
@@ -214,6 +216,40 @@ export function ErrorAlert({ error }: { error: unknown }) {
       }
     />
   );
+}
+
+function normalizeErrorAlertMessage(raw: string): string {
+  const normalized = raw
+    .replace(/^invalid argument:\s*/i, '')
+    .replace(/^conflict:\s*/i, '')
+    .replace(/^forbidden:\s*/i, '')
+    .replace(/^not found:\s*/i, '')
+    .trim();
+
+  return normalized || '请求失败';
+}
+
+function deriveErrorAlertTitle(error: unknown, message: string): string {
+  if (message.includes('未注册')) {
+    return '无法发起内部转账';
+  }
+  if (error instanceof ApiError) {
+    switch (error.status) {
+      case 400:
+        return '提交信息有误';
+      case 401:
+        return '登录状态失效';
+      case 403:
+        return '当前操作不可用';
+      case 404:
+        return '未找到相关数据';
+      case 409:
+        return '请求冲突';
+      default:
+        break;
+    }
+  }
+  return '请求失败';
 }
 
 export function AppShell() {

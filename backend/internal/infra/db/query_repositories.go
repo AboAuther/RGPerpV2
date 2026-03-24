@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
@@ -34,23 +33,53 @@ func (r *BalanceRepository) GetAccountBalance(ctx context.Context, accountID uin
 }
 
 func (r *BalanceRepository) GetAccountBalanceForUpdate(ctx context.Context, accountID uint64, asset string) (string, error) {
-	tx := DB(ctx, r.db)
-	var account AccountModel
-	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", accountID).First(&account).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "", errorsx.ErrNotFound
-		}
-		return "", err
-	}
-	var snapshot AccountBalanceSnapshotModel
-	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND asset = ?", accountID, asset).First(&snapshot).Error
+	balances, err := r.GetAccountBalancesForUpdate(ctx, []uint64{accountID}, asset)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return "0", nil
-		}
 		return "", err
 	}
-	return snapshot.Balance, nil
+	return balances[accountID], nil
+}
+
+func (r *BalanceRepository) GetAccountBalancesForUpdate(ctx context.Context, accountIDs []uint64, asset string) (map[uint64]string, error) {
+	tx := DB(ctx, r.db)
+	out := make(map[uint64]string, len(accountIDs))
+	if len(accountIDs) == 0 {
+		return out, nil
+	}
+
+	var accounts []AccountModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id IN ?", accountIDs).
+		Order("id ASC").
+		Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+	if len(accounts) != len(accountIDs) {
+		seen := make(map[uint64]struct{}, len(accounts))
+		for _, account := range accounts {
+			seen[account.ID] = struct{}{}
+		}
+		for _, accountID := range accountIDs {
+			if _, ok := seen[accountID]; !ok {
+				return nil, errorsx.ErrNotFound
+			}
+		}
+	}
+	for _, accountID := range accountIDs {
+		out[accountID] = "0"
+	}
+
+	var snapshots []AccountBalanceSnapshotModel
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("account_id IN ? AND asset = ?", accountIDs, asset).
+		Order("account_id ASC").
+		Find(&snapshots).Error; err != nil {
+		return nil, err
+	}
+	for _, snapshot := range snapshots {
+		out[snapshot.AccountID] = snapshot.Balance
+	}
+	return out, nil
 }
 
 type DepositAddressRepository struct {
@@ -59,8 +88,7 @@ type DepositAddressRepository struct {
 }
 
 func NewDepositAddressRepository(db *gorm.DB, confirmations map[int64]int) *DepositAddressRepository {
-	setRequiredConfirmations(confirmations)
-	return &DepositAddressRepository{db: db, confirmations: confirmations}
+	return &DepositAddressRepository{db: db, confirmations: cloneConfirmations(confirmations)}
 }
 
 func (r *DepositAddressRepository) ListByUser(ctx context.Context, userID uint64) ([]walletdomain.DepositAddress, error) {
@@ -336,11 +364,15 @@ func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint6
 				OR EXISTS (
 					SELECT 1
 					FROM ledger_entries
+					JOIN accounts ON accounts.id = ledger_entries.account_id
 					WHERE ledger_entries.ledger_tx_id = ledger_tx.ledger_tx_id
-						AND ledger_entries.user_id = ?
+						AND (
+							ledger_entries.user_id = ?
+							OR accounts.user_id = ?
+						)
 				)
 			)
-		`, "TRANSFER", fmt.Sprintf("%d", userID), userID).
+		`, "TRANSFER", fmt.Sprintf("%d", userID), userID, userID).
 		Order("created_at DESC").
 		Find(&txs).Error; err != nil {
 		return nil, err
@@ -365,9 +397,10 @@ func (r *AccountQueryRepository) ListTransfers(ctx context.Context, userID uint6
 }
 
 type WalletQueryRepository struct {
-	db          *gorm.DB
-	riskMonitor RiskMonitorConfig
-	chainReader interface {
+	db            *gorm.DB
+	confirmations map[int64]int
+	riskMonitor   RiskMonitorConfig
+	chainReader   interface {
 		ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
 	}
 }
@@ -377,7 +410,7 @@ type RiskMonitorConfig struct {
 	MaxExposureSlippageBps int
 }
 
-func NewWalletQueryRepository(db *gorm.DB, chainReaders ...interface {
+func NewWalletQueryRepository(db *gorm.DB, confirmations map[int64]int, chainReaders ...interface {
 	ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
 }) *WalletQueryRepository {
 	var chainReader interface {
@@ -386,13 +419,13 @@ func NewWalletQueryRepository(db *gorm.DB, chainReaders ...interface {
 	if len(chainReaders) > 0 {
 		chainReader = chainReaders[0]
 	}
-	return &WalletQueryRepository{db: db, chainReader: chainReader}
+	return &WalletQueryRepository{db: db, confirmations: cloneConfirmations(confirmations), chainReader: chainReader}
 }
 
-func NewWalletQueryRepositoryWithRiskConfig(db *gorm.DB, riskCfg RiskMonitorConfig, chainReaders ...interface {
+func NewWalletQueryRepositoryWithRiskConfig(db *gorm.DB, confirmations map[int64]int, riskCfg RiskMonitorConfig, chainReaders ...interface {
 	ListVaultBalances(ctx context.Context, scopeAsset string) ([]chaininfra.VaultBalanceSnapshot, error)
 }) *WalletQueryRepository {
-	repo := NewWalletQueryRepository(db, chainReaders...)
+	repo := NewWalletQueryRepository(db, confirmations, chainReaders...)
 	repo.riskMonitor = riskCfg
 	return repo
 }
@@ -597,7 +630,7 @@ func (r *WalletQueryRepository) ListDeposits(ctx context.Context, userID uint64)
 			Amount:                model.Amount,
 			TxHash:                model.TxHash,
 			Confirmations:         model.Confirmations,
-			RequiredConfirmations: requiredConfirmations(model.ChainID),
+			RequiredConfirmations: r.requiredConfirmations(model.ChainID),
 			Status:                model.Status,
 			Address:               model.ToAddress,
 			DetectedAt:            model.CreatedAt.Format(time.RFC3339),
@@ -648,7 +681,7 @@ func (r *WalletQueryRepository) ListAdminWithdrawals(ctx context.Context, limit 
 		Table("withdraw_requests").
 		Select("withdraw_requests.*, users.evm_address AS user_address").
 		Joins("JOIN users ON users.id = withdraw_requests.user_id").
-		Order("CASE withdraw_requests.status WHEN 'RISK_REVIEW' THEN 0 ELSE 1 END ASC, withdraw_requests.created_at DESC").
+		Order("CASE withdraw_requests.status WHEN 'RISK_REVIEW' THEN 0 WHEN 'FAILED' THEN 1 WHEN 'SIGNING' THEN 2 ELSE 3 END ASC, withdraw_requests.created_at DESC").
 		Limit(limit).
 		Scan(&rows).Error; err != nil {
 		return nil, err
@@ -673,6 +706,114 @@ func (r *WalletQueryRepository) ListAdminWithdrawals(ctx context.Context, limit 
 			RiskFlag:    row.RiskFlag,
 			TxHash:      txHash,
 			CreatedAt:   row.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:   row.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
+func (r *WalletQueryRepository) ListAdminLiquidations(ctx context.Context, limit int) ([]readmodel.AdminLiquidationItem, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []struct {
+		LiquidationModel
+		UserAddress   string  `gorm:"column:user_address"`
+		Symbol        *string `gorm:"column:symbol"`
+		PositionCount int     `gorm:"column:position_count"`
+	}
+	if err := DB(ctx, r.db).
+		Table("liquidations").
+		Select(`
+			liquidations.*,
+			users.evm_address AS user_address,
+			symbols.symbol AS symbol,
+			(
+				SELECT COUNT(*)
+				FROM liquidation_items
+				WHERE liquidation_items.liquidation_id = liquidations.liquidation_id
+			) AS position_count
+		`).
+		Joins("JOIN users ON users.id = liquidations.user_id").
+		Joins("LEFT JOIN symbols ON symbols.id = liquidations.symbol_id").
+		Order("liquidations.created_at DESC").
+		Limit(limit).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]readmodel.AdminLiquidationItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, readmodel.AdminLiquidationItem{
+			LiquidationID:         row.LiquidationID,
+			UserID:                row.UserID,
+			UserAddress:           row.UserAddress,
+			Symbol:                row.Symbol,
+			Mode:                  row.Mode,
+			Status:                row.Status,
+			TriggerRiskSnapshotID: row.TriggerRiskSnapshotID,
+			PositionCount:         row.PositionCount,
+			PenaltyAmount:         row.PenaltyAmount,
+			InsuranceFundUsed:     row.InsuranceFundUsed,
+			BankruptAmount:        row.BankruptAmount,
+			AbortReason:           row.AbortReason,
+			CreatedAt:             row.CreatedAt.Format(time.RFC3339),
+			UpdatedAt:             row.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
+func (r *WalletQueryRepository) ListFundingBatches(ctx context.Context, limit int) ([]readmodel.AdminFundingBatchItem, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []struct {
+		FundingBatchModel
+		Symbol        string `gorm:"column:symbol"`
+		AppliedCount  int    `gorm:"column:applied_count"`
+		FailedCount   int    `gorm:"column:failed_count"`
+		ReversedCount int    `gorm:"column:reversed_count"`
+	}
+	if err := DB(ctx, r.db).
+		Table("funding_batches").
+		Select(`
+			funding_batches.*,
+			symbols.symbol,
+			SUM(CASE WHEN funding_batch_items.status = 'APPLIED' THEN 1 ELSE 0 END) AS applied_count,
+			SUM(CASE WHEN funding_batch_items.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
+			SUM(CASE WHEN funding_batch_items.status = 'REVERSED' THEN 1 ELSE 0 END) AS reversed_count
+		`).
+		Joins("JOIN symbols ON symbols.id = funding_batches.symbol_id").
+		Joins("LEFT JOIN funding_batch_items ON funding_batch_items.funding_batch_id = funding_batches.funding_batch_id").
+		Group("funding_batches.id, symbols.symbol").
+		Order("funding_batches.time_window_end DESC, funding_batches.id DESC").
+		Limit(limit).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]readmodel.AdminFundingBatchItem, 0, len(rows))
+	for _, row := range rows {
+		var reversedAt *string
+		if row.ReversedAt != nil {
+			value := row.ReversedAt.UTC().Format(time.RFC3339)
+			reversedAt = &value
+		}
+		items = append(items, readmodel.AdminFundingBatchItem{
+			FundingBatchID:  row.FundingBatchID,
+			Symbol:          row.Symbol,
+			TimeWindowStart: row.TimeWindowStart.UTC().Format(time.RFC3339),
+			TimeWindowEnd:   row.TimeWindowEnd.UTC().Format(time.RFC3339),
+			NormalizedRate:  row.NormalizedRate,
+			SettlementPrice: row.SettlementPrice,
+			Status:          row.Status,
+			AppliedCount:    row.AppliedCount,
+			FailedCount:     row.FailedCount,
+			ReversedCount:   row.ReversedCount,
+			ReversedAt:      reversedAt,
+			ReversedBy:      row.ReversedBy,
+			ReversalReason:  row.ReversalReason,
+			CreatedAt:       row.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:       row.UpdatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 	return items, nil
@@ -731,25 +872,35 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 				)
 			)
 			OR
-			(
-				ledger_tx.biz_type = 'TRANSFER'
-				AND (
-					ledger_tx.operator_id = ?
+				(
+					ledger_tx.biz_type = 'TRANSFER'
+					AND (
+						ledger_tx.operator_id = ?
 					OR EXISTS (
+						SELECT 1
+						FROM ledger_entries le
+						WHERE le.ledger_tx_id = ledger_tx.ledger_tx_id
+							AND le.user_id = ?
+						)
+					)
+				)
+				OR
+				(
+					ledger_tx.biz_type IN ('funding.settlement','funding.reversal')
+					AND EXISTS (
 						SELECT 1
 						FROM ledger_entries le
 						WHERE le.ledger_tx_id = ledger_tx.ledger_tx_id
 							AND le.user_id = ?
 					)
 				)
-			)
-			OR
-			(outbox_events.aggregate_type = 'order' AND orders.user_id = ?)
-			OR
-			(outbox_events.aggregate_type = 'fill' AND fills.user_id = ?)
-			OR
-			(outbox_events.aggregate_type = 'position' AND positions.user_id = ?)
-		`, userID, userID, fmt.Sprintf("%d", userID), userID, userID, userID, userID)
+				OR
+				(outbox_events.aggregate_type = 'order' AND orders.user_id = ?)
+				OR
+				(outbox_events.aggregate_type = 'fill' AND fills.user_id = ?)
+				OR
+				(outbox_events.aggregate_type = 'position' AND positions.user_id = ?)
+			`, userID, userID, fmt.Sprintf("%d", userID), userID, userID, userID, userID, userID)
 	}
 	if err := query.Order("outbox_events.created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
@@ -845,6 +996,8 @@ func (r *ExplorerQueryRepository) lookupExplorerAmount(ctx context.Context, bizT
 		}
 	case "TRANSFER":
 		return extractPositiveTransferAmount(ctx, r.db, ledgerTxID)
+	case "funding.settlement", "funding.reversal":
+		return extractUserLedgerAmount(ctx, r.db, ledgerTxID)
 	}
 	return ""
 }
@@ -884,20 +1037,40 @@ func extractPositiveTransferAmount(ctx context.Context, db *gorm.DB, ledgerTxID 
 	return "0"
 }
 
+func extractUserLedgerAmount(ctx context.Context, db *gorm.DB, ledgerTxID string) string {
+	var entries []LedgerEntryModel
+	if err := DB(ctx, db).Where("ledger_tx_id = ? AND user_id IS NOT NULL", ledgerTxID).Order("id ASC").Find(&entries).Error; err != nil {
+		return "0"
+	}
+	for _, entry := range entries {
+		if entry.Amount != "" {
+			return entry.Amount
+		}
+	}
+	return "0"
+}
+
 type transferEntryDescriptor struct {
-	UserID      *uint64
-	AccountCode string
-	Amount      string
-	EVMAddress  *string
+	UserID        *uint64
+	AccountUserID *uint64
+	AccountCode   string
+	Amount        string
+	EVMAddress    *string
 }
 
 func describeTransferForUser(ctx context.Context, db *gorm.DB, ledgerTxID string, userID uint64) (direction string, counterpartyAddress string, fromAccount string, toAccount string) {
 	var rows []transferEntryDescriptor
 	if err := DB(ctx, db).
 		Table("ledger_entries").
-		Select("ledger_entries.user_id, accounts.account_code, ledger_entries.amount, users.evm_address").
+		Select(`
+			ledger_entries.user_id,
+			accounts.user_id AS account_user_id,
+			accounts.account_code,
+			ledger_entries.amount,
+			users.evm_address
+		`).
 		Joins("JOIN accounts ON accounts.id = ledger_entries.account_id").
-		Joins("LEFT JOIN users ON users.id = ledger_entries.user_id").
+		Joins("LEFT JOIN users ON users.id = COALESCE(ledger_entries.user_id, accounts.user_id)").
 		Where("ledger_entries.ledger_tx_id = ?", ledgerTxID).
 		Order("ledger_entries.id ASC").
 		Scan(&rows).Error; err != nil {
@@ -924,14 +1097,8 @@ func describeTransferForUser(ctx context.Context, db *gorm.DB, ledgerTxID string
 		toAccount = "USER_WALLET"
 	}
 
-	senderID := uint64(0)
-	if sender.UserID != nil {
-		senderID = *sender.UserID
-	}
-	receiverID := uint64(0)
-	if receiver.UserID != nil {
-		receiverID = *receiver.UserID
-	}
+	senderID := effectiveTransferUserID(sender)
+	receiverID := effectiveTransferUserID(receiver)
 
 	switch {
 	case senderID == userID && receiverID == userID:
@@ -963,6 +1130,16 @@ func describeTransferForUser(ctx context.Context, db *gorm.DB, ledgerTxID string
 	}
 }
 
+func effectiveTransferUserID(entry transferEntryDescriptor) uint64 {
+	if entry.UserID != nil && *entry.UserID != 0 {
+		return *entry.UserID
+	}
+	if entry.AccountUserID != nil {
+		return *entry.AccountUserID
+	}
+	return 0
+}
+
 func lookupUserEVMAddress(ctx context.Context, db *gorm.DB, userID uint64) string {
 	var user UserModel
 	if err := DB(ctx, db).Where("id = ?", userID).First(&user).Error; err != nil {
@@ -971,35 +1148,20 @@ func lookupUserEVMAddress(ctx context.Context, db *gorm.DB, userID uint64) strin
 	return user.EVMAddress
 }
 
-func requiredConfirmations(chainID int64) int {
-	requiredConfirmationMu.RLock()
-	if value, ok := requiredConfirmationByChain[chainID]; ok && value > 0 {
-		requiredConfirmationMu.RUnlock()
-		return value
+func cloneConfirmations(values map[int64]int) map[int64]int {
+	if len(values) == 0 {
+		return map[int64]int{}
 	}
-	requiredConfirmationMu.RUnlock()
-	switch chainID {
-	case 1:
-		return 12
-	case 42161, 8453:
-		return 20
-	case 31337:
-		return 1
-	default:
-		return 0
+	out := make(map[int64]int, len(values))
+	for chainID, confirmations := range values {
+		out[chainID] = confirmations
 	}
+	return out
 }
 
-var (
-	requiredConfirmationMu      sync.RWMutex
-	requiredConfirmationByChain = map[int64]int{}
-)
-
-func setRequiredConfirmations(values map[int64]int) {
-	requiredConfirmationMu.Lock()
-	defer requiredConfirmationMu.Unlock()
-	requiredConfirmationByChain = make(map[int64]int, len(values))
-	for chainID, confirmations := range values {
-		requiredConfirmationByChain[chainID] = confirmations
+func (r *WalletQueryRepository) requiredConfirmations(chainID int64) int {
+	if r == nil {
+		return 0
 	}
+	return r.confirmations[chainID]
 }

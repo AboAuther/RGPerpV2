@@ -245,7 +245,24 @@
 }
 ```
 
-## 6.10 `hedge.requested`
+## 6.10 `funding.batch.reversed`
+
+```json
+{
+  "funding_batch_id": "fb_01",
+  "symbol": "BTC-USD-PERP",
+  "time_window_start": "2026-03-21T11:00:00Z",
+  "time_window_end": "2026-03-21T12:00:00Z",
+  "normalized_rate": "0.0001",
+  "status": "REVERSED",
+  "reversed_count": 1024,
+  "reversed_at": "2026-03-21T12:10:00Z",
+  "reversed_by": "0xadmin",
+  "reversal_reason": "manual correction"
+}
+```
+
+## 6.11 `hedge.requested`
 
 ```json
 {

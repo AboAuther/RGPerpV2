@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/xiaobao/rgperp/backend/internal/config"
 	"github.com/xiaobao/rgperp/backend/internal/infra/db"
@@ -19,6 +20,9 @@ func main() {
 	gormDB, err := gorm.Open(gormmysql.Open(cfg.MySQL.DSN), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("open mysql: %v", err)
+	}
+	if err := db.ConfigureMySQLConnectionPool(gormDB, cfg.MySQL.MaxOpenConns, cfg.MySQL.MaxIdleConns, time.Duration(cfg.MySQL.ConnMaxLifetimeSec)*time.Second); err != nil {
+		log.Fatalf("configure mysql pool: %v", err)
 	}
 	if err := db.Migrate(gormDB); err != nil {
 		log.Fatalf("migrate db: %v", err)

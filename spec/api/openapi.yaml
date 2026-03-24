@@ -251,6 +251,10 @@ components:
           type: string
         min_notional:
           type: string
+        max_leverage:
+          type: string
+        session_policy:
+          type: string
         status:
           type: string
     TickerItem:
@@ -269,6 +273,88 @@ components:
         ts:
           type: string
           format: date-time
+    FundingQuoteItem:
+      type: object
+      properties:
+        symbol:
+          type: string
+        estimated_rate:
+          type: string
+          nullable: true
+        next_funding_at:
+          type: string
+          format: date-time
+        countdown_sec:
+          type: integer
+        status:
+          type: string
+        source_count:
+          type: integer
+    FundingItem:
+      type: object
+      properties:
+        funding_id:
+          type: string
+        symbol:
+          type: string
+        direction:
+          type: string
+          enum: [PAY, RECEIVE]
+        rate:
+          type: string
+        amount:
+          type: string
+        settled_at:
+          type: string
+          format: date-time
+        batch_id:
+          type: string
+    AdminFundingBatchItem:
+      type: object
+      properties:
+        funding_batch_id:
+          type: string
+        symbol:
+          type: string
+        time_window_start:
+          type: string
+          format: date-time
+        time_window_end:
+          type: string
+          format: date-time
+        normalized_rate:
+          type: string
+        settlement_price:
+          type: string
+        status:
+          type: string
+        applied_count:
+          type: integer
+        failed_count:
+          type: integer
+        reversed_count:
+          type: integer
+        reversed_at:
+          type: string
+          format: date-time
+          nullable: true
+        reversed_by:
+          type: string
+          nullable: true
+        reversal_reason:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    ReverseFundingBatchRequest:
+      type: object
+      properties:
+        reason:
+          type: string
     OrderCreateRequest:
       type: object
       properties:
@@ -287,6 +373,12 @@ components:
           enum: [MARKET, LIMIT, STOP_MARKET, STOP_LIMIT, TAKE_PROFIT_MARKET, TAKE_PROFIT_LIMIT]
         qty:
           type: string
+        leverage:
+          type: string
+          nullable: true
+        margin_mode:
+          type: string
+          enum: [ISOLATED, CROSS]
         price:
           type: string
           nullable: true
@@ -321,6 +413,10 @@ components:
         filled_qty:
           type: string
         avg_fill_price:
+          type: string
+        leverage:
+          type: string
+        margin_mode:
           type: string
         price:
           type: string
@@ -369,6 +465,10 @@ components:
         avg_entry_price:
           type: string
         mark_price:
+          type: string
+        leverage:
+          type: string
+        margin_mode:
           type: string
         initial_margin:
           type: string
@@ -530,6 +630,25 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/RiskSnapshot'
+  /api/v1/account/funding:
+    get:
+      tags: [Account]
+      security: [{ bearerAuth: [] }]
+      summary: 查询资金费历史
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/FundingItem'
   /api/v1/account/transfers:
     get:
       tags: [Account]
@@ -683,6 +802,24 @@ paths:
                         type: array
                         items:
                           $ref: '#/components/schemas/TickerItem'
+  /api/v1/markets/funding:
+    get:
+      tags: [Market]
+      summary: 获取资金费率预估与倒计时
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/FundingQuoteItem'
   /api/v1/orders:
     post:
       tags: [Order]
@@ -843,6 +980,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiResponse'
+  /api/v1/admin/funding-batches:
+    get:
+      tags: [Admin]
+      security: [{ bearerAuth: [] }]
+      summary: 查询资金费批次
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AdminFundingBatchItem'
+  /api/v1/admin/funding-batches/{fundingBatchId}/reverse:
+    post:
+      tags: [Admin]
+      security: [{ bearerAuth: [] }]
+      summary: 冲正已结算资金费批次
+      parameters:
+        - name: fundingBatchId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/TraceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReverseFundingBatchRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdminFundingBatchItem'
   /api/v1/review/faucet:
     post:
       tags: [Wallet]

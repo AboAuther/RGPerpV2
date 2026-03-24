@@ -1,8 +1,8 @@
-import { Alert, Button, Card, Input, InputNumber, List, Select, Space, Spin, Switch, Table, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, Input, InputNumber, List, Modal, Select, Space, Spin, Switch, Table, Tooltip, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '../../shared/api';
 import { EmptyStateCard, ErrorAlert, MetricCard, PageIntro, StatusTag } from '../../shared/components';
-import type { AdminWithdrawReviewItem, LedgerAuditReport, LedgerAssetOverview, LedgerChainBalance, LedgerOverview, RiskMonitorDashboard, RuntimeConfigHistoryItem, RuntimeConfigPatchRequest, RuntimeConfigSnapshotView, RuntimeConfigView, SymbolNetExposureItem } from '../../shared/domain';
+import type { AdminLiquidationItem, AdminWithdrawReviewItem, LedgerAuditReport, LedgerAssetOverview, LedgerChainBalance, LedgerOverview, RiskMonitorDashboard, RuntimeConfigHistoryItem, RuntimeConfigPairOverrideView, RuntimeConfigPairPatchRequest, RuntimeConfigPatchRequest, RuntimeConfigSnapshotView, RuntimeConfigView, SymbolItem, SymbolNetExposureItem } from '../../shared/domain';
 import { formatAddress, formatChainName, formatDateTime, formatDecimal, formatPercent, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 import { useSystemConfig } from '../../shared/system';
@@ -58,15 +58,245 @@ function AdminPageTemplate({
   );
 }
 
-type EditableRuntimeConfig = RuntimeConfigSnapshotView & {
-  reason: string;
+type EditablePairOverride = {
+  max_leverage: string;
+  session_policy: string;
+  taker_fee_rate: string;
+  maker_fee_rate: string;
+  default_max_slippage_bps?: number;
+  liquidation_penalty_rate: string;
+  maintenance_margin_uplift_ratio: string;
+  funding_interval_sec?: number;
 };
+
+type PairEditorState = {
+  mode: 'create' | 'edit';
+  pair: string;
+  source_pair?: string;
+  initial_override: EditablePairOverride;
+  override: EditablePairOverride;
+};
+
+type EditableRuntimeConfig = Omit<RuntimeConfigSnapshotView, 'pair_overrides'> & {
+  pair_overrides: Record<string, EditablePairOverride>;
+  new_pair: string;
+};
+
+type RuntimeConfigScope = 'global' | 'market' | 'risk' | 'funding' | 'hedge' | 'pairs';
+
+type PendingRuntimeConfigSave = {
+  scope: RuntimeConfigScope;
+  label: string;
+  payload: RuntimeConfigPatchRequest;
+  stagedForm: EditableRuntimeConfig;
+};
+
+const sessionPolicyOptions = [
+  { label: '始终开放', value: 'ALWAYS_OPEN' },
+  { label: '美股常规时段', value: 'US_EQUITY_REGULAR' },
+  { label: '黄金 24x5', value: 'XAUUSD_24_5' },
+];
+
+function normalizeLeverageValue(value?: string) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return '';
+  }
+  const [whole] = trimmed.split('.');
+  return /^\d+$/.test(whole) ? whole : '';
+}
 
 function toEditableRuntimeConfig(snapshot: RuntimeConfigSnapshotView): EditableRuntimeConfig {
   return {
     ...snapshot,
-    reason: '',
+    pair_overrides: toEditablePairOverrides(snapshot.pair_overrides),
+    new_pair: '',
   };
+}
+
+function toEditablePairOverrides(source?: Record<string, RuntimeConfigPairOverrideView>) {
+  return Object.fromEntries(Object.entries(source || {}).map(([pair, value]) => [pair, {
+    max_leverage: normalizeLeverageValue(value.max_leverage),
+    session_policy: value.session_policy || '',
+    taker_fee_rate: value.taker_fee_rate || '',
+    maker_fee_rate: value.maker_fee_rate || '',
+    default_max_slippage_bps: value.default_max_slippage_bps,
+    liquidation_penalty_rate: value.liquidation_penalty_rate || '',
+    maintenance_margin_uplift_ratio: value.maintenance_margin_uplift_ratio || '',
+    funding_interval_sec: value.funding_interval_sec,
+  }]));
+}
+
+function emptyPairOverride(): EditablePairOverride {
+  return {
+    max_leverage: '',
+    session_policy: '',
+    taker_fee_rate: '',
+    maker_fee_rate: '',
+    liquidation_penalty_rate: '',
+    maintenance_margin_uplift_ratio: '',
+  };
+}
+
+function normalizePair(value: string) {
+  return value.trim().toUpperCase();
+}
+
+function isPairFormatValid(value: string) {
+  return /^[A-Z0-9]+-[A-Z0-9]+$/.test(normalizePair(value));
+}
+
+function buildEffectivePairOverride(
+  pair: string,
+  snapshot: EditableRuntimeConfig,
+  symbols: SymbolItem[],
+): EditablePairOverride {
+  const normalizedPair = normalizePair(pair);
+  const symbol = symbols.find((item) => item.symbol === normalizedPair);
+  const pairOverride = snapshot.pair_overrides[normalizedPair];
+  return {
+    max_leverage: normalizeLeverageValue(pairOverride?.max_leverage || symbol?.max_leverage),
+    session_policy: pairOverride?.session_policy || symbol?.session_policy || 'ALWAYS_OPEN',
+    taker_fee_rate: pairOverride?.taker_fee_rate || snapshot.market_taker_fee_rate,
+    maker_fee_rate: pairOverride?.maker_fee_rate || snapshot.market_maker_fee_rate,
+    default_max_slippage_bps: pairOverride?.default_max_slippage_bps || snapshot.market_default_max_slippage_bps,
+    liquidation_penalty_rate: pairOverride?.liquidation_penalty_rate || snapshot.risk_liquidation_penalty_rate,
+    maintenance_margin_uplift_ratio: pairOverride?.maintenance_margin_uplift_ratio || snapshot.risk_maintenance_margin_uplift_ratio,
+    funding_interval_sec: pairOverride?.funding_interval_sec || snapshot.funding_interval_sec,
+  };
+}
+
+function trimPairField(value: string) {
+  return value.trim();
+}
+
+function positivePairNumber(value?: number) {
+  return typeof value === 'number' && value > 0 ? value : undefined;
+}
+
+function buildPersistedPairOverrideDraft(
+  pair: string,
+  draft: EditablePairOverride,
+  snapshot: EditableRuntimeConfig,
+  symbols: SymbolItem[],
+): EditablePairOverride {
+  const current = snapshot.pair_overrides[pair] || emptyPairOverride();
+  const effective = buildEffectivePairOverride(pair, snapshot, symbols);
+  const resolveString = (currentValue: string, effectiveValue: string, draftValue: string) => {
+    const currentTrimmed = trimPairField(currentValue);
+    const effectiveTrimmed = trimPairField(effectiveValue);
+    const draftTrimmed = trimPairField(draftValue);
+    if (currentTrimmed) {
+      return draftTrimmed || currentTrimmed;
+    }
+    if (draftTrimmed && draftTrimmed !== effectiveTrimmed) {
+      return draftTrimmed;
+    }
+    return '';
+  };
+  const resolveNumber = (currentValue: number | undefined, effectiveValue: number | undefined, draftValue: number | undefined) => {
+    const currentPositive = positivePairNumber(currentValue);
+    const effectivePositive = positivePairNumber(effectiveValue);
+    const draftPositive = positivePairNumber(draftValue);
+    if (currentPositive !== undefined) {
+      return draftPositive ?? currentPositive;
+    }
+    if (draftPositive !== undefined && draftPositive !== effectivePositive) {
+      return draftPositive;
+    }
+    return undefined;
+  };
+  return {
+    max_leverage: normalizeLeverageValue(resolveString(current.max_leverage, effective.max_leverage, draft.max_leverage)),
+    session_policy: resolveString(current.session_policy, effective.session_policy, draft.session_policy),
+    taker_fee_rate: resolveString(current.taker_fee_rate, effective.taker_fee_rate, draft.taker_fee_rate),
+    maker_fee_rate: resolveString(current.maker_fee_rate, effective.maker_fee_rate, draft.maker_fee_rate),
+    default_max_slippage_bps: resolveNumber(current.default_max_slippage_bps, effective.default_max_slippage_bps, draft.default_max_slippage_bps),
+    liquidation_penalty_rate: resolveString(current.liquidation_penalty_rate, effective.liquidation_penalty_rate, draft.liquidation_penalty_rate),
+    maintenance_margin_uplift_ratio: resolveString(current.maintenance_margin_uplift_ratio, effective.maintenance_margin_uplift_ratio, draft.maintenance_margin_uplift_ratio),
+    funding_interval_sec: resolveNumber(current.funding_interval_sec, effective.funding_interval_sec, draft.funding_interval_sec),
+  };
+}
+
+function hasPersistedPairOverrideValue(override: EditablePairOverride) {
+  return Boolean(
+    trimPairField(override.max_leverage)
+    || trimPairField(override.session_policy)
+    || trimPairField(override.taker_fee_rate)
+    || trimPairField(override.maker_fee_rate)
+    || trimPairField(override.liquidation_penalty_rate)
+    || trimPairField(override.maintenance_margin_uplift_ratio)
+    || positivePairNumber(override.default_max_slippage_bps)
+    || positivePairNumber(override.funding_interval_sec),
+  );
+}
+
+function equalOptionalNumber(left?: number, right?: number) {
+  return positivePairNumber(left) === positivePairNumber(right);
+}
+
+function equalOptionalString(left?: string, right?: string) {
+  return trimPairField(left || '') === trimPairField(right || '');
+}
+
+function equalPairOverridePatch(left: RuntimeConfigPairPatchRequest | null, right: RuntimeConfigPairPatchRequest | null) {
+  if (!left && !right) {
+    return true;
+  }
+  if (!left || !right) {
+    return false;
+  }
+  return (
+    equalOptionalString(left.market?.max_leverage, right.market?.max_leverage)
+    && equalOptionalString(left.market?.session_policy, right.market?.session_policy)
+    && equalOptionalString(left.market?.taker_fee_rate, right.market?.taker_fee_rate)
+    && equalOptionalString(left.market?.maker_fee_rate, right.market?.maker_fee_rate)
+    && equalOptionalNumber(left.market?.default_max_slippage_bps, right.market?.default_max_slippage_bps)
+    && equalOptionalString(left.risk?.liquidation_penalty_rate, right.risk?.liquidation_penalty_rate)
+    && equalOptionalString(left.risk?.maintenance_margin_uplift_ratio, right.risk?.maintenance_margin_uplift_ratio)
+    && equalOptionalNumber(left.funding?.interval_sec, right.funding?.interval_sec)
+  );
+}
+
+function toPairOverridePatch(override: EditablePairOverride) {
+  const market: Record<string, string | number> = {};
+  const risk: Record<string, string> = {};
+  const funding: Record<string, number> = {};
+  if (override.max_leverage.trim()) {
+    market.max_leverage = normalizeLeverageValue(override.max_leverage);
+  }
+  if (override.session_policy.trim()) {
+    market.session_policy = override.session_policy.trim();
+  }
+  if (override.taker_fee_rate.trim()) {
+    market.taker_fee_rate = override.taker_fee_rate.trim();
+  }
+  if (override.maker_fee_rate.trim()) {
+    market.maker_fee_rate = override.maker_fee_rate.trim();
+  }
+  if ((override.default_max_slippage_bps || 0) > 0) {
+    market.default_max_slippage_bps = override.default_max_slippage_bps as number;
+  }
+  if (override.liquidation_penalty_rate.trim()) {
+    risk.liquidation_penalty_rate = override.liquidation_penalty_rate.trim();
+  }
+  if (override.maintenance_margin_uplift_ratio.trim()) {
+    risk.maintenance_margin_uplift_ratio = override.maintenance_margin_uplift_ratio.trim();
+  }
+  if ((override.funding_interval_sec || 0) > 0) {
+    funding.interval_sec = override.funding_interval_sec as number;
+  }
+  const patch: RuntimeConfigPairPatchRequest = {};
+  if (Object.keys(market).length > 0) {
+    patch.market = market;
+  }
+  if (Object.keys(risk).length > 0) {
+    patch.risk = risk;
+  }
+  if (Object.keys(funding).length > 0) {
+    patch.funding = funding;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 export function AdminDashboardPage() {
@@ -410,7 +640,7 @@ export function AdminWithdrawalsPage() {
   const [items, setItems] = useState<AdminWithdrawReviewItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
-  const [approving, setApproving] = useState<string | null>(null);
+  const [processingAction, setProcessingAction] = useState<string | null>(null);
 
   async function loadData(background = false) {
     if (!background) {
@@ -436,13 +666,37 @@ export function AdminWithdrawalsPage() {
 
   async function handleApprove(withdrawId: string) {
     try {
-      setApproving(withdrawId);
+      setProcessingAction(`approve:${withdrawId}`);
       await api.admin.approveWithdrawal(withdrawId);
       await loadData(true);
     } catch (approveError) {
       setError(approveError);
     } finally {
-      setApproving(null);
+      setProcessingAction(null);
+    }
+  }
+
+  async function handleReturnToReview(withdrawId: string) {
+    try {
+      setProcessingAction(`review:${withdrawId}`);
+      await api.admin.returnWithdrawalToReview(withdrawId);
+      await loadData(true);
+    } catch (actionError) {
+      setError(actionError);
+    } finally {
+      setProcessingAction(null);
+    }
+  }
+
+  async function handleRefund(withdrawId: string) {
+    try {
+      setProcessingAction(`refund:${withdrawId}`);
+      await api.admin.refundWithdrawal(withdrawId);
+      await loadData(true);
+    } catch (actionError) {
+      setError(actionError);
+    } finally {
+      setProcessingAction(null);
     }
   }
 
@@ -453,8 +707,8 @@ export function AdminWithdrawalsPage() {
         <Alert
           showIcon
           type="info"
-          message="审批规则"
-          description="命中风控条件的提现将进入人工复核，审核通过后继续处理。"
+          message="审批与异常处理"
+          description="RISK_REVIEW 表示待审核；FAILED 表示执行阶段被系统驳回；管理员可对异常单执行“退回审核”或“退款”。"
         />
         <ErrorAlert error={error} />
         <Card className="table-card" title="Withdrawal Queue">
@@ -463,30 +717,79 @@ export function AdminWithdrawalsPage() {
             loading={loading}
             dataSource={items}
             pagination={false}
-            scroll={{ x: 1200 }}
+            scroll={{ x: 1500 }}
             locale={{ emptyText: <EmptyStateCard title="暂无待处理审核" description="当前没有进入 RISK_REVIEW 的提现，或你没有管理员权限。" /> }}
             columns={[
               { title: 'Time', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
-              { title: 'User', dataIndex: 'user_address', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
+              {
+                title: 'User',
+                dataIndex: 'user_address',
+                width: 150,
+                render: (value: string) => (
+                  <Tooltip title={value}>
+                    <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{formatAddress(value, 8)}</Text>
+                  </Tooltip>
+                ),
+              },
               { title: 'Chain', dataIndex: 'chain_id', width: 120, render: (value: number) => formatChainName(value, chains) },
               { title: 'Asset', dataIndex: 'asset', width: 90 },
-              { title: 'Amount', dataIndex: 'amount', align: 'right', render: (value: string) => formatUsd(value) },
-              { title: 'Fee', dataIndex: 'fee_amount', align: 'right', render: (value: string) => formatUsd(value) },
-              { title: 'To', dataIndex: 'to_address', render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
-              { title: 'Risk Flag', dataIndex: 'risk_flag', render: (value?: string | null) => value || '--' },
+              { title: 'Amount', dataIndex: 'amount', width: 140, align: 'right', render: (value: string) => formatUsd(value) },
+              { title: 'Fee', dataIndex: 'fee_amount', width: 110, align: 'right', render: (value: string) => formatUsd(value) },
+              {
+                title: 'To',
+                dataIndex: 'to_address',
+                width: 160,
+                render: (value: string) => (
+                  <Tooltip title={value}>
+                    <Text type="secondary" style={{ whiteSpace: 'nowrap' }}>{formatAddress(value, 8)}</Text>
+                  </Tooltip>
+                ),
+              },
+              {
+                title: 'Reason',
+                dataIndex: 'risk_flag',
+                width: 240,
+                ellipsis: true,
+                render: (value?: string | null) => (
+                  <Tooltip title={value || '--'}>
+                    <Text style={{ whiteSpace: 'nowrap' }}>{value || '--'}</Text>
+                  </Tooltip>
+                ),
+              },
               { title: 'Status', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
+              { title: 'Updated', dataIndex: 'updated_at', width: 180, render: (value: string) => formatDateTime(value) },
               {
                 title: 'Action',
-                width: 140,
+                width: 260,
                 render: (_, record: AdminWithdrawReviewItem) => (
-                  <Button
-                    type="primary"
-                    disabled={record.status !== 'RISK_REVIEW'}
-                    loading={approving === record.withdraw_id}
-                    onClick={() => void handleApprove(record.withdraw_id)}
-                  >
-                    批准并继续提现
-                  </Button>
+                  <Space wrap>
+                    <Button
+                      size="small"
+                      type="primary"
+                      disabled={record.status !== 'RISK_REVIEW'}
+                      loading={processingAction === `approve:${record.withdraw_id}`}
+                      onClick={() => void handleApprove(record.withdraw_id)}
+                    >
+                      批准
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={!['FAILED', 'SIGNING', 'APPROVED', 'HOLD'].includes(record.status)}
+                      loading={processingAction === `review:${record.withdraw_id}`}
+                      onClick={() => void handleReturnToReview(record.withdraw_id)}
+                    >
+                      退回审核
+                    </Button>
+                    <Button
+                      size="small"
+                      danger
+                      disabled={!['HOLD', 'RISK_REVIEW', 'APPROVED', 'SIGNING', 'FAILED'].includes(record.status)}
+                      loading={processingAction === `refund:${record.withdraw_id}`}
+                      onClick={() => void handleRefund(record.withdraw_id)}
+                    >
+                      退款
+                    </Button>
+                  </Space>
                 ),
               },
             ]}
@@ -500,8 +803,12 @@ export function AdminWithdrawalsPage() {
 export function AdminConfigsPage() {
   const [configView, setConfigView] = useState<RuntimeConfigView | null>(null);
   const [form, setForm] = useState<EditableRuntimeConfig | null>(null);
+  const [symbols, setSymbols] = useState<SymbolItem[]>([]);
+  const [pairEditor, setPairEditor] = useState<PairEditorState | null>(null);
+  const [pendingSave, setPendingSave] = useState<PendingRuntimeConfigSave | null>(null);
+  const [saveReason, setSaveReason] = useState('');
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingScope, setSavingScope] = useState<RuntimeConfigScope | null>(null);
   const [error, setError] = useState<unknown>(null);
 
   async function loadData(background = false) {
@@ -510,14 +817,21 @@ export function AdminConfigsPage() {
     }
     setError(null);
     try {
-      const view = await api.admin.getRuntimeConfig();
+      const [view, symbolItems] = await Promise.all([
+        api.admin.getRuntimeConfig(),
+        api.market.getSymbols(),
+      ]);
       setConfigView(view);
+      setSymbols(symbolItems);
       setForm((current) => {
         if (!current || !background) {
           return toEditableRuntimeConfig(view.snapshot);
         }
         return current;
       });
+      if (!background) {
+        setPairEditor(null);
+      }
     } catch (loadError) {
       setError(loadError);
     } finally {
@@ -533,63 +847,356 @@ export function AdminConfigsPage() {
     void loadData(true);
   }, true);
 
-  async function handleSave() {
-    if (!form) {
-      return;
+  function stagePairEditorForSubmit(currentForm: EditableRuntimeConfig) {
+    if (!pairEditor) {
+      return currentForm;
     }
-    if (!form.reason.trim()) {
-      message.warning('请填写变更原因');
-      return;
+    const pair = normalizePair(pairEditor.pair || '');
+    if (!pair) {
+      message.warning('pair 为必填项');
+      return null;
     }
-    const payload: RuntimeConfigPatchRequest = {
-      reason: form.reason.trim(),
-      global: {
-        read_only: form.read_only,
-        reduce_only: form.reduce_only,
-        trace_header_required: form.trace_header_required,
-      },
-      risk: {
-        global_buffer_ratio: form.risk_global_buffer_ratio,
-        mark_price_stale_sec: form.risk_mark_price_stale_sec,
-        force_reduce_only_on_stale_price: form.risk_force_reduce_only_on_stale_price,
-        liquidation_penalty_rate: form.risk_liquidation_penalty_rate,
-        liquidation_extra_slippage_bps: form.risk_liquidation_extra_slippage_bps,
-        max_open_orders_per_user_per_symbol: form.risk_max_open_orders_per_user_per_symbol,
-        net_exposure_hard_limit: form.risk_net_exposure_hard_limit,
-        max_exposure_slippage_bps: form.risk_max_exposure_slippage_bps,
-      },
-      hedge: {
-        enabled: form.hedge_enabled,
-        soft_threshold_ratio: form.hedge_soft_threshold_ratio,
-        hard_threshold_ratio: form.hedge_hard_threshold_ratio,
-      },
+    if (!isPairFormatValid(pair)) {
+      message.warning('pair 格式必须为 BASE-QUOTE，例如 BTC-USDC');
+      return null;
+    }
+    if (!symbols.some((item) => item.symbol === pair)) {
+      message.warning('只能选择系统内已有的交易对');
+      return null;
+    }
+    if (pairEditor.mode === 'create' && currentForm.pair_overrides[pair]) {
+      message.warning('该 pair 已存在，请直接调整');
+      return null;
+    }
+    const persistedOverride = buildPersistedPairOverrideDraft(pair, pairEditor.override, currentForm, symbols);
+    const nextPairOverrides = { ...currentForm.pair_overrides };
+    if (hasPersistedPairOverrideValue(persistedOverride)) {
+      nextPairOverrides[pair] = persistedOverride;
+    } else {
+      delete nextPairOverrides[pair];
+    }
+    return {
+      ...currentForm,
+      new_pair: pair,
+      pair_overrides: nextPairOverrides,
     };
+  }
+
+  function buildRuntimeConfigPayload(stagedForm: EditableRuntimeConfig, currentSnapshot: RuntimeConfigSnapshotView, scope: RuntimeConfigScope) {
+    const payload: RuntimeConfigPatchRequest = { reason: '' };
+
+    if (scope === 'global') {
+      const globalPatch: NonNullable<RuntimeConfigPatchRequest['global']> = {};
+      if (stagedForm.read_only !== currentSnapshot.read_only) {
+        globalPatch.read_only = stagedForm.read_only;
+      }
+      if (stagedForm.reduce_only !== currentSnapshot.reduce_only) {
+        globalPatch.reduce_only = stagedForm.reduce_only;
+      }
+      if (stagedForm.trace_header_required !== currentSnapshot.trace_header_required) {
+        globalPatch.trace_header_required = stagedForm.trace_header_required;
+      }
+      if (Object.keys(globalPatch).length > 0) {
+        payload.global = globalPatch;
+      }
+    }
+
+    if (scope === 'market') {
+      const marketPatch: NonNullable<RuntimeConfigPatchRequest['market']> = {};
+      if (trimPairField(stagedForm.market_taker_fee_rate) !== trimPairField(currentSnapshot.market_taker_fee_rate)) {
+        marketPatch.taker_fee_rate = trimPairField(stagedForm.market_taker_fee_rate);
+      }
+      if (trimPairField(stagedForm.market_maker_fee_rate) !== trimPairField(currentSnapshot.market_maker_fee_rate)) {
+        marketPatch.maker_fee_rate = trimPairField(stagedForm.market_maker_fee_rate);
+      }
+      if (stagedForm.market_default_max_slippage_bps !== currentSnapshot.market_default_max_slippage_bps) {
+        marketPatch.default_max_slippage_bps = stagedForm.market_default_max_slippage_bps;
+      }
+      if (Object.keys(marketPatch).length > 0) {
+        payload.market = marketPatch;
+      }
+    }
+
+    if (scope === 'risk') {
+      const riskPatch: NonNullable<RuntimeConfigPatchRequest['risk']> = {};
+      if (trimPairField(stagedForm.risk_global_buffer_ratio) !== trimPairField(currentSnapshot.risk_global_buffer_ratio)) {
+        riskPatch.global_buffer_ratio = trimPairField(stagedForm.risk_global_buffer_ratio);
+      }
+      if (stagedForm.risk_mark_price_stale_sec !== currentSnapshot.risk_mark_price_stale_sec) {
+        riskPatch.mark_price_stale_sec = stagedForm.risk_mark_price_stale_sec;
+      }
+      if (stagedForm.risk_force_reduce_only_on_stale_price !== currentSnapshot.risk_force_reduce_only_on_stale_price) {
+        riskPatch.force_reduce_only_on_stale_price = stagedForm.risk_force_reduce_only_on_stale_price;
+      }
+      if (trimPairField(stagedForm.risk_liquidation_penalty_rate) !== trimPairField(currentSnapshot.risk_liquidation_penalty_rate)) {
+        riskPatch.liquidation_penalty_rate = trimPairField(stagedForm.risk_liquidation_penalty_rate);
+      }
+      if (trimPairField(stagedForm.risk_maintenance_margin_uplift_ratio) !== trimPairField(currentSnapshot.risk_maintenance_margin_uplift_ratio)) {
+        riskPatch.maintenance_margin_uplift_ratio = trimPairField(stagedForm.risk_maintenance_margin_uplift_ratio);
+      }
+      if (stagedForm.risk_liquidation_extra_slippage_bps !== currentSnapshot.risk_liquidation_extra_slippage_bps) {
+        riskPatch.liquidation_extra_slippage_bps = stagedForm.risk_liquidation_extra_slippage_bps;
+      }
+      if (stagedForm.risk_max_open_orders_per_user_per_symbol !== currentSnapshot.risk_max_open_orders_per_user_per_symbol) {
+        riskPatch.max_open_orders_per_user_per_symbol = stagedForm.risk_max_open_orders_per_user_per_symbol;
+      }
+      if (trimPairField(stagedForm.risk_net_exposure_hard_limit) !== trimPairField(currentSnapshot.risk_net_exposure_hard_limit)) {
+        riskPatch.net_exposure_hard_limit = trimPairField(stagedForm.risk_net_exposure_hard_limit);
+      }
+      if (stagedForm.risk_max_exposure_slippage_bps !== currentSnapshot.risk_max_exposure_slippage_bps) {
+        riskPatch.max_exposure_slippage_bps = stagedForm.risk_max_exposure_slippage_bps;
+      }
+      if (Object.keys(riskPatch).length > 0) {
+        payload.risk = riskPatch;
+      }
+    }
+
+    if (scope === 'funding') {
+      const fundingPatch: NonNullable<RuntimeConfigPatchRequest['funding']> = {};
+      if (stagedForm.funding_interval_sec !== currentSnapshot.funding_interval_sec) {
+        fundingPatch.interval_sec = stagedForm.funding_interval_sec;
+      }
+      if (stagedForm.funding_source_poll_interval_sec !== currentSnapshot.funding_source_poll_interval_sec) {
+        fundingPatch.source_poll_interval_sec = stagedForm.funding_source_poll_interval_sec;
+      }
+      if (trimPairField(stagedForm.funding_cap_rate_per_hour) !== trimPairField(currentSnapshot.funding_cap_rate_per_hour)) {
+        fundingPatch.cap_rate_per_hour = trimPairField(stagedForm.funding_cap_rate_per_hour);
+      }
+      if (stagedForm.funding_min_valid_source_count !== currentSnapshot.funding_min_valid_source_count) {
+        fundingPatch.min_valid_source_count = stagedForm.funding_min_valid_source_count;
+      }
+      if (trimPairField(stagedForm.funding_default_model_crypto) !== trimPairField(currentSnapshot.funding_default_model_crypto)) {
+        fundingPatch.default_model_crypto = trimPairField(stagedForm.funding_default_model_crypto);
+      }
+      if (Object.keys(fundingPatch).length > 0) {
+        payload.funding = fundingPatch;
+      }
+    }
+
+    if (scope === 'hedge') {
+      const hedgePatch: NonNullable<RuntimeConfigPatchRequest['hedge']> = {};
+      if (stagedForm.hedge_enabled !== currentSnapshot.hedge_enabled) {
+        hedgePatch.enabled = stagedForm.hedge_enabled;
+      }
+      if (trimPairField(stagedForm.hedge_soft_threshold_ratio) !== trimPairField(currentSnapshot.hedge_soft_threshold_ratio)) {
+        hedgePatch.soft_threshold_ratio = trimPairField(stagedForm.hedge_soft_threshold_ratio);
+      }
+      if (trimPairField(stagedForm.hedge_hard_threshold_ratio) !== trimPairField(currentSnapshot.hedge_hard_threshold_ratio)) {
+        hedgePatch.hard_threshold_ratio = trimPairField(stagedForm.hedge_hard_threshold_ratio);
+      }
+      if (Object.keys(hedgePatch).length > 0) {
+        payload.hedge = hedgePatch;
+      }
+    }
+
+    if (scope === 'pairs') {
+      const currentPairOverrides = toEditablePairOverrides(currentSnapshot.pair_overrides);
+      const pairPatchEntries = Object.entries(stagedForm.pair_overrides).flatMap(([pair, value]) => {
+        const nextPatch = toPairOverridePatch(value);
+        const currentPatch = toPairOverridePatch(currentPairOverrides[pair] || emptyPairOverride());
+        if (!nextPatch || equalPairOverridePatch(nextPatch, currentPatch)) {
+          return [];
+        }
+        return [[pair.trim().toUpperCase(), nextPatch] as const];
+      });
+      if (pairPatchEntries.length > 0) {
+        payload.pairs = Object.fromEntries(pairPatchEntries);
+      }
+    }
+
+    return payload;
+  }
+
+  function hasPayloadChanges(payload: RuntimeConfigPatchRequest) {
+    return Boolean(payload.global || payload.market || payload.risk || payload.funding || payload.hedge || payload.pairs);
+  }
+
+  async function handleScopedSave(scope: RuntimeConfigScope, label: string) {
+    if (!form || !configView) {
+      return;
+    }
+    const stagedForm = scope === 'pairs' ? stagePairEditorForSubmit(form) : form;
+    if (!stagedForm) {
+      return;
+    }
+    const payload = buildRuntimeConfigPayload(stagedForm, configView.snapshot, scope);
+    if (!hasPayloadChanges(payload)) {
+      message.warning(`未检测到${label}的待提交变更`);
+      return;
+    }
+    setForm(stagedForm);
+    setSaveReason('');
+    setPendingSave({
+      scope,
+      label,
+      payload,
+      stagedForm,
+    });
+  }
+
+  async function confirmScopedSave() {
+    if (!pendingSave) {
+      return;
+    }
+    if (!saveReason.trim()) {
+      message.warning('请填写变更理由');
+      return;
+    }
     try {
-      setSaving(true);
-      const view = await api.admin.updateRuntimeConfig(payload);
+      setSavingScope(pendingSave.scope);
+      const view = await api.admin.updateRuntimeConfig({
+        ...pendingSave.payload,
+        reason: saveReason.trim(),
+      });
       setConfigView(view);
       setForm(toEditableRuntimeConfig(view.snapshot));
-      message.success('运行时配置已更新');
+      if (pendingSave.scope === 'pairs') {
+        setPairEditor(null);
+      }
+      setPendingSave(null);
+      setSaveReason('');
+      message.success(`${pendingSave.label}已更新`);
     } catch (saveError) {
       setError(saveError);
-      message.error(saveError instanceof Error ? saveError.message : '更新运行时配置失败');
+      message.error(saveError instanceof Error ? saveError.message : `${pendingSave.label}更新失败`);
     } finally {
-      setSaving(false);
+      setSavingScope(null);
     }
   }
 
   const snapshot = form;
   const history = configView?.history || [];
+  const pairEntries = useMemo(() => Object.entries(snapshot?.pair_overrides || {}).sort(([left], [right]) => left.localeCompare(right)), [snapshot]);
+  const systemPairs = useMemo(() => symbols.map((item) => item.symbol).sort((left, right) => left.localeCompare(right)), [symbols]);
+
+  function openCreatePairEditor() {
+    setPairEditor({
+      mode: 'create',
+      pair: '',
+      initial_override: emptyPairOverride(),
+      override: emptyPairOverride(),
+    });
+  }
+
+  function openEditPairEditor() {
+    const pair = normalizePair(snapshot?.new_pair || '');
+    if (!snapshot || !pair) {
+      message.warning('请先选择要调整的 pair');
+      return;
+    }
+    if (!symbols.some((item) => item.symbol === pair)) {
+      message.warning('请选择系统已有的 pair');
+      return;
+    }
+    const effectiveOverride = buildEffectivePairOverride(pair, snapshot, symbols);
+    setPairEditor({
+      mode: 'edit',
+      pair,
+      source_pair: pair,
+      initial_override: effectiveOverride,
+      override: effectiveOverride,
+    });
+  }
+
+  function updatePairEditor(patch: Partial<PairEditorState['override']>) {
+    setPairEditor((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        override: {
+          ...current.override,
+          ...patch,
+        },
+      };
+    });
+  }
+
+  function applyPairEditor() {
+    const pair = normalizePair(pairEditor?.pair || '');
+    if (!snapshot || !pairEditor) {
+      return;
+    }
+    if (!pair) {
+      message.warning('pair 为必填项');
+      return;
+    }
+    if (!isPairFormatValid(pair)) {
+      message.warning('pair 格式必须为 BASE-QUOTE，例如 BTC-USDC');
+      return;
+    }
+    if (!symbols.some((item) => item.symbol === pair)) {
+      message.warning('只能选择系统内已有的交易对');
+      return;
+    }
+    if (pairEditor.mode === 'create' && snapshot.pair_overrides[pair]) {
+      message.warning('该 pair 已存在，请直接调整');
+      return;
+    }
+    const persistedDraft = buildPersistedPairOverrideDraft(pair, pairEditor.override, snapshot, symbols);
+    const nextPairOverrides = {
+      ...snapshot.pair_overrides,
+    };
+    if (hasPersistedPairOverrideValue(persistedDraft)) {
+      nextPairOverrides[pair] = persistedDraft;
+    } else {
+      delete nextPairOverrides[pair];
+    }
+    const nextSnapshot = {
+      ...snapshot,
+      pair_overrides: nextPairOverrides,
+    };
+    const effectiveOverride = buildEffectivePairOverride(pair, nextSnapshot, symbols);
+    setForm((current) => current ? {
+      ...current,
+      new_pair: pair,
+      pair_overrides: nextPairOverrides,
+    } : current);
+    setPairEditor({
+      mode: 'edit',
+      pair,
+      source_pair: pair,
+      initial_override: effectiveOverride,
+      override: effectiveOverride,
+    });
+    message.success(pairEditor.mode === 'create' ? `已将 ${pair} 加入当前变更表单` : `已将 ${pair} 的修改保存到本次变更`);
+  }
+
+  function resetEditingPair() {
+    if (!pairEditor || !snapshot) {
+      return;
+    }
+    if (pairEditor.mode === 'create') {
+      setPairEditor({
+        mode: 'create',
+        pair: '',
+        initial_override: emptyPairOverride(),
+        override: emptyPairOverride(),
+      });
+      return;
+    }
+    if (!pairEditor.source_pair) {
+      return;
+    }
+    setPairEditor({
+      mode: 'edit',
+      pair: pairEditor.source_pair,
+      source_pair: pairEditor.source_pair,
+      initial_override: pairEditor.initial_override,
+      override: pairEditor.initial_override,
+    });
+  }
 
   return (
     <div className="rg-app-page rg-app-page--admin">
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
-        <PageIntro eyebrow="Admin" title="Configs" description="管理 kill switch 与关键风险参数。变更会写入 config_items 与审计日志，并向各进程热更新。" titleEffect="glitch" descriptionEffect="proximity" />
+        <PageIntro eyebrow="Admin" title="运行配置" description="集中管理运行开关、市场参数与风险阈值。所有变更都会记录理由并写入审计历史。" titleEffect="glitch" descriptionEffect="proximity" />
         <Alert
           showIcon
           type="warning"
           message="变更约束"
-          description="本页仅操作阶段四关键运行时参数。变更会版本化、审计化，并在下个轮询周期同步到 api-server、market-data、funding-worker。"
+          description="每张卡片独立提交，提交前必须填写变更理由。配置会版本化、审计化，并在下个轮询周期同步到各个后端进程。"
         />
         {loading ? <Spin size="large" /> : null}
         <ErrorAlert error={error} />
@@ -597,109 +1204,269 @@ export function AdminConfigsPage() {
         {snapshot ? (
           <>
             <Space wrap size={[16, 16]}>
-              <MetricCard label="System Mode" value={snapshot.system_mode} hint="当前运行环境模式" accent="neutral" />
-              <MetricCard label="Read Only" value={<StatusTag value={snapshot.read_only ? 'ON' : 'OFF'} />} hint="全站写入 kill switch" accent={snapshot.read_only ? 'warm' : 'cool'} />
-              <MetricCard label="Reduce Only" value={<StatusTag value={snapshot.reduce_only ? 'ON' : 'OFF'} />} hint="全站只减仓 kill switch" accent={snapshot.reduce_only ? 'warm' : 'cool'} />
-              <MetricCard label="Last Loaded" value={formatDateTime(configView?.generated_at)} hint="Admin 读取时间" accent="neutral" />
+              <MetricCard label="系统模式" value={snapshot.system_mode} hint="当前运行环境模式" accent="neutral" />
+              <MetricCard label="只读模式" value={<StatusTag value={snapshot.read_only ? 'ON' : 'OFF'} />} hint="关闭所有写入" accent={snapshot.read_only ? 'warm' : 'cool'} />
+              <MetricCard label="只减仓模式" value={<StatusTag value={snapshot.reduce_only ? 'ON' : 'OFF'} />} hint="禁止新增风险敞口" accent={snapshot.reduce_only ? 'warm' : 'cool'} />
+              <MetricCard label="最近加载时间" value={formatDateTime(configView?.generated_at)} hint="Admin 页面读取时间" accent="neutral" />
             </Space>
 
-            <Card className="surface-card" title="Global Switches">
+            <Card
+              className="surface-card"
+              title="全局开关"
+              extra={<Button type="primary" loading={savingScope === 'global'} onClick={() => void handleScopedSave('global', '全局开关')}>提交变更</Button>}
+            >
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Space size={12}>
-                  <Text style={{ minWidth: 180 }}>Read Only</Text>
+                  <Text style={{ minWidth: 180 }}>只读模式</Text>
                   <Switch checked={snapshot.read_only} onChange={(checked) => setForm((current) => (current ? { ...current, read_only: checked } : current))} />
                 </Space>
                 <Space size={12}>
-                  <Text style={{ minWidth: 180 }}>Reduce Only</Text>
+                  <Text style={{ minWidth: 180 }}>只减仓模式</Text>
                   <Switch checked={snapshot.reduce_only} onChange={(checked) => setForm((current) => (current ? { ...current, reduce_only: checked } : current))} />
                 </Space>
                 <Space size={12}>
-                  <Text style={{ minWidth: 180 }}>Trace Header Required</Text>
+                  <Text style={{ minWidth: 180 }}>请求追踪头必填</Text>
                   <Switch checked={snapshot.trace_header_required} onChange={(checked) => setForm((current) => (current ? { ...current, trace_header_required: checked } : current))} />
                 </Space>
               </Space>
             </Card>
 
-            <Card className="surface-card" title="Risk Parameters">
+            <Card
+              className="surface-card"
+              title="市场参数"
+              extra={<Button type="primary" loading={savingScope === 'market'} onClick={() => void handleScopedSave('market', '市场参数')}>提交变更</Button>}
+            >
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Space wrap size={16}>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Risk Buffer Ratio</Text>
+                    <Text type="secondary">吃单费率</Text>
+                    <Input value={snapshot.market_taker_fee_rate} onChange={(event) => setForm((current) => (current ? { ...current, market_taker_fee_rate: event.target.value } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">挂单费率</Text>
+                    <Input value={snapshot.market_maker_fee_rate} onChange={(event) => setForm((current) => (current ? { ...current, market_maker_fee_rate: event.target.value } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">默认最大滑点（bps）</Text>
+                    <InputNumber min={1} value={snapshot.market_default_max_slippage_bps} onChange={(value) => setForm((current) => (current ? { ...current, market_default_max_slippage_bps: Number(value || 0) } : current))} style={{ width: 220 }} />
+                  </Space>
+                </Space>
+              </Space>
+            </Card>
+
+            <Card
+              className="surface-card"
+              title="风险参数"
+              extra={<Button type="primary" loading={savingScope === 'risk'} onClick={() => void handleScopedSave('risk', '风险参数')}>提交变更</Button>}
+            >
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <Space wrap size={16}>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">风险缓冲比例</Text>
                     <Input value={snapshot.risk_global_buffer_ratio} onChange={(event) => setForm((current) => (current ? { ...current, risk_global_buffer_ratio: event.target.value } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Mark Price Stale Sec</Text>
+                    <Text type="secondary">标记价格失效秒数</Text>
                     <InputNumber min={1} value={snapshot.risk_mark_price_stale_sec} onChange={(value) => setForm((current) => (current ? { ...current, risk_mark_price_stale_sec: Number(value || 0) } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Liquidation Penalty Rate</Text>
+                    <Text type="secondary">强平罚金费率</Text>
                     <Input value={snapshot.risk_liquidation_penalty_rate} onChange={(event) => setForm((current) => (current ? { ...current, risk_liquidation_penalty_rate: event.target.value } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Liquidation Extra Slippage Bps</Text>
+                    <Text type="secondary">维持保证金上浮比例</Text>
+                    <Input value={snapshot.risk_maintenance_margin_uplift_ratio} onChange={(event) => setForm((current) => (current ? { ...current, risk_maintenance_margin_uplift_ratio: event.target.value } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">强平附加滑点（bps）</Text>
                     <InputNumber min={0} value={snapshot.risk_liquidation_extra_slippage_bps} onChange={(value) => setForm((current) => (current ? { ...current, risk_liquidation_extra_slippage_bps: Number(value || 0) } : current))} style={{ width: 220 }} />
                   </Space>
                 </Space>
                 <Space wrap size={16}>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Max Open Orders / User / Symbol</Text>
+                    <Text type="secondary">单用户单交易对最大挂单数</Text>
                     <InputNumber min={1} value={snapshot.risk_max_open_orders_per_user_per_symbol} onChange={(value) => setForm((current) => (current ? { ...current, risk_max_open_orders_per_user_per_symbol: Number(value || 0) } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Net Exposure Hard Limit</Text>
+                    <Text type="secondary">净敞口硬上限</Text>
                     <Input value={snapshot.risk_net_exposure_hard_limit} onChange={(event) => setForm((current) => (current ? { ...current, risk_net_exposure_hard_limit: event.target.value } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Max Exposure Slippage Bps</Text>
+                    <Text type="secondary">最大敞口滑点（bps）</Text>
                     <InputNumber min={0} value={snapshot.risk_max_exposure_slippage_bps} onChange={(value) => setForm((current) => (current ? { ...current, risk_max_exposure_slippage_bps: Number(value || 0) } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space size={12}>
-                    <Text style={{ minWidth: 180 }}>Force Reduce Only On Stale Price</Text>
+                    <Text style={{ minWidth: 180 }}>价格失效时强制只减仓</Text>
                     <Switch checked={snapshot.risk_force_reduce_only_on_stale_price} onChange={(checked) => setForm((current) => (current ? { ...current, risk_force_reduce_only_on_stale_price: checked } : current))} />
                   </Space>
                 </Space>
               </Space>
             </Card>
 
-            <Card className="surface-card" title="Hedge Thresholds">
+            <Card
+              className="surface-card"
+              title="资金费参数"
+              extra={<Button type="primary" loading={savingScope === 'funding'} onClick={() => void handleScopedSave('funding', '资金费参数')}>提交变更</Button>}
+            >
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <Space wrap size={16}>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">资金费结算间隔（秒）</Text>
+                    <InputNumber min={60} value={snapshot.funding_interval_sec} onChange={(value) => setForm((current) => (current ? { ...current, funding_interval_sec: Number(value || 0) } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">价格源轮询间隔（秒）</Text>
+                    <InputNumber min={1} value={snapshot.funding_source_poll_interval_sec} onChange={(value) => setForm((current) => (current ? { ...current, funding_source_poll_interval_sec: Number(value || 0) } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">每小时费率上限</Text>
+                    <Input value={snapshot.funding_cap_rate_per_hour} onChange={(event) => setForm((current) => (current ? { ...current, funding_cap_rate_per_hour: event.target.value } : current))} style={{ width: 220 }} />
+                  </Space>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">最少有效价格源数量</Text>
+                    <InputNumber min={1} value={snapshot.funding_min_valid_source_count} onChange={(value) => setForm((current) => (current ? { ...current, funding_min_valid_source_count: Number(value || 0) } : current))} style={{ width: 220 }} />
+                  </Space>
+                </Space>
+                <Space wrap size={16}>
+                  <Space direction="vertical" size={4}>
+                    <Text type="secondary">加密资产默认模型</Text>
+                    <Input value={snapshot.funding_default_model_crypto} onChange={(event) => setForm((current) => (current ? { ...current, funding_default_model_crypto: event.target.value } : current))} style={{ width: 220 }} />
+                  </Space>
+                </Space>
+              </Space>
+            </Card>
+
+            <Card
+              className="surface-card"
+              title="对冲阈值"
+              extra={<Button type="primary" loading={savingScope === 'hedge'} onClick={() => void handleScopedSave('hedge', '对冲阈值')}>提交变更</Button>}
+            >
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 <Space size={12}>
-                  <Text style={{ minWidth: 180 }}>Hedge Enabled</Text>
+                  <Text style={{ minWidth: 180 }}>启用对冲</Text>
                   <Switch checked={snapshot.hedge_enabled} onChange={(checked) => setForm((current) => (current ? { ...current, hedge_enabled: checked } : current))} />
                 </Space>
                 <Space wrap size={16}>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Soft Threshold Ratio</Text>
+                    <Text type="secondary">软阈值比例</Text>
                     <Input value={snapshot.hedge_soft_threshold_ratio} onChange={(event) => setForm((current) => (current ? { ...current, hedge_soft_threshold_ratio: event.target.value } : current))} style={{ width: 220 }} />
                   </Space>
                   <Space direction="vertical" size={4}>
-                    <Text type="secondary">Hard Threshold Ratio</Text>
+                    <Text type="secondary">硬阈值比例</Text>
                     <Input value={snapshot.hedge_hard_threshold_ratio} onChange={(event) => setForm((current) => (current ? { ...current, hedge_hard_threshold_ratio: event.target.value } : current))} style={{ width: 220 }} />
                   </Space>
                 </Space>
               </Space>
             </Card>
 
-            <Card className="surface-card" title="Change Submission">
-              <Space direction="vertical" size={12} style={{ width: '100%' }}>
-                <Input.TextArea
-                  rows={3}
-                  placeholder="填写本次变更原因，便于审计和回滚。"
-                  value={snapshot.reason}
-                  onChange={(event) => setForm((current) => (current ? { ...current, reason: event.target.value } : current))}
-                />
+            <Card
+              className="surface-card"
+              title="Pair 参数调整"
+              extra={(
                 <Space>
-                  <Button type="primary" loading={saving} onClick={() => void handleSave()}>
-                    提交配置变更
-                  </Button>
-                  <Button onClick={() => setForm(configView ? toEditableRuntimeConfig(configView.snapshot) : snapshot)}>
-                    重置到当前快照
-                  </Button>
+                  <Button type="primary" loading={savingScope === 'pairs'} onClick={() => void handleScopedSave('pairs', 'Pair 参数')}>提交变更</Button>
+                  <Select
+                    showSearch
+                    placeholder={systemPairs.length > 0 ? '选择系统已有 Pair' : '暂无系统 Pair 数据'}
+                    value={snapshot.new_pair}
+                    onChange={(value) => setForm((current) => (current ? { ...current, new_pair: value } : current))}
+                    style={{ width: 220 }}
+                    options={systemPairs.map((pair) => ({ label: pair, value: pair }))}
+                    optionFilterProp="label"
+                    notFoundContent={<Text type="secondary">暂无系统 Pair 数据。</Text>}
+                  />
+                  <Button onClick={openEditPairEditor} disabled={systemPairs.length === 0}>调整 Pair</Button>
+                  <Button onClick={openCreatePairEditor}>新增 Pair</Button>
                 </Space>
+              )}
+            >
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                {pairEditor ? (
+                  <Card
+                    type="inner"
+                    title={pairEditor.mode === 'create' ? '新增 Pair 草稿' : `调整 Pair：${pairEditor.pair}`}
+                    extra={(
+                      <Space>
+                        <Button type="primary" onClick={applyPairEditor}>保存到本次变更</Button>
+                        <Button onClick={resetEditingPair}>重置当前草稿</Button>
+                        <Button onClick={() => setPairEditor(null)}>关闭</Button>
+                      </Space>
+                    )}
+                  >
+                    <Space wrap size={16}>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">交易对</Text>
+                        <Input
+                          placeholder="例如 BTC-USDC"
+                          value={pairEditor.pair}
+                          disabled={pairEditor.mode === 'edit'}
+                          onChange={(event) => setPairEditor((current) => current ? { ...current, pair: normalizePair(event.target.value) } : current)}
+                          style={{ width: 180 }}
+                        />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">最大杠杆</Text>
+                        <InputNumber
+                          min={1}
+                          precision={0}
+                          value={pairEditor.override.max_leverage ? Number(pairEditor.override.max_leverage) : undefined}
+                          onChange={(value) => updatePairEditor({ max_leverage: value ? String(value) : '' })}
+                          style={{ width: 180 }}
+                        />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">交易时段策略</Text>
+                        <Select
+                          value={pairEditor.override.session_policy || undefined}
+                          onChange={(value) => updatePairEditor({ session_policy: value })}
+                          style={{ width: 180 }}
+                          options={sessionPolicyOptions}
+                        />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">吃单费率</Text>
+                        <Input value={pairEditor.override.taker_fee_rate} onChange={(event) => updatePairEditor({ taker_fee_rate: event.target.value })} style={{ width: 180 }} />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">挂单费率</Text>
+                        <Input value={pairEditor.override.maker_fee_rate} onChange={(event) => updatePairEditor({ maker_fee_rate: event.target.value })} style={{ width: 180 }} />
+                      </Space>
+                    </Space>
+                    <Space wrap size={16} style={{ marginTop: 16 }}>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">默认最大滑点（bps）</Text>
+                        <InputNumber min={1} value={pairEditor.override.default_max_slippage_bps} onChange={(value) => updatePairEditor({ default_max_slippage_bps: Number(value || 0) || undefined })} style={{ width: 180 }} />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">强平罚金费率</Text>
+                        <Input value={pairEditor.override.liquidation_penalty_rate} onChange={(event) => updatePairEditor({ liquidation_penalty_rate: event.target.value })} style={{ width: 180 }} />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">维持保证金上浮比例</Text>
+                        <Input value={pairEditor.override.maintenance_margin_uplift_ratio} onChange={(event) => updatePairEditor({ maintenance_margin_uplift_ratio: event.target.value })} style={{ width: 180 }} />
+                      </Space>
+                      <Space direction="vertical" size={4}>
+                        <Text type="secondary">资金费结算间隔（秒）</Text>
+                        <InputNumber min={60} value={pairEditor.override.funding_interval_sec} onChange={(value) => updatePairEditor({ funding_interval_sec: Number(value || 0) || undefined })} style={{ width: 180 }} />
+                      </Space>
+                    </Space>
+                  </Card>
+                ) : null}
+                {pairEntries.length === 0 ? <EmptyStateCard title="暂无 Pair 覆盖" description="当前只有全局默认参数，尚未写入任何 pair 级覆盖。" /> : null}
+                {pairEntries.length > 0 ? (
+                  <Card type="inner" title="已配置 Pair 列表">
+                    <Space wrap size={[8, 8]}>
+                      {pairEntries.map(([pair]) => <StatusTag key={pair} value={pair} />)}
+                    </Space>
+                  </Card>
+                ) : null}
+                <Card type="inner" title="提交说明">
+                  <Text type="secondary">Pair 变更先保存到当前草稿，点击卡片右上角“提交变更”后再填写理由并提交。</Text>
+                </Card>
               </Space>
             </Card>
 
-            <Card className="table-card" title="Recent Runtime Config History">
+            <Card className="table-card" title="最近运行配置历史">
               <Table
                 rowKey={(record: RuntimeConfigHistoryItem) => `${record.config_key}-${record.version}-${record.created_at}`}
                 dataSource={history}
@@ -707,13 +1474,15 @@ export function AdminConfigsPage() {
                 scroll={{ x: 1200 }}
                 locale={{ emptyText: <EmptyStateCard title="暂无配置历史" description="当前还没有动态配置变更记录。" /> }}
                 columns={[
-                  { title: 'Time', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
-                  { title: 'Key', dataIndex: 'config_key', width: 260 },
-                  { title: 'Version', dataIndex: 'version', width: 90 },
-                  { title: 'Status', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
-                  { title: 'Value', dataIndex: 'value', render: (value: unknown) => <Text type="secondary">{typeof value === 'string' ? value : JSON.stringify(value)}</Text> },
-                  { title: 'Operator', dataIndex: 'created_by', width: 140 },
-                  { title: 'Reason', dataIndex: 'reason' },
+                  { title: '时间', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
+                  { title: '配置键', dataIndex: 'config_key', width: 260 },
+                  { title: '作用域类型', dataIndex: 'scope_type', width: 120 },
+                  { title: '作用域值', dataIndex: 'scope_value', width: 160 },
+                  { title: '版本', dataIndex: 'version', width: 90 },
+                  { title: '状态', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
+                  { title: '配置值', dataIndex: 'value', render: (value: unknown) => <Text type="secondary">{typeof value === 'string' ? value : JSON.stringify(value)}</Text> },
+                  { title: '操作人', dataIndex: 'created_by', width: 140 },
+                  { title: '变更理由', dataIndex: 'reason' },
                 ]}
               />
             </Card>
@@ -722,17 +1491,269 @@ export function AdminConfigsPage() {
           <EmptyStateCard title="暂无配置快照" description="当前未能加载运行时配置。" />
         )}
       </Space>
+      <Modal
+        title={pendingSave ? `提交${pendingSave.label}` : '提交配置变更'}
+        open={Boolean(pendingSave)}
+        okText="确认提交"
+        cancelText="取消"
+        confirmLoading={Boolean(pendingSave) && savingScope === pendingSave?.scope}
+        onCancel={() => {
+          if (savingScope) {
+            return;
+          }
+          setPendingSave(null);
+          setSaveReason('');
+        }}
+        onOk={() => void confirmScopedSave()}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text type="secondary">请填写本次配置变更的原因，后端会基于当前管理员身份完成鉴权并写入审计记录。</Text>
+          <Input.TextArea
+            rows={4}
+            placeholder="例如：为降低市场波动期间的爆仓风险，临时上调强平附加滑点。"
+            value={saveReason}
+            onChange={(event) => setSaveReason(event.target.value)}
+            maxLength={200}
+            showCount
+          />
+        </Space>
+      </Modal>
     </div>
   );
 }
 
 export function AdminLiquidationsPage() {
+  const [items, setItems] = useState<AdminLiquidationItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  const [processingAction, setProcessingAction] = useState<string | null>(null);
+  const [topUpAmount, setTopUpAmount] = useState('');
+  const [topUpReason, setTopUpReason] = useState('');
+  const [topUpSource, setTopUpSource] = useState<'SYSTEM_POOL' | 'CUSTODY_HOT'>('SYSTEM_POOL');
+  const [closeTarget, setCloseTarget] = useState<AdminLiquidationItem | null>(null);
+  const [closeReason, setCloseReason] = useState('');
+
+  async function loadData(background = false) {
+    if (!background) {
+      setLoading(true);
+    }
+    setError(null);
+    try {
+      setItems(await api.admin.getLiquidations());
+    } catch (loadError) {
+      setError(loadError);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadData();
+  }, []);
+
+  useWindowRefetch(() => {
+    void loadData(true);
+  }, true);
+
+  async function handleTopUpInsuranceFund() {
+    if (!topUpAmount.trim()) {
+      message.warning('请输入注资金额');
+      return;
+    }
+    if (!topUpReason.trim()) {
+      message.warning('请输入注资原因');
+      return;
+    }
+    try {
+      setProcessingAction('insurance-topup');
+      const result = await api.admin.topUpInsuranceFund({
+        asset: 'USDC',
+        amount: topUpAmount.trim(),
+        source_account: topUpSource,
+        reason: topUpReason.trim(),
+      });
+      message.success(`保险基金已注资 ${formatUsd(result.amount, 8)}`);
+      setTopUpAmount('');
+      setTopUpReason('');
+      await loadData(true);
+    } catch (actionError) {
+      setError(actionError);
+    } finally {
+      setProcessingAction(null);
+    }
+  }
+
+  async function handleRetryLiquidation(liquidationId: string) {
+    try {
+      setProcessingAction(`retry:${liquidationId}`);
+      const result = await api.admin.retryLiquidation(liquidationId);
+      message.success(`清算记录已更新为 ${result.status}`);
+      await loadData(true);
+    } catch (actionError) {
+      setError(actionError);
+    } finally {
+      setProcessingAction(null);
+    }
+  }
+
+  async function handleConfirmCloseLiquidation() {
+    if (!closeTarget) {
+      return;
+    }
+    if (!closeReason.trim()) {
+      message.warning('请输入结案原因');
+      return;
+    }
+    try {
+      setProcessingAction(`close:${closeTarget.liquidation_id}`);
+      const result = await api.admin.closeLiquidation(closeTarget.liquidation_id, closeReason.trim());
+      message.success(`清算记录已更新为 ${result.status}`);
+      setCloseTarget(null);
+      setCloseReason('');
+      await loadData(true);
+    } catch (actionError) {
+      setError(actionError);
+    } finally {
+      setProcessingAction(null);
+    }
+  }
+
+  const executedCount = items.filter((item) => item.status === 'EXECUTED').length;
+  const executingCount = items.filter((item) => item.status === 'EXECUTING').length;
+  const pendingManualCount = items.filter((item) => item.status === 'PENDING_MANUAL').length;
+  const abortedCount = items.filter((item) => item.status === 'ABORTED').length;
+
   return (
-    <AdminPageTemplate
-      title="Liquidations"
-      description="查看强平执行记录与相关状态。"
-      items={['账户风险快照', '清算前撤单记录', '罚金分录', '重放与审计入口']}
-    />
+    <div className="rg-app-page rg-app-page--admin">
+      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <PageIntro eyebrow="Admin" title="Liquidations" description="查看真实的强平执行记录、罚金和状态。" titleEffect="glitch" descriptionEffect="proximity" />
+        <Alert
+          showIcon
+          type="info"
+          message="坏账处理"
+          description="PENDING_MANUAL 表示清算触发后结算仍有缺口。先给 INSURANCE_FUND 注资，再对仍未收口的记录点击“重试清算”；如果仓位已经关闭，可直接“标记结案”。"
+        />
+        <ErrorAlert error={error} />
+        <Space size={16} wrap>
+          <MetricCard label="总记录数" value={String(items.length)} hint="最近查询结果" accent="cool" />
+          <MetricCard label="已执行" value={<StatusTag value="EXECUTED" />} hint={String(executedCount)} accent="cool" />
+          <MetricCard label="执行中" value={<StatusTag value="EXECUTING" />} hint={String(executingCount)} accent="warm" />
+          <MetricCard label="待人工处理" value={<StatusTag value="PENDING_MANUAL" />} hint={String(pendingManualCount)} accent="warm" />
+          <MetricCard label="已中止" value={<StatusTag value="ABORTED" />} hint={String(abortedCount)} accent="warm" />
+        </Space>
+        <Card className="table-card" title="保险基金注资">
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              当前本地环境建议优先从 `SYSTEM_POOL` 向 `INSURANCE_FUND` 注资，再重试 `PENDING_MANUAL` 的逐仓清算。
+            </Paragraph>
+            <Space wrap size={12}>
+              <Select
+                value={topUpSource}
+                style={{ width: 180 }}
+                options={[
+                  { label: '系统池 SYSTEM_POOL', value: 'SYSTEM_POOL' },
+                  { label: '热钱包镜像 CUSTODY_HOT', value: 'CUSTODY_HOT' },
+                ]}
+                onChange={(value) => setTopUpSource(value)}
+              />
+              <Input
+                placeholder="注资金额，例如 10"
+                value={topUpAmount}
+                style={{ width: 220 }}
+                onChange={(event) => setTopUpAmount(event.target.value)}
+              />
+              <Input
+                placeholder="注资原因"
+                value={topUpReason}
+                style={{ minWidth: 320 }}
+                onChange={(event) => setTopUpReason(event.target.value)}
+              />
+              <Button type="primary" loading={processingAction === 'insurance-topup'} onClick={() => void handleTopUpInsuranceFund()}>
+                注资到保险基金
+              </Button>
+            </Space>
+          </Space>
+        </Card>
+        <Card className="table-card" title="Liquidation Records">
+          <Table
+            rowKey="liquidation_id"
+            loading={loading}
+            dataSource={items}
+            pagination={false}
+            scroll={{ x: 1620 }}
+            locale={{ emptyText: <EmptyStateCard title="暂无清算记录" description="当前数据库里还没有任何 liquidations 记录。" /> }}
+            columns={[
+              { title: 'Time', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
+              { title: 'Liquidation ID', dataIndex: 'liquidation_id', width: 200, render: (value: string) => <Text code>{value}</Text> },
+              { title: 'User', dataIndex: 'user_address', width: 160, render: (value: string) => <Text type="secondary">{formatAddress(value, 8)}</Text> },
+              { title: 'Symbol', dataIndex: 'symbol', width: 120, render: (value?: string | null) => value || '--' },
+              { title: 'Mode', dataIndex: 'mode', width: 110, render: (value: string) => <StatusTag value={value} /> },
+              { title: 'Status', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
+              { title: 'Positions', dataIndex: 'position_count', width: 100 },
+              { title: 'Penalty', dataIndex: 'penalty_amount', align: 'right', render: (value: string) => formatUsd(value, 8) },
+              { title: 'Insurance Used', dataIndex: 'insurance_fund_used', align: 'right', render: (value: string) => formatUsd(value, 8) },
+              { title: 'Bankrupt', dataIndex: 'bankrupt_amount', align: 'right', render: (value: string) => formatUsd(value, 8) },
+              { title: 'Risk Snapshot', dataIndex: 'trigger_risk_snapshot_id', width: 130 },
+              { title: 'Abort Reason', dataIndex: 'abort_reason', width: 180, render: (value?: string | null) => value || '--' },
+              { title: 'Updated', dataIndex: 'updated_at', width: 180, render: (value: string) => formatDateTime(value) },
+              {
+                title: 'Action',
+                width: 220,
+                render: (_, record: AdminLiquidationItem) => (
+                  <Space wrap>
+                    <Button
+                      size="small"
+                      type="primary"
+                      disabled={record.status !== 'PENDING_MANUAL'}
+                      loading={processingAction === `retry:${record.liquidation_id}`}
+                      onClick={() => void handleRetryLiquidation(record.liquidation_id)}
+                    >
+                      重试清算
+                    </Button>
+                    <Button
+                      size="small"
+                      disabled={record.status !== 'PENDING_MANUAL'}
+                      loading={processingAction === `close:${record.liquidation_id}`}
+                      onClick={() => {
+                        setCloseTarget(record);
+                        setCloseReason('');
+                      }}
+                    >
+                      标记结案
+                    </Button>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </Card>
+        <Modal
+          open={Boolean(closeTarget)}
+          title="标记坏账记录结案"
+          okText="确认结案"
+          cancelText="取消"
+          confirmLoading={closeTarget ? processingAction === `close:${closeTarget.liquidation_id}` : false}
+          onCancel={() => {
+            setCloseTarget(null);
+            setCloseReason('');
+          }}
+          onOk={() => void handleConfirmCloseLiquidation()}
+        >
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Paragraph type="secondary" style={{ marginBottom: 0 }}>
+              仅在对应仓位已经关闭、这条记录只是历史坏账遗留时使用该操作。
+            </Paragraph>
+            <Input.TextArea
+              value={closeReason}
+              rows={4}
+              maxLength={200}
+              placeholder="请输入结案原因，例如：仓位已手动关闭，清算记录仅保留审计痕迹"
+              onChange={(event) => setCloseReason(event.target.value)}
+            />
+          </Space>
+        </Modal>
+      </Space>
+    </div>
   );
 }
 

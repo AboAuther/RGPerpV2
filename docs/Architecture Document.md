@@ -1,747 +1,717 @@
-# 架构文档
+# 技术架构文档（基于当前实现）
 
-## 1. 文档目的
+## 1. 文档说明
 
-本文档定义面向生产的永续合约交易所架构，具备以下特点：
+本文档基于当前仓库中的实际实现编写，而不是目标态蓝图。
 
-- 链上托管；
-- 链下交易；
-- 链下风控；
-- 链下强平；
-- 通过 Hyperliquid 测试网进行外部对冲。
+覆盖依据包括：
 
-架构在以下实现约束下设计：
+- `backend/cmd/*` 的实际运行进程；
+- `backend/internal/domain/*` 的领域能力；
+- `backend/internal/transport/http/*` 的真实 API；
+- `backend/internal/infra/*` 的数据库、链上与市场数据适配器；
+- `contracts/src/*` 的已实现合约；
+- `frontend/src/pages/*` 的已落地页面。
 
-- 前端：React + Vite + TypeScript + Ant Design
-- 后端：Go + Gin + GORM
-- 数据：MySQL + Redis + RabbitMQ
-- 合约：Solidity + Foundry
-- 外部对冲场所：Hyperliquid 测试网
+因此，本文件优先回答三个问题：
 
-设计目标是将托管与最终资产归属保持于链上可验证，同时将撮合、定价、风险、强平、资金费率和对冲置于链下，以实现性能、可配置性和运维控制。
+1. 系统现在实际是如何运行的；
+2. 核心模块如何协作并维护资金与交易正确性；
+3. 哪些能力已经落地，哪些能力仍处于保留或半接入状态。
 
-## 2. 核心设计原则
+## 2. 当前实现快照
 
-1. 托管真相在链上；交易真相在链下。
-2. 账本是平台内部余额的真相源。
-3. 订单、仓位、账本变更及风险变更必须保持事务一致性。
-4. 市场数据、对冲、Explorer 索引、通知及分析为最终一致。
-5. 在陈旧价格、保证金不足、钱包异常及对冲不确定时采用 Fail Closed（故障时拒绝）。
-6. 所有关键变更必须幂等、可审计且可重放。
+截至当前代码基线，系统已经实现并接通了以下主链路：
 
-## 3. 系统范围
+- EVM 地址 challenge/login 登录；
+- 多链充值地址生成；
+- Indexer 扫描 Vault/Router 相关链上事件并推进充值、提现链路；
+- 用户充值入账、提现申请、审核、链上广播、完成、退款；
+- 用户间内部转账；
+- 行情采集与标记价快照；
+- 永续订单创建、撤单、成交、仓位更新；
+- 账户风险重算与强平触发；
+- Liquidator 执行清算；
+- Funding Worker 采集资金费率、生成批次、应用结算、支持反向冲正；
+- Explorer 事件查询；
+- Admin 运行时配置、风控重算、强平重试/关闭、保险基金补充、账本审计。
 
-### 3.1 在范围内
+当前仍属于保留或未接入主运行时的能力：
 
-- EVM 钱包登录
-- 链上 USDC 充值与提现
-- 链下账本与余额缓存
-- CFD 永续合约订单执行
-- 标记价格、风险、强平、资金费率
-- Hyperliquid 测试网外部对冲
-- Explorer、管理、配置及审计
+- 独立 `hedger-worker` 未接入运行进程；
+- `hedge` 领域与 `hedge_*` 表结构已存在，但尚未形成完整运行链路；
+- `outbox-relay` 与 `notification-worker` 在 `cmd/README` 中保留，但当前代码未接入；
+- RabbitMQ 配置仍保留在静态配置中，但当前关键异步路径主要通过数据库 `outbox_events` 轮询实现；
+- WebSocket 网关未落地，前端以 HTTP 轮询和写后刷新为主。
 
-### 3.2 P0 不在范围内
+## 3. 架构目标与当前取舍
 
-- 逐仓保证金
-- 多抵押品保证金
-- 期权与现货
-- 完整 ADL 自动化
-- 复杂资金库与冷钱包治理
+系统当前仍遵循最初的核心架构思想，但实现上采取了更务实的交付路径：
+
+- 托管与提现真相在链上；
+- 账本、订单、仓位与风险真相在 MySQL；
+- 异步编排优先通过数据库 outbox 和轮询 worker 完成；
+- 运行时采用“模块化单体 + 多进程 worker”而不是微服务。
+
+这一取舍的直接结果是：
+
+- 财务主链路更容易保证事务一致性；
+- 开发、联调、本地 review 和 docker compose 启动成本更低；
+- 代价是系统当前更偏 DB-centric，真正的消息总线和独立对冲进程仍是后续演进方向。
 
 ## 4. 顶层架构
 
 ```mermaid
 flowchart LR
-    U["用户钱包 / 浏览器"] --> FE["前端
-React + Vite + TS + AntD"]
+    U["用户 / 管理员浏览器"] --> FE["Frontend
+React + Vite + TypeScript + Ant Design"]
 
-    FE --> API["后端 API
-Gin"]
-    FE --> WS["WebSocket 网关
-账户/订单/仓位流"]
-
-    API --> AUTH["认证 / 会话"]
-    API --> ACCT["账户 / 账本服务"]
-    API --> ORDER["订单服务"]
-    API --> CFG["配置 / 管理服务"]
-
-    ORDER --> TRADE["交易引擎"]
-    ORDER --> RISK["风险引擎"]
-    RISK --> LIQ["强平器"]
-    RISK --> FUND["资金费率 Worker"]
-    RISK --> HEDGE["对冲器"]
+    FE --> API["api-server
+Gin + Domain Services"]
 
     API --> MYSQL[("MySQL")]
     API --> REDIS[("Redis")]
-    ORDER --> MYSQL
-    TRADE --> MYSQL
-    RISK --> MYSQL
-    LIQ --> MYSQL
-    FUND --> MYSQL
-    HEDGE --> MYSQL
 
-    API --> MQ[("RabbitMQ")]
-    ORDER --> MQ
-    TRADE --> MQ
-    RISK --> MQ
-    LIQ --> MQ
-    FUND --> MQ
-    HEDGE --> MQ
+    API --> AUTH["Auth"]
+    API --> WALLET["Wallet"]
+    API --> ORDER["Order"]
+    API --> ACCOUNT["Account Query"]
+    API --> ADMIN["Admin Ops"]
 
-    VAULT["Vault 合约
-Solidity"] <---> CHAIN["EVM 链
+    INDEXER["indexer"] --> CHAIN["EVM Chains
 Ethereum / Arbitrum / Base"]
-    INDEX["索引器"] --> CHAIN
-    INDEX --> MYSQL
-    INDEX --> MQ
+    INDEXER --> MYSQL
 
-    API --> VAULT
-    ACCT --> VAULT
+    MARKET["market-data-worker"] --> SRC["Binance / Hyperliquid / Coinbase / TwelveData"]
+    MARKET --> MYSQL
+    MARKET --> REDIS
 
-    HEDGE <--> HL["Hyperliquid 测试网"]
-    TRADE --> MD["市场数据聚合器"]
-    RISK --> MD
-    FUND --> MD
-    HEDGE --> MD
-    MD --> MYSQL
-    MD --> REDIS
+    EXEC["order-executor-worker"] --> MYSQL
+    EXEC --> REDIS
 
-    MQ --> EXP["Explorer / 报表"]
-    MQ --> NOTI["通知 / 异步任务"]
-    MYSQL --> EXP
+    RISK["risk-engine-worker"] --> MYSQL
+    LIQ["liquidator-worker"] --> MYSQL
+    FUND["funding-worker"] --> MYSQL
+
+    API --> VAULT["Vault / DepositRouter / Factory"]
+    VAULT --> CHAIN
 ```
 
-## 5. 主要组件与职责边界
-
-### 5.1 前端
-
-前端负责状态展示和交互，不作为余额、风险或权限的最终权威。
-
-#### 职责
-
-- 钱包连接及签名登录
-- 账户概览：权益、可用余额、保证金、PnL
-- 充值与提现界面
-- 下单及撤单操作
-- 仓位、订单、成交、资金费率及强平视图
-- Explorer 及管理控制台视图
-- 账户与市场更新的 WebSocket 订阅
-
-#### 非职责
-
-- 不维护客户端余额真相
-- 不做客户端风控决策
-- 不作为权限的最终权威
-
-### 5.2 后端 API
-
-后端 API 是面向用户和管理员的同步请求入口及编排边界。
-
-#### 职责
-
-- 钱包 nonce 发放及签名校验
-- 会话发放及 RBAC 执行
-- 输入校验与所有权检查
-- 同步下单及撤单接口
-- 充值地址查询、提现请求、划转请求
-- 账户、订单、仓位及 Explorer 查询 API
-- 管理配置及运维命令
-
-#### 非职责
-
-- 不直接扫描链上日志
-- 不直接运行持续性风险循环
-- 不直接执行外部对冲逻辑
-
-### 5.3 Vault
-
-Vault 是链上托管边界。
-
-#### 职责
-
-- 在合约控制的托管中持有用户充值 USDC
-- 发出供链下索引的充值与提现事件
-- 提供角色门控的提现执行路径
-- 维护暂停及应急控制
-- 提供可对账的确定性事件历史
-
-#### 非职责
-
-- 无链上订单簿
-- 无链上仓位
-- 无链上强平逻辑
-- 无链上资金费率结算
-
-### 5.4 Indexer（索引器）
-
-Indexer 是链上真相与链下账本摄取的桥梁。
-
-#### 职责
-
-- 从 Vault 及支持的代币扫描链上事件
-- 跟踪确认数及重组安全最终性
-- 将链上事件转换为内部充值与提现事件
-- 将充值/提现链记录写入 MySQL
-- 将异步事件发布到 RabbitMQ
-- 维护每链游标及重放能力
-
-#### 非职责
-
-- 不做面向用户的业务决策
-- 不经账本服务不直接变更余额
-
-### 5.5 Trade Engine（交易引擎）
-
-Trade Engine 是 CFD 订单的链下执行核心。
-
-#### 职责
-
-- 使用实时市场数据校验可交易市场状态
-- 使用聚合外部报价及内部价差规则计算成交价
-- 立即处理市价单
-- 触发满足条件的限价单及止损类订单
-- 生成成交及执行元数据
-- 更新订单状态并调用原子仓位与账本变更
-
-#### 非职责
-
-- 不独立托管
-- 不做长期的账户级监控
-- 不做最终对冲策略决策
-
-### 5.6 Risk Engine（风险引擎）
-
-Risk Engine 是链下交易前及运行时风险权威。
-
-#### 职责
-
-- 交易前检查：可用余额、杠杆、交易对状态、风险分级、价格新鲜度
-- 实时账户权益及维持保证金重算
-- 交易对与账户风险监控
-- 保证金模式执行
-- 强平触发产生
-- 对冲阈值产生
-- 资金费率结算准备
-
-#### 非职责
-
-- 不处理用户会话
-- 不直接签署链上交易
-
-### 5.7 Liquidator（强平器）
-
-Liquidator 是 dedicated 高优先级 Worker，执行强平流程。
-
-#### 职责
-
-- 消费强平触发事件
-- 优先取消挂单中增加风险的订单
-- 释放订单保证金
-- 执行部分或全额强平路径
-- 落库强平成交、惩罚金及保险基金变更
-- 持久化强平快照并发布审计事件
-
-#### 非职责
-
-- 不处理一般交易流量
-- 不拥有市场数据聚合
-
-### 5.8 Hedger（对冲器）
-
-Hedger 通过 Hyperliquid 测试网管理平台净敞口。
-
-#### 职责
-
-- 按交易对和方向维护平台净敞口
-- 与软/硬阈值比较敞口
-- 在 Hyperliquid 测试网上下单、改单或平掉对冲仓位
-- 持久化对冲订单、成交、仓位及划转记录
-- 发布对冲结果及异常事件
-
-#### 非职责
-
-- 不直接管理用户仓位
-- 无权直接修改用户余额
-
-### 5.9 Funding Worker（资金费率 Worker）
-
-Funding Worker 执行定时资金费率及融资结算。
-
-#### 职责
-
-- 从配置源采集资金费率输入
-- 将资金费率标准化到结算周期
-- 生成资金费率批次
-- 计算每仓位资金费率影响
-- 原子应用账本及仓位 accrual 更新
-- 发出资金费率历史事件及对账指标
-
-#### 非职责
-
-- 不实时执行订单
-- 不做钱包托管操作
-
-## 6. 分层模块分解
-
-### 6.1 前端模块
-
-- 认证与钱包模块
-- 交易终端
-- 账户中心
-- 资金费率与历史中心
-- Explorer
-- 管理仪表盘
-
-### 6.2 后端模块
-
-- auth 模块
-- account 模块
-- ledger 模块
-- wallet 模块
-- market data 模块
-- order 模块
-- execution 模块
-- position 模块
-- risk 模块
-- liquidation 模块
-- funding 模块
-- hedging 模块
-- explorer 模块
-- config 与 admin 模块
-- audit 与 reconciliation 模块
-
-### 6.3 合约模块
-
-- Vault 合约
-- 角色管理或访问控制合约
-- 应急暂停控制
-
-## 7. 状态归属：链上 vs 链下
-
-### 7.1 链上状态
-
-以下状态必须存在于链上：
-
-- Vault 持有的托管资产余额
-- 转入托管地址或合约的充值
-- 从 Vault 执行的提现
-- Vault 管理员角色及暂停状态
-
-#### 理由
-
-1. 用户托管申索必须可独立验证。
-2. 资产变动需密码学终态及外部可审计性。
-3. 充值与提现需要链原生事件轨迹及对账。
-
-### 7.2 链下状态
-
-以下状态必须存在于链下：
-
-- 用户会话及认证状态
-- 内部账本账户及余额快照
-- 订单、成交、仓位及保证金占用
-- 风险分级及运行时风险指标
-- 强平队列及强平快照
-- 资金费率批次及资金费率累积
-- 市场数据快照及标记价格状态
-- 对冲意图、对冲订单及对冲仓位
-- Explorer 索引及报表表
-
-#### 理由
-
-1. 交易与风险循环需要低延迟及灵活迭代。
-2. 资金费率、标记价格及强平逻辑需频繁参数调整。
-3. 外部对冲需要不适合链上执行的连接器逻辑。
-4. 大量订单、成交及市场历史在链下运维成本更低。
-
-### 7.3 边界规则
-
-链上状态证明资产托管。链下状态证明交易与核算行为。对账确保：
-
-```text
-用户负债 + 平台权益 = 金库资产 + 对冲场所资产 + 在途资产
+## 5. 当前运行拓扑
+
+### 5.1 实际进程
+
+| 进程 | 作用 | 当前状态 |
+| --- | --- | --- |
+| `api-server` | HTTP 入口、认证、账户、钱包、订单提交、管理接口 | 已接入 |
+| `indexer` | 扫描链上事件，推进充值/提现状态 | 已接入 |
+| `market-data-worker` | 抓取市场数据并写入行情快照与 Redis 热缓存 | 已接入 |
+| `order-executor-worker` | 执行挂单/触发单，完成成交、仓位和账本更新 | 已接入 |
+| `risk-engine-worker` | 风险重算，消费风险重算请求，产生强平触发 | 已接入 |
+| `liquidator-worker` | 消费强平触发并执行清算 | 已接入 |
+| `funding-worker` | 资金费率采集、批次生成、应用与回推风险重算 | 已接入 |
+| `migrator` | 数据库迁移辅助进程 | 已接入 |
+| `hedger-worker` | 对冲执行 | 保留，未接入 |
+| `outbox-relay` | outbox 转发器 | 保留，未接入 |
+| `notification-worker` | 通知异步消费 | 保留，未接入 |
+
+### 5.2 运行时特点
+
+- `api-server` 当前还内置了提现广播执行循环；
+- 多个 worker 不通过 MQ 直接订阅消息，而是轮询数据库中的 `outbox_events`；
+- 配置中心采用运行时快照 + 轮询刷新模式，多个进程每 2 秒刷新一次运行时配置；
+- 市场数据热值进入 Redis，但 Redis 不承担任何财务真相角色。
+
+## 6. 代码级模块分层
+
+### 6.1 分层结构
+
+```mermaid
+flowchart TB
+    HTTP["transport/http"] --> APP["app/*"]
+    APP --> DOMAIN["domain/*"]
+    DOMAIN --> INFRA["infra/db | infra/chain | infra/market | infra/auth | infra/marketcache"]
+    INFRA --> MYSQL[("MySQL")]
+    INFRA --> REDIS[("Redis")]
+    INFRA --> EXT["EVM RPC / External Market APIs"]
 ```
 
-## 8. 关键数据流
+### 6.2 各层职责
 
-### 8.1 充值数据流
+- `transport/http`
+  负责 Gin handler、中间件、鉴权、HTTP DTO 和返回格式。
+- `app`
+  负责跨领域编排，当前主要包括 `adminops`、`posttrade`、`runtimeconfig`。
+- `domain`
+  承载核心业务规则，当前实际存在 `auth`、`wallet`、`ledger`、`order`、`risk`、`liquidation`、`funding`、`indexer`、`withdrawexec`、`market`、`hedge`。
+- `infra`
+  实现数据库仓储、链上适配器、市场数据客户端、JWT、Redis 缓存。
+
+### 6.3 关键应用层组件
+
+- `posttrade.Processor`
+  在订单成交后发出 `risk.recalculate.requested` outbox 事件。
+- `runtimeconfig.Service`
+  维护动态运行时配置的查询与更新。
+- `adminops.Service`
+  承载保险基金补充、强平重试、强平关闭等管理动作。
+
+## 7. 组件与职责边界
+
+### 7.1 Frontend
+
+当前前端页面已覆盖：
+
+- `landing`
+- `login`
+- `trade`
+- `portfolio`
+- `wallet/deposit`
+- `wallet/withdraw`
+- `wallet/transfer`
+- `history`
+- `explorer`
+- `admin`
+
+当前前端特征：
+
+- 以 HTTP 读写为主；
+- 没有独立 WS 推送通道；
+- 管理页已经接入运行时配置、账本审计、强平和提现运维接口；
+- 用户视图已覆盖交易、资产、资金流水、Explorer 事件。
+
+### 7.2 API Server
+
+`api-server` 是当前系统的同步编排中心，真实暴露的 API 包括：
+
+- `/api/v1/auth/*`
+- `/api/v1/system/chains`
+- `/api/v1/markets/*`
+- `/api/v1/account/*`
+- `/api/v1/wallet/*`
+- `/api/v1/orders`、`/fills`、`/positions`
+- `/api/v1/explorer/events`
+- `/api/v1/admin/*`
+
+它除了 HTTP 入口外，还承担：
+
+- Bootstrap 系统账户和市场基础数据；
+- 加载并轮询运行时配置；
+- 在本地 review/dev 模式下启动链上提现执行循环；
+- 组合多个 query repository，形成面向前端的读模型。
+
+### 7.3 Auth
+
+认证链路已完整实现：
+
+- challenge/nonce 发放；
+- EVM 签名验证；
+- 用户自动创建；
+- access/refresh token 签发；
+- JWT 验证；
+- 基于配置钱包地址的 admin 身份识别。
+
+### 7.4 Wallet
+
+钱包域当前是实现最完整的资金域之一，覆盖：
+
+- 充值检测、推进、确认、重组回退；
+- 充值地址生成；
+- 提现申请、审核、退回复核、失败、广播、完成、退款；
+- 用户内部转账；
+- 本地 native faucet 支持；
+- 提现风险评估器接入。
+
+### 7.5 Indexer
+
+Indexer 当前直接对 EVM RPC 轮询扫描，负责：
+
+- 读取链上 `DepositForwarded`、`WithdrawExecuted` 等事件；
+- 维护 `chain_cursors`；
+- 多链确认数推进；
+- 将链上事实写入 `deposit_chain_txs`；
+- 通过调用 wallet domain 完成充值确认和提现完成回补；
+- 对未知或异常链上情况发出 `wallet.indexer.anomaly` outbox 事件。
+
+### 7.6 Market Data
+
+市场数据 worker 当前使用以下源：
+
+- Binance；
+- Hyperliquid；
+- Coinbase；
+- TwelveData（可选）。
+
+它负责：
+
+- 拉取 ticker/quote 元数据；
+- 聚合指数价和标记价；
+- 写入 `market_price_snapshots`、`mark_price_snapshots`；
+- 刷新 Redis 最新行情缓存；
+- 为交易、风险、资金费率提供统一价格输入。
+
+### 7.7 Order / Execution
+
+订单域当前已支持：
+
+- `MARKET`
+- `LIMIT`
+- `STOP_MARKET`
+- `TAKE_PROFIT_MARKET`
+
+同时支持：
+
+- `OPEN` / `REDUCE` / `CLOSE`
+- `CROSS` / `ISOLATED`
+- `LONG` / `SHORT`
+- 挂单轮询执行；
+- 触发单轮询执行；
+- 成交后账本与仓位原子更新；
+- 撤单。
+
+### 7.8 Risk
+
+风险域当前已落地：
+
+- 账户级风险快照；
+- 权益、可用余额、维持保证金、风险率计算；
+- 风险等级 `SAFE / NO_NEW_RISK / LIQUIDATING`；
+- 标记价驱动的轮询重算；
+- 成交/资金费率驱动的风险重算请求消费；
+- 强平触发写入 outbox。
+
+对冲相关现状：
+
+- `risk` 域已能计算 `hedge intent` 并写入 `hedge.requested` 事件；
+- 但当前运行时没有对应该事件的执行进程，因此对冲链路未闭环。
+
+### 7.9 Liquidation
+
+强平域当前由独立 worker 驱动，具备：
+
+- 消费 `risk.liquidation.triggered`；
+- 执行清算；
+- 写入 `liquidations` 与 `liquidation_items`；
+- 生成强平成交、仓位变化和账本变更；
+- 在清算结束后再次触发风险刷新；
+- 支持 admin 侧重试和手工关闭。
+
+### 7.10 Funding
+
+Funding 当前已经是完整运行链路：
+
+- 多源资金费率采集；
+- 资金费率归一化与聚合；
+- 生成 `funding_batches`；
+- 应用 `funding_batch_items`；
+- 对受影响用户发出 `risk.recalculate.requested`；
+- 支持 admin 逆向冲正 funding batch。
+
+### 7.11 Explorer 与 Admin
+
+Explorer 当前并没有单独的事件投影进程，而是直接查询：
+
+- `outbox_events`
+- `ledger_tx`
+- `orders`
+- `fills`
+- `positions`
+- `deposit_chain_txs`
+- `withdraw_requests`
+
+Admin 当前已经落地的运维能力包括：
+
+- 提现审核、退回复核、退款；
+- 风险监控面板；
+- 账户风险重算；
+- 强平重试与关闭；
+- 资金费率批次查看与反转；
+- 运行时配置查看与更新；
+- 账本概览、一键审计、审计导出；
+- 保险基金补充。
+
+## 8. 数据拥有权与真相源
+
+### 8.1 真相源划分
+
+| 数据类别 | 当前真相源 | 说明 |
+| --- | --- | --- |
+| 托管资产与提现执行 | EVM 链事件与 Vault 状态 | 最终以链上为准 |
+| 用户资金变化 | `ledger_tx` + `ledger_entries` | 账本是资金真相 |
+| 余额读优化 | `account_balance_snapshots` | 可重建，不是独立真相 |
+| 订单 | `orders` | 订单生命周期真相 |
+| 成交 | `fills` | 成交真相 |
+| 仓位 | `positions` | 用户持仓真相 |
+| 风险快照 | `risk_snapshots` | 风控执行结果快照 |
+| 资金费率批次 | `funding_batches` / `funding_batch_items` | 批处理真相 |
+| 链上索引游标 | `chain_cursors` | 多链扫描恢复点 |
+| 异步事件 | `outbox_events` | 当前异步编排中枢 |
+| 消费幂等 | `message_consumptions` | worker 去重记录 |
+
+### 8.2 当前实现中的关键原则
+
+- 所有资金类变化必须经账本落地；
+- 余额快照只是读优化；
+- 业务成功不得早于账本提交；
+- worker 的异步处理必须显式幂等；
+- Redis 不保存不可恢复的财务事实。
+
+## 9. 实际异步模型
+
+当前实现最重要的一个架构事实是：
+
+系统虽然保留了 RabbitMQ 配置和目标态设计，但当前异步执行主要不是依赖 MQ，而是依赖数据库 outbox + 轮询 worker。
+
+### 9.1 当前异步链路模式
+
+1. 业务事务在 MySQL 中提交源表与 `outbox_events`。
+2. 后台 worker 周期性轮询特定 `event_type`。
+3. worker 通过 `message_consumptions` 做消费去重。
+4. 成功后保留消费记录，失败则删除消费记录并等待下次重试。
+
+### 9.2 当前使用该模型的链路
+
+- post-trade -> `risk.recalculate.requested`
+- risk -> `risk.liquidation.triggered`
+- funding -> `risk.recalculate.requested`
+- indexer / wallet / liquidation / funding 各类审计与 Explorer 事件
+
+### 9.3 当前异步模型的特点
+
+优点：
+
+- 无需独立消息基础设施即可完成关键编排；
+- 与财务事务天然同库，易于审计和排错；
+- 非常适合当前单库多进程架构。
+
+代价：
+
+- 异步延迟由轮询周期决定；
+- DB 压力高于真正的消息队列；
+- 需要严格控制 outbox 清理与幂等逻辑。
+
+## 10. 核心数据流
+
+### 10.1 登录链路
 
 ```mermaid
 sequenceDiagram
-    participant User as 用户
-    participant Vault as Vault
-    participant Chain as 链
-    participant Indexer as 索引器
-    participant API
-    participant Ledger as 账本
-    participant MySQL
-    participant MQ
-
-    User->>Chain: 将 USDC 转入 vault/充值路由
-    Chain-->>Vault: Deposit 事件
-    Indexer->>Chain: 扫描日志
-    Indexer->>MySQL: 保存 deposit_chain_tx
-    Indexer->>MQ: 发布 deposit.detected
-    API->>Ledger: 确认后应用充值
-    Ledger->>MySQL: 插入 ledger_tx + ledger_entries + 余额快照
-    Ledger->>MQ: 发布 ledger.committed + deposit.credited
-```
-
-### 8.2 订单执行数据流
-
-```mermaid
-sequenceDiagram
-    participant FE as 前端
-    participant API
-    participant Risk as 风险
-    participant Trade as 交易
-    participant DB as MySQL
-    participant MQ
-    participant WS
-
-    FE->>API: 提交订单
-    API->>Risk: 交易前检查
-    Risk-->>API: 允许或拒绝
-    API->>Trade: 创建/执行订单
-    Trade->>DB: 原子 order + fill + position + 账本变更
-    Trade->>MQ: order.accepted / fill.created / position.updated
-    MQ-->>WS: 推送账户与订单更新
-    API-->>FE: 同步结果
-```
-
-### 8.3 强平数据流
-
-```mermaid
-sequenceDiagram
-    participant MD as 市场数据
-    participant Risk as 风险
-    participant MQ
-    participant Liquidator as 强平器
+    participant FE as Frontend
+    participant API as api-server
+    participant AUTH as auth domain
     participant DB as MySQL
 
-    MD->>Risk: 标记价格更新
-    Risk->>DB: 重算账户风险
-    Risk->>MQ: liquidation.triggered
-    Liquidator->>DB: 取消订单 + 释放保证金 + 执行强平
-    Liquidator->>MQ: liquidation.executed + ledger.committed + position.updated
+    FE->>API: POST /auth/challenge
+    API->>AUTH: IssueChallenge
+    AUTH->>DB: 写 login_nonces
+    API-->>FE: nonce + message
+
+    FE->>API: POST /auth/login
+    API->>AUTH: Login
+    AUTH->>DB: 校验 nonce / 创建用户 / 创建 session
+    API-->>FE: access_token + refresh_token
 ```
 
-### 8.4 对冲数据流
+### 10.2 充值链路
 
 ```mermaid
 sequenceDiagram
-    participant Risk as 风险
-    participant Hedger as 对冲器
-    participant HL as Hyperliquid 测试网
+    participant User as User
+    participant Chain as EVM Chain
+    participant IDX as indexer
+    participant WAL as wallet domain
     participant DB as MySQL
-    participant MQ
 
-    Risk->>MQ: hedge.requested
-    Hedger->>DB: 持久化对冲意图
-    Hedger->>HL: 下对冲单
-    HL-->>Hedger: 对冲确认/成交/更新
-    Hedger->>DB: 持久化对冲订单/成交/仓位
-    Hedger->>MQ: hedge.updated / hedge.failed
+    User->>Chain: 向 Router/Vault 转入 USDC
+    IDX->>Chain: 扫描链上事件
+    IDX->>DB: 写 deposit_chain_txs
+    IDX->>WAL: DetectDeposit / AdvanceDeposit / ConfirmDeposit
+    WAL->>DB: 写 ledger_tx + ledger_entries + balance snapshot
 ```
 
-## 9. 关键状态流
+### 10.3 提现链路
 
-### 9.1 充值状态
+```mermaid
+sequenceDiagram
+    participant FE as Frontend/Admin
+    participant API as api-server
+    participant WAL as wallet domain
+    participant WX as withdrawexec loop
+    participant Chain as Vault
+    participant IDX as indexer
+    participant DB as MySQL
+
+    FE->>API: 创建提现
+    API->>WAL: RequestWithdraw
+    WAL->>DB: 冻结 USER_WITHDRAW_HOLD
+    FE->>API: 管理员审核
+    API->>WAL: ApproveWithdraw
+    WX->>DB: 预留 nonce
+    WX->>Chain: 广播 withdraw
+    WX->>WAL: MarkWithdrawBroadcasted
+    IDX->>Chain: 监听 WithdrawExecuted
+    IDX->>WAL: CompleteWithdraw
+    WAL->>DB: 完成账务收敛
+```
+
+### 10.4 订单与成交链路
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant API as api-server
+    participant ORD as order domain
+    participant DB as MySQL
+    participant EXEC as order-executor-worker
+    participant RISK as posttrade/risk
+
+    FE->>API: POST /orders
+    API->>ORD: CreateOrder
+    ORD->>DB: 写 order / 冻结保证金 / 可能直接成交
+    ORD->>DB: 写 fill / position / ledger / outbox
+    RISK->>DB: 写 risk.recalculate.requested
+    EXEC->>DB: 轮询触发单和挂单
+```
+
+### 10.5 风险与清算链路
+
+```mermaid
+sequenceDiagram
+    participant RISK as risk-engine-worker
+    participant DB as MySQL
+    participant LIQ as liquidator-worker
+
+    RISK->>DB: 基于 mark price 重算账户风险
+    RISK->>DB: 写 risk_snapshots
+    RISK->>DB: 写 risk.liquidation.triggered
+    LIQ->>DB: 轮询 liquidation 事件
+    LIQ->>DB: 写 liquidation / fill / position / ledger
+    LIQ->>DB: 触发风险刷新
+```
+
+### 10.6 资金费率链路
+
+```mermaid
+sequenceDiagram
+    participant FUND as funding-worker
+    participant SRC as Funding Sources
+    participant DB as MySQL
+    participant RISK as risk-engine-worker
+
+    FUND->>SRC: 拉取 funding source
+    FUND->>DB: 写 funding_rate_snapshots
+    FUND->>DB: 生成 funding_batches
+    FUND->>DB: 应用 funding_batch_items + ledger
+    FUND->>DB: 写 risk.recalculate.requested
+    RISK->>DB: 消费并刷新账户风险
+```
+
+## 11. 状态机
+
+### 11.1 充值
 
 `DETECTED -> CONFIRMING -> CREDIT_READY -> CREDITED -> SWEPT`
 
-异常路径：
+异常分支：
 
 - `DETECTED -> REORG_REVERSED`
 - `ANY -> FAILED`
 
-### 9.2 提现状态
+### 11.2 提现
 
 `REQUESTED -> HOLD -> RISK_REVIEW -> APPROVED -> SIGNING -> BROADCASTED -> CONFIRMING -> COMPLETED`
 
-异常路径：
+异常分支：
 
 - `HOLD -> CANCELED`
 - `RISK_REVIEW -> REJECTED`
 - `BROADCASTED/CONFIRMING -> FAILED -> REFUNDED`
 
-### 9.3 订单状态
+当前实现中特别重要的一点：
 
-`NEW -> ACCEPTED -> RESTING/TRIGGER_WAIT -> PARTIALLY_FILLED -> FILLED`
+- `SIGNING` 表示 nonce 已经预留，发送结果若不确定，不能退回 `APPROVED` 重分配 nonce。
 
-异常路径：
+### 11.3 订单
 
-- `NEW -> REJECTED`
-- `RESTING/TRIGGER_WAIT -> CANCELED`
-- `RESTING/TRIGGER_WAIT -> SYSTEM_CANCELED`
-- `RESTING/TRIGGER_WAIT -> EXPIRED`
+当前实现中的主状态：
 
-### 9.4 仓位状态
+- `TRIGGER_WAIT`
+- `RESTING`
+- `FILLED`
+- `CANCELED`
+- `REJECTED`
 
-`OPENING -> OPEN -> REDUCING -> CLOSED`
+### 11.4 仓位
 
-异常路径：
+当前实现中的主状态：
 
-- `OPEN -> LIQUIDATING -> CLOSED`
-- `OPEN -> LIQUIDATING -> BANKRUPT`
+- `OPEN`
+- `CLOSED`
+- `LIQUIDATING`
 
-### 9.5 对冲状态
+### 11.5 风险等级
 
-`PENDING -> SENT -> ACKED -> PARTIALLY_FILLED -> FILLED`
+- `SAFE`
+- `NO_NEW_RISK`
+- `LIQUIDATING`
 
-异常路径：
+### 11.6 Funding Batch
 
-- `SENT -> FAILED`
-- `FILLED -> CLOSING -> CLOSED`
+Funding 批次当前已经覆盖：
 
-### 9.6 资金费率批次状态
+- 创建；
+- 应用；
+- 反转。
 
-`DRAFT -> READY -> APPLYING -> APPLIED`
+## 12. 关键设计权衡
 
-异常路径：
+### 12.1 模块化单体 + 多进程，而不是微服务
 
-- `READY/APPLYING -> FAILED`
-- `APPLIED -> REVERSED`
+当前选择：
 
-## 10. 通信模型
+- 单一 Go 代码库；
+- 共享领域包；
+- 单一 MySQL schema；
+- 多 worker 按负载拆开。
 
-### 10.1 同步 API 调用
+收益：
 
-在调用方需要即时决策时使用同步 API 的请求/响应操作：
+- 资金与交易主链路更容易做强一致事务；
+- 本地和 review 环境更容易启动；
+- 代码边界清晰，但不必承受微服务治理成本。
 
-- 登录 nonce 请求
-- 签名登录
-- 账户概览查询
-- 下单
-- 撤单
-- 充值地址查询
-- 提现请求提交
-- 划转提交
-- Explorer 查询
-- 管理配置查询与更新请求
+代价：
 
-#### 为何使用同步
+- 同库耦合较强；
+- 异步链路更多依赖轮询而不是事件总线；
+- 后续拆分服务时需要重新梳理跨边界契约。
 
-- 用户操作需要即时接受或拒绝
-- 校验依赖最新所有权与权限状态
-- 事务边界必须在返回成功前完成
+### 12.2 MySQL outbox 轮询，而不是先上 RabbitMQ
 
-### 10.2 异步消息
+当前选择：
 
-对可重放、扇出或时间解耦的操作使用 RabbitMQ：
+- 关键异步路径直接基于 `outbox_events`；
+- worker 轮询特定事件类型并消费。
 
-- 充值检测与入账
-- 提现状态变更
-- 订单接受、成交创建、仓位更新
-- 强平触发与执行
-- 资金费率批次创建与应用
-- 对冲请求与对冲更新
-- 配置变更
-- 审计事件发出
-- Explorer 索引及通知
+收益：
 
-#### 为何使用异步
+- 事务内写出更简单；
+- 排错时可以直接从数据库回溯；
+- 对当前阶段更稳妥。
 
-- 非阻塞下游处理
-- 可恢复的消费者
-- 解耦的报表与通知
-- 便于从持久事件重放
+代价：
 
-### 10.3 Redis 使用
+- 吞吐和时延上不如真正消息队列；
+- outbox 表会成为核心热点之一；
+- 需要额外关注轮询频率、归档和清理。
 
-Redis 用于易失性及性能敏感状态：
+### 12.3 API 内置提现执行循环，而不是独立广播服务
 
-- nonce 缓存
-- 会话缓存
-- 限流
-- 市场数据热缓存
-- WebSocket 订阅状态
-- 幂等短期 token
+当前选择：
 
-Redis 绝不能作为关键财务真相的唯一来源。
+- `api-server` 在存在本地 minter 私钥时，直接启动提现执行循环。
 
-## 11. 事务与一致性边界
+收益：
 
-### 11.1 强一致性写路径
+- 开发和 review 环境路径更短；
+- 少一个独立部署进程。
 
-以下变更必须在同一数据库事务中完成：
+代价：
 
-- 订单状态变更
-- 成交插入
-- 仓位变更
-- 账本交易插入
-- 余额快照更新
-- 强平变更
-- 资金费率应用变更
+- API 进程承担了部分后台任务职责；
+- 未来生产化时更适合独立成 `withdraw-executor-worker`。
 
-### 11.2 最终一致路径
+### 12.4 对冲逻辑先建模，再延后接线
 
-以下可能滞后：
+当前选择：
 
-- Explorer 索引
-- 仪表盘聚合
-- 通知送达
-- 分析视图
-- 对冲监控汇总
+- `risk` 与 `hedge` 领域、数据库表和事件已建好；
+- 但真正的 hedger runtime 尚未接通。
 
-### 11.3 Outbox 模式
+收益：
 
-每个关键财务事务写入：
+- 风险模型与后续对冲接口已预留；
+- 不阻塞当前交易、风控、清算主链路上线。
 
-- 领域状态；
-- 适用的账本状态；
-- outbox 事件记录。
+代价：
 
-RabbitMQ 发布由 outbox relay 完成，因此外部通知不会威胁原子写路径。
+- 当前系统没有完成外部敞口自动收敛闭环；
+- 文档和实现必须清楚区分“已实现”和“预留”。
 
-## 12. 市场数据与定价架构
+## 13. 非功能架构
 
-### 12.1 输入
+### 13.1 一致性
 
-- Binance 市场数据
-- Hyperliquid 测试网市场数据
-- 评审模式下的可选重放或模拟 feed
+- 账本、余额快照、订单、成交、仓位等关键变化在数据库事务内提交；
+- 修正通过反向分录和补充分录完成；
+- 资金主链路不依赖缓存。
 
-### 12.2 派生价格
+### 13.2 幂等与恢复
 
-- 指数价格：来自有效源的稳健参考价
-- 标记价格：用于 PnL 与强平的抗操纵风险价
-- 成交价：基于外部流动性加配置价差与滑点的交易结算价
+- 钱包、订单、资金费率、强平链路均显式使用幂等键；
+- worker 消费使用 `message_consumptions` 去重；
+- Indexer 通过 `chain_cursors` 支持恢复；
+- 提现通过预留 nonce + 回补机制降低 orphan broadcast 风险。
 
-### 12.3 故障策略
+### 13.3 安全
 
-- 陈旧价格：拒绝新的增加风险的订单
-- 源法定人数不足：冻结标记更新或按交易对只允许减仓
-- 异常偏离：交易对熔断
+- EVM challenge/login 使用 nonce、链 ID、过期时间；
+- JWT 作为访问凭证；
+- Admin 身份由配置白名单地址识别；
+- 链上提现执行与链下审批分离；
+- 异常链上事件不会直接进入余额。
 
-## 13. 风险、强平与资金费率架构
+### 13.4 可观测性
 
-### 13.1 交易前风险
+当前主要依赖：
 
-交易前风险检查在接收前同步执行：
+- 结构化日志；
+- 数据库中可审计记录；
+- Admin 查询和导出接口；
+- Explorer 对 outbox 事件和业务对象的聚合视图。
 
-- 账户状态
-- 交易对状态
-- 保证金充足性
-- 杠杆与分级
-- 最小名义价值
-- 价格新鲜度
-- 敞口阈值
-- 幂等性
+### 13.5 运维可调性
 
-### 13.2 运行时风险
+运行时配置当前支持动态更新：
 
-运行时风险由价格更新与仓位变更驱动：
+- 全局 trace 要求；
+- 市场参数；
+- 风险参数；
+- funding 参数；
+- hedge 开关和阈值；
+- pair 级配置。
 
-- 重算账户权益
-- 重算维持要求
-- 重算强平阈值
-- 若账户突破阈值则发出强平触发
+多个进程会持续拉取最新运行时配置快照并生效。
 
-### 13.3 强平策略
+## 14. 当前实现亮点
 
-建议的 P0 策略：
+- 资金主链路已经是生产思路，而不是 Demo 级别的余额字段加减。
+- 多链充值/提现、确认数、重组、提现 nonce 预留和回补都已经进入真实实现。
+- 交易、风控、强平、资金费率已经形成闭环，不依赖手工脚本串联。
+- Admin 运维面已经不是只读，已经具备强平、funding reversal、保险基金补充、账本审计等生产操作入口。
+- 动态运行时配置已经真正接入多个进程，而不是静态配置文件重启生效。
+- 当前架构虽然偏单体，但领域边界清晰，后续拆分 worker 或服务有基础。
 
-- 冻结新开仓订单
-- 取消挂单中增加风险的订单
-- 释放订单保证金
-- 若时间紧迫优先全额强平
-- 为部分强平升级预留接口与状态
+## 15. 当前实现边界与后续演进方向
 
-### 13.4 资金费率策略
+当前实现仍应被视为“高完成度核心交易系统”，而不是最终完全形态。主要演进方向包括：
 
-Funding Worker 定时运行：
+- 将 hedger runtime 接通，完成 `hedge.requested -> hedge.updated` 闭环；
+- 将 outbox 轮询逐步升级为真正的消息总线；
+- 将提现执行从 `api-server` 中剥离成独立 worker；
+- 为 Explorer 引入更明确的投影层；
+- 视交易实时性要求补充 WebSocket/SSE 推送；
+- 继续从 DB-centric 架构演进到更清晰的异步边界。
 
-- 拉取费率
-- 标准化到周期
-- 构建资金费率批次
-- 应用仓位级资金费率
-- 触发风险重检
+## 16. 总结
 
-## 14. 对冲架构
+基于当前代码实现，本系统的真实架构可以概括为：
 
-### 14.1 为何对冲独立
+- 链上托管；
+- 链下账本、交易、风险和清算；
+- MySQL 作为交易与资金真相中心；
+- Redis 作为行情热缓存；
+- 多个后台 worker 基于数据库 outbox 轮询协作；
+- 前端和管理后台通过统一 HTTP API 访问系统。
 
-用户交易状态与对冲场所状态无法共享同一原子事务。因此对冲执行必须异步且可补偿。
-
-### 14.2 对冲流程
-
-1. 风险引擎计算平台净敞口。
-2. 敞口跨越阈值时创建对冲意图。
-3. Hedger 向 Hyperliquid 测试网提交订单。
-4. 对冲结果独立于用户交易状态存储。
-5. 对冲 PnL 及对冲抵押品映射到平台内部账户。
-
-### 14.3 故障处理
-
-- 对冲超时：使用幂等对冲请求 key 重试
-- 对冲场所失败：将交易对或方向标记为受限
-- 重复对冲失败：发出运维告警并可选启用只减仓
-
-## 15. 安全与信任边界
-
-### 15.1 信任边界
-
-- 用户浏览器不可信
-- 钱包签名仅经服务端校验后可信
-- 链事件仅达终态阈值后可信
-- Hyperliquid 连接器响应对外且易重放
-- 管理操作需 RBAC 及审计
-
-### 15.2 安全控制
-
-- 带 nonce 与过期的签名登录
-- 管理端点的 RBAC
-- Vault 提现角色与 API 角色分离
-- 带游标及 log index 的重放安全链索引
-- 所有外部触发写入的幂等 key
-- 结构化审计日志
-
-## 16. 部署视图
-
-### 16.1 进程
-
-- `frontend-web`
-- `api-server`
-- `ws-gateway`
-- `indexer`
-- `market-data-worker`
-- `trade-engine-worker`
-- `risk-engine-worker`
-- `liquidator-worker`
-- `funding-worker`
-- `hedger-worker`
-- `outbox-relay`
-- `notification-worker`
-
-### 16.2 基础设施
-
-- MySQL 主库
-- Redis
-- RabbitMQ
-- EVM RPC 提供商
-- Hyperliquid 测试网连接
-
-## 17. P0 推荐服务组成
-
-在现行交付约束下，推荐实现为：
-
-- 单一 Go 代码库
-- 同一仓库下的多个可运行进程
-- 共享领域包
-- 单一 MySQL schema
-- 单一 Redis 实例
-- 单一 RabbitMQ 实例
-
-在初始交付阶段保持按有界上下文分离代码的同时，降低分布式系统开销。
-
-## 18. 架构总结
-
-本系统刻意将职责划分为三种真相：
-
-1. Vault 与链上事件证明托管真相。
-2. MySQL 支持的账本、订单与仓位状态证明交易真相。
-3. RabbitMQ 驱动的 Worker 与 Indexer 提供资金费率、强平、对冲、Explorer 及报表的运维真相。
-
-架构在保持资产托管链上可验证的同时，满足链下永续交易、风控、强平及外部对冲所需的性能与控制。
+它不是一个“目标态 PPT 架构”，而是已经能跑通登录、充值提现、交易、风控、强平、资金费率、管理审计等主链路的模块化单体交易系统。

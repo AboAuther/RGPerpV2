@@ -944,7 +944,128 @@ a {
     flex-direction: column;
   }
 
-  .trade-account-overview__stats {
+.trade-account-overview__stats {
+  grid-template-columns: 1fr;
+}
+}
+
+.explorer-mono,
+.explorer-reference-value,
+.explorer-detail-value,
+.explorer-json-block {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.explorer-action-summary {
+  color: #edf6ff;
+  font-weight: 600;
+}
+
+.explorer-summary-more {
+  font-size: 12px;
+}
+
+.explorer-reference-item {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.explorer-reference-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+.explorer-reference-value {
+  color: #cfe0ef !important;
+}
+
+.explorer-expanded {
+  display: grid;
+  gap: 18px;
+  padding: 6px 0;
+}
+
+.explorer-descriptions {
+  padding: 14px 16px;
+  border: 1px solid rgba(110, 151, 184, 0.14);
+  border-radius: 16px;
+  background: rgba(7, 16, 24, 0.64);
+}
+
+.explorer-descriptions .ant-descriptions-item-label {
+  color: #8ca3b8 !important;
+}
+
+.explorer-descriptions .ant-descriptions-item-content {
+  color: #edf6ff !important;
+}
+
+.explorer-section-title {
+  display: block;
+  margin-bottom: 10px;
+  color: #edf6ff !important;
+  font-weight: 600;
+}
+
+.explorer-extra-payload,
+.explorer-json-panel {
+  padding: 14px 16px;
+  border: 1px solid rgba(110, 151, 184, 0.14);
+  border-radius: 16px;
+  background: rgba(7, 16, 24, 0.64);
+}
+
+.explorer-extra-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.explorer-extra-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.explorer-extra-label {
+  font-size: 12px;
+}
+
+.explorer-extra-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #dbe8f5 !important;
+}
+
+.explorer-json-block {
+  margin: 0;
+  padding: 14px;
+  overflow: auto;
+  border-radius: 14px;
+  background: rgba(3, 10, 16, 0.94);
+  color: #8ff0da;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .explorer-reference-item {
     grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .explorer-descriptions,
+  .explorer-extra-payload,
+  .explorer-json-panel {
+    padding: 12px;
+  }
+
+  .explorer-json-block {
+    padding: 12px;
   }
 }

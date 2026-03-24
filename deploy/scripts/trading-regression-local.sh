@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-${ROOT_DIR}/.local/contracts.env}"
+CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-${ROOT_DIR}/deploy/env/local-chains.env}"
+if [[ ! -f "$CHAIN_ENV_FILE" && -f "${ROOT_DIR}/.local/contracts.env" ]]; then
+  CHAIN_ENV_FILE="${ROOT_DIR}/.local/contracts.env"
+fi
 API_BASE_URL="${API_BASE_URL:-http://127.0.0.1:8080}"
 MYSQL_SERVICE_NAME="${MYSQL_SERVICE_NAME:-mysql}"
 MYSQL_DB_NAME="${MYSQL_DB_NAME:-rgperp}"

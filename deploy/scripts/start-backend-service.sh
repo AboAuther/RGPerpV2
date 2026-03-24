@@ -21,6 +21,12 @@ if [ -n "${CHAIN_ENV_FILE:-}" ]; then
   # shellcheck disable=SC1090
   . "${CHAIN_ENV_FILE}"
   set +a
+  if [ -n "${ETH_RPC_URL_DOCKER:-}" ]; then
+    export ETH_RPC_URL="${ETH_RPC_URL_DOCKER}"
+  fi
+  if [ -n "${ARB_RPC_URL_DOCKER:-}" ]; then
+    export ARB_RPC_URL="${ARB_RPC_URL_DOCKER}"
+  fi
   if [ -n "${BASE_RPC_URL_DOCKER:-}" ]; then
     export BASE_RPC_URL="${BASE_RPC_URL_DOCKER}"
   fi

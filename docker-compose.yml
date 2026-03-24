@@ -1,4 +1,110 @@
+x-backend-image: &backend-image
+  build:
+    context: .
+    dockerfile: deploy/docker/backend.Dockerfile
+  image: rgperp-backend:local
+  env_file:
+    - deploy/env/common.env
+    - deploy/env/dev.env
+
+x-backend-env: &backend-env
+  APP_ENV: dev
+  MYSQL_DSN: root:root@tcp(mysql:3306)/rgperp?charset=utf8mb4&parseTime=True&loc=UTC
+  REDIS_ADDR: redis:6379
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  CHAIN_ENV_FILE: /shared/local-chains.env
+
+x-foundry-image: &foundry-image
+  build:
+    context: .
+    dockerfile: deploy/docker/foundry.Dockerfile
+  image: rgperp-foundry:local
+
+x-chain-bootstrap-depends: &chain-bootstrap-depends
+  anvil-ethereum:
+    condition: service_healthy
+  anvil-arbitrum:
+    condition: service_healthy
+  anvil-base:
+    condition: service_healthy
+
+x-backend-depends: &backend-depends
+  chain-bootstrap:
+    condition: service_completed_successfully
+  mysql:
+    condition: service_healthy
+  mysql-init:
+    condition: service_completed_successfully
+  redis:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+
+x-runtime-depends: &runtime-depends
+  mysql:
+    condition: service_healthy
+  mysql-init:
+    condition: service_completed_successfully
+  redis:
+    condition: service_healthy
+  rabbitmq:
+    condition: service_healthy
+  migrator:
+    condition: service_completed_successfully
+
 services:
+  anvil-ethereum:
+    <<: *foundry-image
+    command: ["anvil", "--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337", "--mnemonic", "test test test test test test test test test test test junk"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8545"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  anvil-arbitrum:
+    <<: *foundry-image
+    command: ["anvil", "--host", "0.0.0.0", "--port", "8546", "--chain-id", "31338", "--mnemonic", "test test test test test test test test test test test junk"]
+    ports:
+      - "8546:8546"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8546"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  anvil-base:
+    <<: *foundry-image
+    command: ["anvil", "--host", "0.0.0.0", "--port", "8547", "--chain-id", "31339", "--mnemonic", "test test test test test test test test test test test junk"]
+    ports:
+      - "8547:8547"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://127.0.0.1:8547"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  chain-bootstrap:
+    <<: *foundry-image
+    depends_on: *chain-bootstrap-depends
+    working_dir: /workspace
+    environment:
+      OUTPUT_FILE: /shared/local-chains.env
+      MANIFEST_DIR: /shared/manifest/dev
+      ETH_DEPLOY_RPC_URL: http://anvil-ethereum:8545
+      ETH_DOCKER_RPC_URL: http://anvil-ethereum:8545
+      ARB_DEPLOY_RPC_URL: http://anvil-arbitrum:8546
+      ARB_DOCKER_RPC_URL: http://anvil-arbitrum:8546
+      BASE_DEPLOY_RPC_URL: http://anvil-base:8547
+      BASE_DOCKER_RPC_URL: http://anvil-base:8547
+    command: ["bash", "deploy/scripts/deploy-multichain-contracts.sh"]
+    restart: "no"
+    volumes:
+      - .:/workspace
+      - chain_shared:/shared
+
   mysql:
     image: mysql:8.4
     environment:
@@ -45,5 +151,96 @@ services:
       timeout: 10s
       retries: 20
 
+  migrator:
+    <<: *backend-image
+    depends_on: *backend-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: migrator
+      APP_PORT: 8083
+    restart: "no"
+    volumes:
+      - chain_shared:/shared:ro
+
+  api-server:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: api-server
+      APP_PORT: 8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  indexer:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: indexer
+      APP_PORT: 8081
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  market-data:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: market-data
+      APP_PORT: 8082
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  order-executor-worker:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: order-executor-worker
+      APP_PORT: 8086
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  risk-engine-worker:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: risk-engine-worker
+      APP_PORT: 8087
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  funding-worker:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: funding-worker
+      APP_PORT: 8084
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
+  liquidator-worker:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: liquidator-worker
+      APP_PORT: 8085
+    restart: unless-stopped
+    volumes:
+      - chain_shared:/shared:ro
+
 volumes:
+  chain_shared:
   mysql_data:

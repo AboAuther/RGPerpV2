@@ -99,6 +99,12 @@ type stubWithdrawRepo struct {
 	err        error
 	broadcasts []string
 	refunds    []string
+	detailed   []struct {
+		withdrawID      string
+		to              string
+		riskFlag        *string
+		clearBroadcast  bool
+	}
 }
 
 func (s *stubWithdrawRepo) Create(_ context.Context, withdraw WithdrawRequest) error {
@@ -108,12 +114,29 @@ func (s *stubWithdrawRepo) Create(_ context.Context, withdraw WithdrawRequest) e
 func (s *stubWithdrawRepo) GetByID(_ context.Context, _ string) (WithdrawRequest, error) {
 	return s.withdraw, s.err
 }
-func (s *stubWithdrawRepo) MarkBroadcasted(_ context.Context, withdrawID string, txHash string) error {
+func (s *stubWithdrawRepo) MarkBroadcasted(_ context.Context, withdrawID string, txHash string, _ *uint64) error {
 	s.broadcasts = append(s.broadcasts, withdrawID+":"+txHash)
 	return s.err
 }
 func (s *stubWithdrawRepo) UpdateStatus(_ context.Context, withdrawID string, _ []string, to string) error {
 	s.withdraw.Status = to
+	return s.err
+}
+func (s *stubWithdrawRepo) UpdateStatusDetailed(_ context.Context, withdrawID string, _ []string, to string, riskFlag *string, clearBroadcast bool) error {
+	s.withdraw.Status = to
+	if riskFlag != nil {
+		s.withdraw.RiskFlag = *riskFlag
+	}
+	if clearBroadcast {
+		s.withdraw.BroadcastNonce = nil
+		s.withdraw.BroadcastTxHash = ""
+	}
+	s.detailed = append(s.detailed, struct {
+		withdrawID     string
+		to             string
+		riskFlag       *string
+		clearBroadcast bool
+	}{withdrawID: withdrawID, to: to, riskFlag: riskFlag, clearBroadcast: clearBroadcast})
 	return s.err
 }
 func (s *stubWithdrawRepo) MarkCompleted(_ context.Context, _ string) error {
@@ -718,6 +741,85 @@ func TestApproveWithdraw_Success(t *testing.T) {
 	}
 	if withdraws.withdraw.Status != StatusApproved {
 		t.Fatalf("expected approved status, got %s", withdraws.withdraw.Status)
+	}
+}
+
+func TestReturnWithdrawToReview_ClearsSigningReservation(t *testing.T) {
+	nonce := uint64(21)
+	withdraws := &stubWithdrawRepo{withdraw: WithdrawRequest{
+		WithdrawID:      "wd_1",
+		UserID:          7,
+		Asset:           "USDC",
+		Status:          StatusSigning,
+		RiskFlag:        "hot_wallet_insufficient_balance",
+		BroadcastNonce:  &nonce,
+		BroadcastTxHash: "",
+	}}
+	svc := NewService(
+		&stubDepositRepo{},
+		withdraws,
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+
+	if err := svc.ReturnWithdrawToReview(context.Background(), ReturnWithdrawToReviewInput{
+		WithdrawID: "wd_1",
+		TraceID:    "trace_1",
+	}); err != nil {
+		t.Fatalf("return withdraw to review: %v", err)
+	}
+	if withdraws.withdraw.Status != StatusRiskReview {
+		t.Fatalf("expected risk review status, got %s", withdraws.withdraw.Status)
+	}
+	if withdraws.withdraw.BroadcastNonce != nil {
+		t.Fatalf("expected broadcast nonce to be cleared")
+	}
+}
+
+func TestFailWithdraw_SetsFailedWithRiskFlag(t *testing.T) {
+	nonce := uint64(21)
+	withdraws := &stubWithdrawRepo{withdraw: WithdrawRequest{
+		WithdrawID:      "wd_1",
+		UserID:          7,
+		Asset:           "USDC",
+		Status:          StatusSigning,
+		BroadcastNonce:  &nonce,
+		BroadcastTxHash: "",
+	}}
+	svc := NewService(
+		&stubDepositRepo{},
+		withdraws,
+		&stubTransferResolver{},
+		&stubLedger{},
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+
+	if err := svc.FailWithdraw(context.Background(), FailWithdrawInput{
+		WithdrawID: "wd_1",
+		RiskFlag:   "hot_wallet_insufficient_balance",
+		TraceID:    "trace_1",
+	}); err != nil {
+		t.Fatalf("fail withdraw: %v", err)
+	}
+	if withdraws.withdraw.Status != StatusFailed {
+		t.Fatalf("expected failed status, got %s", withdraws.withdraw.Status)
+	}
+	if withdraws.withdraw.RiskFlag != "hot_wallet_insufficient_balance" {
+		t.Fatalf("expected risk flag to be set, got %s", withdraws.withdraw.RiskFlag)
+	}
+	if withdraws.withdraw.BroadcastNonce != nil {
+		t.Fatalf("expected broadcast nonce to be cleared")
 	}
 }
 

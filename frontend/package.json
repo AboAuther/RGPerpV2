@@ -9,6 +9,7 @@
     "dev:local": "sh ../deploy/scripts/start-frontend-local.sh",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:e2e:liquidation": "playwright test e2e/liquidation.spec.ts",
     "test:e2e:withdraw": "playwright test e2e/withdrawal.spec.ts",
     "test:e2e:trade": "playwright test e2e/trade.spec.ts"
   },
@@ -26,6 +27,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",

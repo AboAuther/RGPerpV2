@@ -229,6 +229,17 @@ CREATE TABLE IF NOT EXISTS withdraw_requests (
   KEY idx_withdraw_requests_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS signer_nonce_states (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  chain_id BIGINT NOT NULL,
+  signer_address VARCHAR(64) NOT NULL,
+  next_nonce BIGINT NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_signer_nonce_states_chain_signer (chain_id, signer_address)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS chain_cursors (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   chain_id BIGINT NOT NULL,
@@ -325,6 +336,8 @@ CREATE TABLE IF NOT EXISTS orders (
   qty DECIMAL(38,18) NOT NULL,
   filled_qty DECIMAL(38,18) NOT NULL DEFAULT 0,
   avg_fill_price DECIMAL(38,18) NOT NULL DEFAULT 0,
+  leverage DECIMAL(38,18) NOT NULL DEFAULT 1,
+  margin_mode VARCHAR(16) NOT NULL DEFAULT 'CROSS',
   reduce_only TINYINT(1) NOT NULL DEFAULT 0,
   max_slippage_bps INT NOT NULL DEFAULT 0,
   status VARCHAR(32) NOT NULL,
@@ -370,6 +383,8 @@ CREATE TABLE IF NOT EXISTS positions (
   avg_entry_price DECIMAL(38,18) NOT NULL DEFAULT 0,
   mark_price DECIMAL(38,18) NOT NULL DEFAULT 0,
   notional DECIMAL(38,18) NOT NULL DEFAULT 0,
+  leverage DECIMAL(38,18) NOT NULL DEFAULT 1,
+  margin_mode VARCHAR(16) NOT NULL DEFAULT 'CROSS',
   initial_margin DECIMAL(38,18) NOT NULL DEFAULT 0,
   maintenance_margin DECIMAL(38,18) NOT NULL DEFAULT 0,
   realized_pnl DECIMAL(38,18) NOT NULL DEFAULT 0,
@@ -382,7 +397,7 @@ CREATE TABLE IF NOT EXISTS positions (
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uk_positions_position_id (position_id),
-  UNIQUE KEY uk_positions_user_symbol_side (user_id, symbol_id, side)
+  UNIQUE KEY uk_positions_user_symbol_side_mode (user_id, symbol_id, side, margin_mode)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS risk_snapshots (
@@ -447,6 +462,9 @@ CREATE TABLE IF NOT EXISTS funding_batches (
   normalized_rate DECIMAL(38,18) NOT NULL,
   settlement_price DECIMAL(38,18) NOT NULL,
   status VARCHAR(32) NOT NULL,
+  reversed_at DATETIME(3) NULL,
+  reversed_by VARCHAR(64) NULL,
+  reversal_reason VARCHAR(255) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
@@ -475,8 +493,10 @@ CREATE TABLE IF NOT EXISTS funding_batch_items (
   user_id BIGINT UNSIGNED NOT NULL,
   funding_fee DECIMAL(38,18) NOT NULL,
   ledger_tx_id VARCHAR(64) NULL,
+  reversal_ledger_tx_id VARCHAR(64) NULL,
   status VARCHAR(32) NOT NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  reversed_at DATETIME(3) NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uk_funding_batch_items_batch_position (funding_batch_id, position_id),
   KEY idx_funding_batch_items_user_created (user_id, created_at)

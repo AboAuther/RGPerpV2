@@ -58,12 +58,11 @@ JOIN (
 	return out, nil
 }
 
-func livePositionMetrics(side string, qty string, avgEntryPrice string, markPrice string, contractMultiplier string, initialMarginRate string, maintenanceMarginRate string) (notional string, initialMargin string, maintenanceMargin string, unrealizedPnL string) {
+func livePositionMetrics(side string, qty string, avgEntryPrice string, markPrice string, contractMultiplier string, maintenanceMarginRate string) (notional string, maintenanceMargin string, unrealizedPnL string) {
 	qtyDecimal := decimalx.MustFromString(qty)
 	entryPriceDecimal := decimalx.MustFromString(avgEntryPrice)
 	markPriceDecimal := decimalx.MustFromString(markPrice)
 	multiplierDecimal := decimalx.MustFromString(contractMultiplier)
-	imrDecimal := decimalx.MustFromString(initialMarginRate)
 	mmrDecimal := decimalx.MustFromString(maintenanceMarginRate)
 
 	notionalDecimal := qtyDecimal.Mul(markPriceDecimal).Mul(multiplierDecimal)
@@ -72,10 +71,9 @@ func livePositionMetrics(side string, qty string, avgEntryPrice string, markPric
 		pnlSign = decimalx.MustFromString("-1")
 	}
 	unrealizedPnLDecimal := pnlSign.Mul(qtyDecimal).Mul(markPriceDecimal.Sub(entryPriceDecimal)).Mul(multiplierDecimal)
-	initialMarginDecimal := notionalDecimal.Mul(imrDecimal)
 	maintenanceMarginDecimal := notionalDecimal.Mul(mmrDecimal)
 
-	return notionalDecimal.String(), initialMarginDecimal.String(), maintenanceMarginDecimal.String(), unrealizedPnLDecimal.String()
+	return notionalDecimal.String(), maintenanceMarginDecimal.String(), unrealizedPnLDecimal.String()
 }
 
 func (r *RiskRepository) GetAccountStateForUpdate(ctx context.Context, userID uint64) (riskdomain.AccountState, error) {
@@ -111,6 +109,19 @@ func (r *RiskRepository) CreateRiskSnapshot(ctx context.Context, snapshot riskdo
 		return riskdomain.Snapshot{}, err
 	}
 	return toRiskSnapshotDomain(model), nil
+}
+
+func (r *RiskRepository) MarkPositionLiquidating(ctx context.Context, positionID string, updatedAt time.Time) (bool, error) {
+	result := DB(ctx, r.db).Model(&PositionModel{}).
+		Where("position_id = ? AND status = ?", positionID, orderdomain.PositionStatusOpen).
+		Updates(map[string]any{
+			"status":     orderdomain.PositionStatusLiquidating,
+			"updated_at": updatedAt,
+		})
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 func (r *RiskRepository) ListUsersWithOpenPositions(ctx context.Context) ([]uint64, error) {
@@ -428,6 +439,20 @@ func (r *LiquidationRepository) CreateItem(ctx context.Context, item liquidation
 	}).Error
 }
 
+func (r *LiquidationRepository) LockSymbolForUpdate(ctx context.Context, symbolID uint64) error {
+	var symbol SymbolModel
+	if err := DB(ctx, r.db).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", symbolID).
+		Take(&symbol).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errorsx.ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 func (r *LiquidationRepository) ListOpenPositionsForUpdate(ctx context.Context, userID uint64) ([]liquidationdomain.Position, error) {
 	tx := DB(ctx, r.db)
 	var rows []struct {
@@ -464,6 +489,7 @@ func (r *LiquidationRepository) ListOpenPositionsForUpdate(ctx context.Context, 
 			SymbolID:           row.SymbolID,
 			Symbol:             row.Symbol,
 			Side:               row.Side,
+			MarginMode:         marginModeOrDefault(row.MarginMode),
 			Qty:                row.Qty,
 			AvgEntryPrice:      row.AvgEntryPrice,
 			MarkPrice:          mark.MarkPrice,
@@ -482,6 +508,58 @@ func (r *LiquidationRepository) ListOpenPositionsForUpdate(ctx context.Context, 
 		})
 	}
 	return out, nil
+}
+
+func (r *LiquidationRepository) GetPositionForLiquidationByID(ctx context.Context, userID uint64, positionID string) (liquidationdomain.Position, error) {
+	tx := DB(ctx, r.db)
+	var row struct {
+		PositionModel
+		Symbol             string `gorm:"column:symbol"`
+		ContractMultiplier string `gorm:"column:contract_multiplier"`
+	}
+	if err := tx.
+		Table("positions").
+		Select("positions.*, symbols.symbol, symbols.contract_multiplier").
+		Joins("JOIN symbols ON symbols.id = positions.symbol_id").
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("positions.user_id = ? AND positions.position_id = ? AND positions.status IN ?", userID, positionID, []string{orderdomain.PositionStatusOpen, orderdomain.PositionStatusLiquidating}).
+		Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return liquidationdomain.Position{}, errorsx.ErrNotFound
+		}
+		return liquidationdomain.Position{}, err
+	}
+	marksBySymbol, err := loadLatestMarkPrices(ctx, tx, []uint64{row.SymbolID})
+	if err != nil {
+		return liquidationdomain.Position{}, err
+	}
+	mark, ok := marksBySymbol[row.SymbolID]
+	if !ok {
+		return liquidationdomain.Position{}, fmt.Errorf("%w: latest mark price missing for symbol %s", errorsx.ErrNotFound, row.Symbol)
+	}
+	return liquidationdomain.Position{
+		PositionID:         row.PositionID,
+		UserID:             row.UserID,
+		SymbolID:           row.SymbolID,
+		Symbol:             row.Symbol,
+		Side:               row.Side,
+		MarginMode:         marginModeOrDefault(row.MarginMode),
+		Qty:                row.Qty,
+		AvgEntryPrice:      row.AvgEntryPrice,
+		MarkPrice:          mark.MarkPrice,
+		Notional:           row.Notional,
+		InitialMargin:      row.InitialMargin,
+		MaintenanceMargin:  row.MaintenanceMargin,
+		RealizedPnL:        row.RealizedPnL,
+		UnrealizedPnL:      row.UnrealizedPnL,
+		FundingAccrual:     row.FundingAccrual,
+		LiquidationPrice:   row.LiquidationPrice,
+		BankruptcyPrice:    row.BankruptcyPrice,
+		ContractMultiplier: row.ContractMultiplier,
+		Status:             row.Status,
+		CreatedAt:          row.CreatedAt,
+		UpdatedAt:          row.UpdatedAt,
+	}, nil
 }
 
 func (r *LiquidationRepository) GetCoverageBalancesForUpdate(ctx context.Context, userID uint64, asset string) (liquidationdomain.CoverageBalances, error) {
@@ -538,6 +616,7 @@ func (r *LiquidationRepository) ListRiskIncreaseOrdersForUpdate(ctx context.Cont
 			SymbolID:      row.SymbolID,
 			Symbol:        row.Symbol,
 			Side:          row.Side,
+			MarginMode:    marginModeOrDefault(row.MarginMode),
 			Qty:           row.Qty,
 			FrozenMargin:  row.FrozenMargin,
 			Status:        row.Status,
@@ -562,24 +641,31 @@ func (r *LiquidationRepository) CancelOrders(ctx context.Context, orderIDs []str
 }
 
 func (r *LiquidationRepository) CreateOrder(ctx context.Context, order liquidationdomain.OrderRecord) error {
+	frozenMargin := order.FrozenMargin
+	if frozenMargin == "" {
+		frozenMargin = "0"
+	}
 	return DB(ctx, r.db).Create(&OrderModel{
-		OrderID:        order.OrderID,
-		ClientOrderID:  order.ClientOrderID,
-		UserID:         order.UserID,
-		SymbolID:       order.SymbolID,
-		Side:           order.Side,
-		PositionEffect: order.PositionEffect,
-		Type:           order.Type,
-		TimeInForce:    order.TimeInForce,
-		Qty:            order.Qty,
-		FilledQty:      order.FilledQty,
-		AvgFillPrice:   order.AvgFillPrice,
-		ReduceOnly:     order.ReduceOnly,
-		MaxSlippageBps: order.MaxSlippageBps,
-		Status:         order.Status,
-		FrozenMargin:   order.FrozenMargin,
-		CreatedAt:      order.CreatedAt,
-		UpdatedAt:      order.UpdatedAt,
+		OrderID:             order.OrderID,
+		ClientOrderID:       order.ClientOrderID,
+		UserID:              order.UserID,
+		SymbolID:            order.SymbolID,
+		Side:                order.Side,
+		MarginMode:          marginModeOrDefault(order.MarginMode),
+		PositionEffect:      order.PositionEffect,
+		Type:                order.Type,
+		TimeInForce:         order.TimeInForce,
+		Qty:                 order.Qty,
+		FilledQty:           order.FilledQty,
+		AvgFillPrice:        order.AvgFillPrice,
+		ReduceOnly:          order.ReduceOnly,
+		MaxSlippageBps:      order.MaxSlippageBps,
+		Status:              order.Status,
+		FrozenInitialMargin: "0",
+		FrozenFee:           "0",
+		FrozenMargin:        frozenMargin,
+		CreatedAt:           order.CreatedAt,
+		UpdatedAt:           order.UpdatedAt,
 	}).Error
 }
 
@@ -604,6 +690,7 @@ func (r *LiquidationRepository) UpsertPosition(ctx context.Context, position liq
 		UserID:            position.UserID,
 		SymbolID:          position.SymbolID,
 		Side:              position.Side,
+		MarginMode:        marginModeOrDefault(position.MarginMode),
 		Qty:               position.Qty,
 		AvgEntryPrice:     position.AvgEntryPrice,
 		MarkPrice:         position.MarkPrice,

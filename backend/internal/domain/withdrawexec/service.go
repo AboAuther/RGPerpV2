@@ -2,13 +2,14 @@ package withdrawexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/shopspring/decimal"
-	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	chaininfra "github.com/xiaobao/rgperp/backend/internal/infra/chain"
+	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
@@ -16,69 +17,105 @@ type WithdrawRepository interface {
 	GetByID(ctx context.Context, withdrawID string) (walletdomain.WithdrawRequest, error)
 	ListByChainStatuses(ctx context.Context, chainID int64, statuses []string, limit int) ([]walletdomain.WithdrawRequest, error)
 	UpdateStatus(ctx context.Context, withdrawID string, from []string, to string) error
+	ReserveNextNonce(ctx context.Context, chainID int64, signerAddress string, chainPendingNonce uint64) (walletdomain.WithdrawRequest, error)
+	ListReservedForBroadcastRetry(ctx context.Context, chainID int64, limit int) ([]walletdomain.WithdrawRequest, error)
 }
 
 type Wallet interface {
 	MarkWithdrawBroadcasted(ctx context.Context, input walletdomain.BroadcastWithdrawInput) error
+	FailWithdraw(ctx context.Context, input walletdomain.FailWithdrawInput) error
 }
 
 type Executor interface {
-	ExecuteWithdrawal(ctx context.Context, chainID int64, toAddress string, amount string, withdrawID string) (string, error)
+	SignerAddress() string
+	NextNonce(ctx context.Context, chainID int64) (uint64, error)
+	ExecuteWithdrawal(ctx context.Context, chainID int64, toAddress string, amount string, withdrawID string, nonce uint64) (string, error)
+}
+
+type TxManager interface {
+	WithinTransaction(ctx context.Context, fn func(txCtx context.Context) error) error
 }
 
 type Service struct {
 	withdraws WithdrawRepository
 	wallet    Wallet
 	executor  Executor
+	txManager TxManager
 }
 
-func NewService(withdraws WithdrawRepository, wallet Wallet, executor Executor) (*Service, error) {
-	if withdraws == nil || wallet == nil || executor == nil {
+func NewService(withdraws WithdrawRepository, wallet Wallet, executor Executor, txManager TxManager) (*Service, error) {
+	if withdraws == nil || wallet == nil || executor == nil || txManager == nil {
 		return nil, fmt.Errorf("%w: withdraw executor dependencies are required", errorsx.ErrInvalidArgument)
 	}
-	return &Service{withdraws: withdraws, wallet: wallet, executor: executor}, nil
+	return &Service{withdraws: withdraws, wallet: wallet, executor: executor, txManager: txManager}, nil
 }
 
 func (s *Service) ProcessChain(ctx context.Context, chainID int64, limit int) error {
 	if limit <= 0 {
 		limit = 50
 	}
-	pending, err := s.withdraws.ListByChainStatuses(ctx, chainID, []string{walletdomain.StatusApproved}, limit)
+	retries, err := s.withdraws.ListReservedForBroadcastRetry(ctx, chainID, limit)
 	if err != nil {
 		return err
 	}
-	for _, withdraw := range pending {
-		if err := s.processWithdraw(ctx, withdraw); err != nil {
+	for _, withdraw := range retries {
+		if err := s.broadcastReservedWithdraw(ctx, withdraw); err != nil {
+			log.Printf("withdraw-executor process failed: withdraw_id=%s err=%v", withdraw.WithdrawID, err)
+		}
+	}
+
+	for processed := 0; processed < limit; processed++ {
+		withdraw, err := s.reserveNextWithdraw(ctx, chainID)
+		if err != nil {
+			if errors.Is(err, errorsx.ErrNotFound) || errors.Is(err, errorsx.ErrConflict) {
+				break
+			}
+			return err
+		}
+		if err := s.broadcastReservedWithdraw(ctx, withdraw); err != nil {
 			log.Printf("withdraw-executor process failed: withdraw_id=%s err=%v", withdraw.WithdrawID, err)
 		}
 	}
 	return nil
 }
 
-func (s *Service) processWithdraw(ctx context.Context, withdraw walletdomain.WithdrawRequest) error {
-	if err := s.withdraws.UpdateStatus(ctx, withdraw.WithdrawID, []string{walletdomain.StatusApproved}, walletdomain.StatusSigning); err != nil {
-		if err == errorsx.ErrConflict {
-			return nil
-		}
-		return err
+func (s *Service) reserveNextWithdraw(ctx context.Context, chainID int64) (walletdomain.WithdrawRequest, error) {
+	chainNonce, err := s.executor.NextNonce(ctx, chainID)
+	if err != nil {
+		return walletdomain.WithdrawRequest{}, err
 	}
+	var reserved walletdomain.WithdrawRequest
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var reserveErr error
+		reserved, reserveErr = s.withdraws.ReserveNextNonce(txCtx, chainID, s.executor.SignerAddress(), chainNonce)
+		return reserveErr
+	}); err != nil {
+		return walletdomain.WithdrawRequest{}, err
+	}
+	return reserved, nil
+}
 
-	current, err := s.withdraws.GetByID(ctx, withdraw.WithdrawID)
+func (s *Service) broadcastReservedWithdraw(ctx context.Context, withdraw walletdomain.WithdrawRequest) error {
+	if withdraw.BroadcastNonce == nil {
+		return fmt.Errorf("%w: reserved withdraw nonce is required", errorsx.ErrConflict)
+	}
+	netAmount, err := netWithdrawAmount(withdraw.Amount, withdraw.FeeAmount)
 	if err != nil {
 		return err
 	}
-	netAmount, err := netWithdrawAmount(current.Amount, current.FeeAmount)
+	txHash, err := s.executor.ExecuteWithdrawal(ctx, withdraw.ChainID, withdraw.ToAddress, netAmount, withdraw.WithdrawID, *withdraw.BroadcastNonce)
 	if err != nil {
-		_ = s.withdraws.UpdateStatus(ctx, current.WithdrawID, []string{walletdomain.StatusSigning}, walletdomain.StatusRiskReview)
-		return err
-	}
-	txHash, err := s.executor.ExecuteWithdrawal(ctx, current.ChainID, current.ToAddress, netAmount, current.WithdrawID)
-	if err != nil {
-		nextStatus := walletdomain.StatusApproved
 		if chaininfra.IsReviewRequired(err) {
-			nextStatus = walletdomain.StatusRiskReview
+			riskFlag := chaininfra.ReviewRequiredReason(err)
+			if riskFlag == "" {
+				riskFlag = "withdraw_execution_review_required"
+			}
+			return s.wallet.FailWithdraw(ctx, walletdomain.FailWithdrawInput{
+				WithdrawID: withdraw.WithdrawID,
+				RiskFlag:   riskFlag,
+				TraceID:    fmt.Sprintf("withdraw_exec_fail:%s", withdraw.WithdrawID),
+			})
 		}
-		_ = s.withdraws.UpdateStatus(ctx, current.WithdrawID, []string{walletdomain.StatusSigning}, nextStatus)
 		return err
 	}
 
@@ -86,10 +123,11 @@ func (s *Service) processWithdraw(ctx context.Context, withdraw walletdomain.Wit
 	var persistErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		persistErr = s.wallet.MarkWithdrawBroadcasted(ctx, walletdomain.BroadcastWithdrawInput{
-			WithdrawID:     current.WithdrawID,
+			WithdrawID:     withdraw.WithdrawID,
 			TxHash:         txHash,
-			IdempotencyKey: fmt.Sprintf("withdraw_broadcast:%s:%s", current.WithdrawID, txHash),
-			TraceID:        fmt.Sprintf("withdraw_exec:%s", current.WithdrawID),
+			BroadcastNonce: withdraw.BroadcastNonce,
+			IdempotencyKey: fmt.Sprintf("withdraw_broadcast:%s:%s", withdraw.WithdrawID, txHash),
+			TraceID:        fmt.Sprintf("withdraw_exec:%s", withdraw.WithdrawID),
 		})
 		if persistErr == nil {
 			return nil

@@ -33,6 +33,7 @@ type AccountResolver interface {
 
 type BalanceRepository interface {
 	GetAccountBalanceForUpdate(ctx context.Context, accountID uint64, asset string) (string, error)
+	GetAccountBalancesForUpdate(ctx context.Context, accountIDs []uint64, asset string) (map[uint64]string, error)
 }
 
 type LedgerPoster interface {
@@ -48,15 +49,23 @@ type PostTradeRiskProcessor interface {
 }
 
 type RuntimeConfig struct {
-	GlobalReadOnly         bool
-	GlobalReduceOnly       bool
-	MaxMarketDataAge       time.Duration
-	NetExposureHardLimit   string
-	MaxExposureSlippageBps int
+	GlobalReadOnly               bool
+	GlobalReduceOnly             bool
+	MaxMarketDataAge             time.Duration
+	NetExposureHardLimit         string
+	MaxExposureSlippageBps       int
+	TakerFeeRate                 string
+	MakerFeeRate                 string
+	DefaultMaxSlippageBps        int
+	MaxLeverage                  string
+	SessionPolicy                string
+	LiquidationPenaltyRate       string
+	LiquidationExtraSlippageBps  int
+	MaintenanceMarginUpliftRatio string
 }
 
 type RuntimeConfigProvider interface {
-	CurrentOrderRuntimeConfig() RuntimeConfig
+	CurrentOrderRuntimeConfig(symbol string) RuntimeConfig
 }
 
 type OrderRepository interface {
@@ -64,12 +73,13 @@ type OrderRepository interface {
 	GetByUserOrderIDForUpdate(ctx context.Context, userID uint64, orderID string) (Order, error)
 	ListRestingOpenLimitOrders(ctx context.Context, limit int) ([]Order, error)
 	ListTriggerWaitingOrders(ctx context.Context, limit int) ([]Order, error)
+	LockSymbolForUpdate(ctx context.Context, symbolID uint64) error
 	GetLatestRiskLevelForUpdate(ctx context.Context, userID uint64) (string, error)
 	GetSymbolExposureForUpdate(ctx context.Context, symbolID uint64) (SymbolExposure, error)
 	CreateOrder(ctx context.Context, order Order) error
 	UpdateOrder(ctx context.Context, order Order) error
 	CreateFill(ctx context.Context, fill Fill) error
 	CreateEvent(ctx context.Context, event Event) error
-	GetPositionForUpdate(ctx context.Context, userID uint64, symbolID uint64, side string) (Position, error)
+	GetPositionForUpdate(ctx context.Context, userID uint64, symbolID uint64, side string, marginMode string) (Position, error)
 	UpsertPosition(ctx context.Context, position Position) error
 }

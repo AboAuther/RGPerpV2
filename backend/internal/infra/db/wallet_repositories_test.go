@@ -2,11 +2,13 @@ package db
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
 	walletdomain "github.com/xiaobao/rgperp/backend/internal/domain/wallet"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/gorm"
 )
 
@@ -30,7 +32,7 @@ func TestWalletRepositories(t *testing.T) {
 	seedAccounts(t, db)
 	ctx := context.Background()
 
-	depositRepo := NewDepositRepository(db)
+	depositRepo := NewDepositRepository(db, map[int64]int{8453: 20})
 	withdrawRepo := NewWithdrawRepository(db)
 	accountResolver := NewAccountResolver(db)
 
@@ -67,6 +69,13 @@ func TestWalletRepositories(t *testing.T) {
 	if err != nil || wd.WithdrawID != "wd_1" {
 		t.Fatalf("get withdraw: %v", err)
 	}
+	total, err := withdrawRepo.SumRequestedAmountByUserSince(ctx, 7, "USDC", time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("sum withdraws: %v", err)
+	}
+	if total != "100" {
+		t.Fatalf("expected total 100, got %s", total)
+	}
 
 	if _, err := accountResolver.UserWalletAccountID(ctx, 7, "USDC"); err != nil {
 		t.Fatalf("resolve user wallet account: %v", err)
@@ -75,7 +84,7 @@ func TestWalletRepositories(t *testing.T) {
 
 func TestDepositRepository_CreateRejectsDuplicateChainTxLog(t *testing.T) {
 	db := setupTestDB(t)
-	repo := NewDepositRepository(db)
+	repo := NewDepositRepository(db, map[int64]int{8453: 20})
 	ctx := context.Background()
 	now := time.Now().UTC()
 
@@ -109,6 +118,85 @@ func TestDepositRepository_CreateRejectsDuplicateChainTxLog(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected exactly one deposit row, got %d", count)
+	}
+}
+
+func TestWithdrawRepository_ReserveNextNonce(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewWithdrawRepository(db)
+	txManager := NewTxManager(db)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := repo.Create(ctx, walletdomain.WithdrawRequest{
+		WithdrawID:     "wd_a",
+		UserID:         7,
+		ChainID:        8453,
+		Asset:          "USDC",
+		Amount:         "10",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000001",
+		Status:         walletdomain.StatusApproved,
+		HoldLedgerTxID: "ldg_a",
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}); err != nil {
+		t.Fatalf("create withdraw a: %v", err)
+	}
+	if err := repo.Create(ctx, walletdomain.WithdrawRequest{
+		WithdrawID:     "wd_b",
+		UserID:         7,
+		ChainID:        8453,
+		Asset:          "USDC",
+		Amount:         "20",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000002",
+		Status:         walletdomain.StatusApproved,
+		HoldLedgerTxID: "ldg_b",
+		CreatedAt:      now.Add(time.Second),
+		UpdatedAt:      now.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("create withdraw b: %v", err)
+	}
+
+	var reserved walletdomain.WithdrawRequest
+	if err := txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		reserved, err = repo.ReserveNextNonce(txCtx, 8453, "0x00000000000000000000000000000000000000aa", 5)
+		return err
+	}); err != nil {
+		t.Fatalf("reserve nonce: %v", err)
+	}
+	if reserved.BroadcastNonce == nil || *reserved.BroadcastNonce != 5 {
+		t.Fatalf("expected reserved nonce 5, got %+v", reserved.BroadcastNonce)
+	}
+
+	blockedErr := txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		_, err := repo.ReserveNextNonce(txCtx, 8453, "0x00000000000000000000000000000000000000aa", 5)
+		return err
+	})
+	if !errors.Is(blockedErr, errorsx.ErrConflict) {
+		t.Fatalf("expected conflict while prior reserved signing is unresolved, got %v", blockedErr)
+	}
+
+	if err := txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		return repo.MarkBroadcasted(txCtx, "wd_a", "0xhash", reserved.BroadcastNonce)
+	}); err != nil {
+		t.Fatalf("mark broadcasted: %v", err)
+	}
+	if err := repo.UpdateStatus(ctx, "wd_a", []string{walletdomain.StatusSigning}, walletdomain.StatusBroadcasted); err != nil {
+		t.Fatalf("update status broadcasted: %v", err)
+	}
+
+	if err := txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		var err error
+		reserved, err = repo.ReserveNextNonce(txCtx, 8453, "0x00000000000000000000000000000000000000aa", 6)
+		return err
+	}); err != nil {
+		t.Fatalf("reserve second nonce: %v", err)
+	}
+	if reserved.BroadcastNonce == nil || *reserved.BroadcastNonce != 6 {
+		t.Fatalf("expected reserved nonce 6, got %+v", reserved.BroadcastNonce)
 	}
 }
 

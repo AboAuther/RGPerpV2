@@ -2,7 +2,10 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
-CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-$ROOT_DIR/.local/contracts.env}"
+CHAIN_ENV_FILE="${CHAIN_ENV_FILE:-$ROOT_DIR/deploy/env/local-chains.env}"
+if [ ! -s "$CHAIN_ENV_FILE" ] && [ -s "$ROOT_DIR/.local/contracts.env" ]; then
+  CHAIN_ENV_FILE="$ROOT_DIR/.local/contracts.env"
+fi
 
 if [ -s "$CHAIN_ENV_FILE" ]; then
   set -a

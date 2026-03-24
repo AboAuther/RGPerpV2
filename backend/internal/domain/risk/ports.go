@@ -23,6 +23,7 @@ type Repository interface {
 	GetAccountStateForUpdate(ctx context.Context, userID uint64) (AccountState, error)
 	GetLatestRiskSnapshot(ctx context.Context, userID uint64) (Snapshot, error)
 	CreateRiskSnapshot(ctx context.Context, snapshot Snapshot) (Snapshot, error)
+	MarkPositionLiquidating(ctx context.Context, positionID string, updatedAt time.Time) (bool, error)
 
 	ListActiveSymbols(ctx context.Context) ([]HedgeState, error)
 	GetHedgeStateForUpdate(ctx context.Context, symbolID uint64) (HedgeState, error)

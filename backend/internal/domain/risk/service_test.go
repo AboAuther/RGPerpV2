@@ -7,6 +7,7 @@ import (
 	"time"
 
 	hedgedomain "github.com/xiaobao/rgperp/backend/internal/domain/hedge"
+	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
@@ -36,6 +37,8 @@ type riskStubRepo struct {
 	latestSnapshot      Snapshot
 	latestSnapshotErr   error
 	createdSnapshots    []Snapshot
+	liquidatingClaims   map[string]bool
+	markLiquidatingErr  error
 	hedgeState          HedgeState
 	latestOpenHedge     hedgedomain.Intent
 	latestOpenHedgeErr  error
@@ -59,6 +62,20 @@ func (s *riskStubRepo) CreateRiskSnapshot(_ context.Context, snapshot Snapshot) 
 	s.latestSnapshot = snapshot
 	s.latestSnapshotErr = nil
 	return snapshot, nil
+}
+
+func (s *riskStubRepo) MarkPositionLiquidating(_ context.Context, positionID string, _ time.Time) (bool, error) {
+	if s.markLiquidatingErr != nil {
+		return false, s.markLiquidatingErr
+	}
+	if s.liquidatingClaims == nil {
+		s.liquidatingClaims = make(map[string]bool)
+	}
+	if s.liquidatingClaims[positionID] {
+		return false, nil
+	}
+	s.liquidatingClaims[positionID] = true
+	return true, nil
 }
 
 func (s *riskStubRepo) ListActiveSymbols(context.Context) ([]HedgeState, error) {
@@ -125,7 +142,7 @@ func TestRecalculateAccountRiskTriggersLiquidation(t *testing.T) {
 		SoftThresholdRatio: "0.2",
 		HardThresholdRatio: "0.4",
 		TakerFeeRate:       "0.0006",
-	}, riskFakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"evt_1", "liq_1", "evt_2"}}, riskStubTxManager{}, repo, outbox)
+	}, riskFakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"liq_1", "evt_1"}}, riskStubTxManager{}, repo, outbox)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -143,8 +160,8 @@ func TestRecalculateAccountRiskTriggersLiquidation(t *testing.T) {
 	if trigger == nil || trigger.LiquidationID != "liq_1" {
 		t.Fatalf("expected liquidation trigger, got %+v", trigger)
 	}
-	if len(outbox.events) != 2 {
-		t.Fatalf("expected 2 outbox events, got %d", len(outbox.events))
+	if len(outbox.events) != 1 || outbox.events[0].EventType != "risk.liquidation.triggered" {
+		t.Fatalf("expected only liquidation trigger event, got %+v", outbox.events)
 	}
 }
 
@@ -199,8 +216,157 @@ func TestRecalculateAccountRiskMarksNoNewRiskWhenAvailableBalanceTurnsNegative(t
 	if trigger != nil {
 		t.Fatalf("expected no liquidation trigger, got %+v", trigger)
 	}
+	if len(outbox.events) != 0 {
+		t.Fatalf("unexpected outbox events: %+v", outbox.events)
+	}
+}
+
+func TestRecalculateAccountRiskPublishesSnapshotEventOnlyWhenRiskLevelChanges(t *testing.T) {
+	repo := &riskStubRepo{
+		accountState: AccountState{
+			UserID:                12,
+			WalletBalance:         "0",
+			OrderMarginBalance:    "0",
+			PositionMarginBalance: "20",
+			WithdrawHoldBalance:   "0",
+			Positions: []PositionExposure{{
+				PositionID:         "pos_12",
+				SymbolID:           1,
+				Symbol:             "BTC-PERP",
+				Side:               "LONG",
+				Qty:                "1",
+				AvgEntryPrice:      "100",
+				MarkPrice:          "100",
+				Notional:           "100",
+				InitialMargin:      "20",
+				MaintenanceMargin:  "10",
+				UnrealizedPnL:      "0",
+				LiquidationFeeRate: "0.02",
+				ContractMultiplier: "1",
+			}},
+		},
+		latestSnapshot: Snapshot{
+			ID:                11,
+			UserID:            12,
+			Equity:            "30",
+			AvailableBalance:  "10",
+			MaintenanceMargin: "10",
+			MarginRatio:       "2.5",
+			RiskLevel:         RiskLevelSafe,
+			TriggeredBy:       "mark_price",
+		},
+	}
+	outbox := &riskStubOutbox{}
+	service, err := NewService(ServiceConfig{
+		RiskBufferRatio:    "0.2",
+		HedgeEnabled:       true,
+		SoftThresholdRatio: "0.2",
+		HardThresholdRatio: "0.4",
+		TakerFeeRate:       "0.0006",
+	}, riskFakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"evt_1"}}, riskStubTxManager{}, repo, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	snapshot, trigger, err := service.RecalculateAccountRisk(context.Background(), 12, "trade_fill")
+	if err != nil {
+		t.Fatalf("recalculate: %v", err)
+	}
+	if snapshot.RiskLevel != RiskLevelNoNewRisk {
+		t.Fatalf("expected NO_NEW_RISK, got %s", snapshot.RiskLevel)
+	}
+	if trigger != nil {
+		t.Fatalf("expected no liquidation trigger, got %+v", trigger)
+	}
 	if len(outbox.events) != 1 || outbox.events[0].EventType != "risk.snapshot.updated" {
 		t.Fatalf("unexpected outbox events: %+v", outbox.events)
+	}
+	payload, ok := outbox.events[0].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %+v", outbox.events[0].Payload)
+	}
+	if payload["risk_level"] != RiskLevelNoNewRisk {
+		t.Fatalf("expected current risk level NO_NEW_RISK, got %+v", payload["risk_level"])
+	}
+	if payload["previous_risk_level"] != RiskLevelSafe {
+		t.Fatalf("expected previous risk level SAFE, got %+v", payload["previous_risk_level"])
+	}
+}
+
+func TestRecalculateAccountRiskTriggersIsolatedLiquidationWithoutAccountLiquidating(t *testing.T) {
+	repo := &riskStubRepo{
+		accountState: AccountState{
+			UserID:                15,
+			WalletBalance:         "100",
+			OrderMarginBalance:    "0",
+			PositionMarginBalance: "10",
+			WithdrawHoldBalance:   "0",
+			Positions: []PositionExposure{{
+				PositionID:         "pos_iso_1",
+				SymbolID:           1,
+				Symbol:             "BTC-PERP",
+				Side:               orderdomain.PositionSideLong,
+				MarginMode:         orderdomain.MarginModeIsolated,
+				Qty:                "1",
+				AvgEntryPrice:      "100",
+				MarkPrice:          "59",
+				Notional:           "59",
+				InitialMargin:      "10",
+				MaintenanceMargin:  "5",
+				UnrealizedPnL:      "-41",
+				LiquidationPrice:   "60",
+				LiquidationFeeRate: "0.02",
+				ContractMultiplier: "1",
+			}},
+		},
+		latestSnapshot: Snapshot{
+			ID:                14,
+			UserID:            15,
+			Equity:            "70",
+			AvailableBalance:  "60",
+			MaintenanceMargin: "5",
+			MarginRatio:       "14",
+			RiskLevel:         RiskLevelSafe,
+			TriggeredBy:       "mark_price",
+		},
+	}
+	outbox := &riskStubOutbox{}
+	service, err := NewService(ServiceConfig{
+		RiskBufferRatio:    "0",
+		HedgeEnabled:       true,
+		SoftThresholdRatio: "0.2",
+		HardThresholdRatio: "0.4",
+		TakerFeeRate:       "0.0006",
+	}, riskFakeClock{now: time.Date(2026, 3, 22, 1, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"liq_iso_1", "evt_iso_1"}}, riskStubTxManager{}, repo, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	snapshot, trigger, err := service.RecalculateAccountRisk(context.Background(), 15, "mark_price")
+	if err != nil {
+		t.Fatalf("recalculate: %v", err)
+	}
+	if snapshot.RiskLevel != RiskLevelSafe {
+		t.Fatalf("expected account to remain SAFE, got %s", snapshot.RiskLevel)
+	}
+	if trigger == nil {
+		t.Fatal("expected isolated liquidation trigger")
+	}
+	if trigger.Mode != liquidationModeIsolated || trigger.PositionID != "pos_iso_1" || trigger.Symbol != "BTC-PERP" {
+		t.Fatalf("unexpected trigger: %+v", trigger)
+	}
+	if !repo.liquidatingClaims["pos_iso_1"] {
+		t.Fatalf("expected position to be claimed for isolated liquidation")
+	}
+	if len(outbox.events) != 1 || outbox.events[0].EventType != "risk.liquidation.triggered" {
+		t.Fatalf("unexpected outbox events: %+v", outbox.events)
+	}
+	payload, ok := outbox.events[0].Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map payload, got %+v", outbox.events[0].Payload)
+	}
+	if payload["mode"] != liquidationModeIsolated || payload["position_id"] != "pos_iso_1" {
+		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
 

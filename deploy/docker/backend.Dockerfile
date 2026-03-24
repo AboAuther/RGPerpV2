@@ -14,6 +14,10 @@ WORKDIR /workspace/backend
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/api-server ./cmd/api-server
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/indexer ./cmd/indexer
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/market-data ./cmd/market-data
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/order-executor-worker ./cmd/order-executor-worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/risk-engine-worker ./cmd/risk-engine-worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/funding-worker ./cmd/funding-worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/liquidator-worker ./cmd/liquidator-worker
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/migrator ./cmd/migrator
 
 FROM debian:bookworm-slim
@@ -27,6 +31,10 @@ RUN apt-get update \
 COPY --from=builder /out/api-server /usr/local/bin/api-server
 COPY --from=builder /out/indexer /usr/local/bin/indexer
 COPY --from=builder /out/market-data /usr/local/bin/market-data
+COPY --from=builder /out/order-executor-worker /usr/local/bin/order-executor-worker
+COPY --from=builder /out/risk-engine-worker /usr/local/bin/risk-engine-worker
+COPY --from=builder /out/funding-worker /usr/local/bin/funding-worker
+COPY --from=builder /out/liquidator-worker /usr/local/bin/liquidator-worker
 COPY --from=builder /out/migrator /usr/local/bin/migrator
 COPY deploy /workspace/deploy
 

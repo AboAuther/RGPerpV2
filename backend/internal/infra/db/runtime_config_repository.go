@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	runtimeconfigapp "github.com/xiaobao/rgperp/backend/internal/app/runtimeconfig"
@@ -20,9 +21,15 @@ func NewRuntimeConfigRepository(db *gorm.DB) *RuntimeConfigRepository {
 }
 
 func (r *RuntimeConfigRepository) LoadActiveConfigValues(ctx context.Context, scopeType string, scopeValue string) ([]config.DynamicConfigValue, error) {
+	query := DB(ctx, r.db).Where("status = ?", "ACTIVE")
+	if strings.TrimSpace(scopeType) != "" {
+		query = query.Where("scope_type = ?", scopeType)
+	}
+	if strings.TrimSpace(scopeValue) != "" {
+		query = query.Where("scope_value = ?", scopeValue)
+	}
 	var models []ConfigItemModel
-	if err := DB(ctx, r.db).
-		Where("scope_type = ? AND scope_value = ? AND status = ?", scopeType, scopeValue, "ACTIVE").
+	if err := query.
 		Order("config_key ASC, version DESC").
 		Find(&models).Error; err != nil {
 		return nil, err
@@ -30,10 +37,11 @@ func (r *RuntimeConfigRepository) LoadActiveConfigValues(ctx context.Context, sc
 	values := make([]config.DynamicConfigValue, 0, len(models))
 	seen := make(map[string]struct{}, len(models))
 	for _, model := range models {
-		if _, ok := seen[model.ConfigKey]; ok {
+		seenKey := strings.Join([]string{model.ScopeType, model.ScopeValue, model.ConfigKey}, "|")
+		if _, ok := seen[seenKey]; ok {
 			continue
 		}
-		seen[model.ConfigKey] = struct{}{}
+		seen[seenKey] = struct{}{}
 		values = append(values, toDynamicConfigValue(model))
 	}
 	return values, nil
@@ -43,9 +51,15 @@ func (r *RuntimeConfigRepository) ListConfigHistory(ctx context.Context, scopeTy
 	if limit <= 0 {
 		limit = 20
 	}
+	query := DB(ctx, r.db)
+	if strings.TrimSpace(scopeType) != "" {
+		query = query.Where("scope_type = ?", scopeType)
+	}
+	if strings.TrimSpace(scopeValue) != "" {
+		query = query.Where("scope_value = ?", scopeValue)
+	}
 	var models []ConfigItemModel
-	if err := DB(ctx, r.db).
-		Where("scope_type = ? AND scope_value = ?", scopeType, scopeValue).
+	if err := query.
 		Order("created_at DESC, id DESC").
 		Limit(limit).
 		Find(&models).Error; err != nil {
@@ -167,14 +181,23 @@ func defaultDynamicValues(snapshot config.RuntimeConfigSnapshot) (map[string]jso
 		"system.read_only":                         snapshot.Global.ReadOnly,
 		"system.reduce_only":                       snapshot.Global.ReduceOnly,
 		"system.trace_header_required":             snapshot.Global.TraceHeaderRequired,
+		"market.taker_fee_rate":                    snapshot.Market.TakerFeeRate,
+		"market.maker_fee_rate":                    snapshot.Market.MakerFeeRate,
+		"market.default_max_slippage_bps":          snapshot.Market.DefaultMaxSlippageBps,
 		"risk.global_buffer_ratio":                 snapshot.Risk.GlobalBufferRatio,
 		"risk.mark_price_stale_sec":                snapshot.Risk.MarkPriceStaleSec,
 		"risk.force_reduce_only_on_stale_price":    snapshot.Risk.ForceReduceOnlyOnStalePrice,
 		"risk.liquidation_penalty_rate":            snapshot.Risk.LiquidationPenaltyRate,
+		"risk.maintenance_margin_uplift_ratio":     snapshot.Risk.MaintenanceMarginUpliftRatio,
 		"risk.liquidation_extra_slippage_bps":      snapshot.Risk.LiquidationExtraSlippageBps,
 		"risk.max_open_orders_per_user_per_symbol": snapshot.Risk.MaxOpenOrdersPerUserPerSymbol,
 		"risk.net_exposure_hard_limit":             snapshot.Risk.NetExposureHardLimit,
 		"risk.max_exposure_slippage_bps":           snapshot.Risk.MaxExposureSlippageBps,
+		"funding.interval_sec":                     snapshot.Funding.IntervalSec,
+		"funding.source_poll_interval_sec":         snapshot.Funding.SourcePollIntervalSec,
+		"funding.cap_rate_per_hour":                snapshot.Funding.CapRatePerHour,
+		"funding.min_valid_source_count":           snapshot.Funding.MinValidSourceCount,
+		"funding.default_model_crypto":             snapshot.Funding.DefaultModelCrypto,
 		"hedge.enabled":                            snapshot.Hedge.Enabled,
 		"hedge.soft_threshold_ratio":               snapshot.Hedge.SoftThresholdRatio,
 		"hedge.hard_threshold_ratio":               snapshot.Hedge.HardThresholdRatio,

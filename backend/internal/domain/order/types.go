@@ -22,6 +22,10 @@ const (
 	PositionSideShort    = "SHORT"
 	PositionStatusOpen   = "OPEN"
 	PositionStatusClosed = "CLOSED"
+	PositionStatusLiquidating = "LIQUIDATING"
+
+	MarginModeIsolated = "ISOLATED"
+	MarginModeCross    = "CROSS"
 )
 
 type CreateOrderInput struct {
@@ -35,6 +39,8 @@ type CreateOrderInput struct {
 	Price          *string
 	TriggerPrice   *string
 	Qty            string
+	Leverage       *string
+	MarginMode     string
 	ReduceOnly     bool
 	MaxSlippageBps int
 	IdempotencyKey string
@@ -63,6 +69,8 @@ type Order struct {
 	Qty                 string
 	FilledQty           string
 	AvgFillPrice        string
+	Leverage            string
+	MarginMode          string
 	ReduceOnly          bool
 	MaxSlippageBps      int
 	Status              string
@@ -105,6 +113,8 @@ type Position struct {
 	AvgEntryPrice     string
 	MarkPrice         string
 	Notional          string
+	Leverage          string
+	MarginMode        string
 	InitialMargin     string
 	MaintenanceMargin string
 	RealizedPnL       string
@@ -126,6 +136,7 @@ type SymbolExposure struct {
 type RiskTier struct {
 	TierLevel          int
 	MaxNotional        string
+	MaxLeverage        string
 	InitialMarginRate  string
 	MaintenanceRate    string
 	LiquidationFeeRate string
@@ -139,6 +150,7 @@ type TradableSymbol struct {
 	StepSize              string
 	MinNotional           string
 	Status                string
+	SessionPolicy         string
 	IndexPrice            string
 	MarkPrice             string
 	BestBid               string

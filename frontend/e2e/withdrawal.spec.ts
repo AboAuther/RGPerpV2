@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 type LoginData = {
@@ -27,7 +27,9 @@ type DepositAddress = {
 };
 
 const apiBaseUrl = 'http://127.0.0.1:8080';
-const contractsEnvPath = join(process.cwd(), '..', '.local', 'contracts.env');
+const contractsEnvPath = existsSync(join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env'))
+  ? join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env')
+  : join(process.cwd(), '..', '.local', 'contracts.env');
 const adminAddress = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266';
 const adminPrivateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const userAddress = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
@@ -255,7 +257,7 @@ test('withdrawal page completes auto and review paths against real backend', asy
   expect(recipientAfter - recipientBefore).toBe(10_009_000_000n);
 
   await page.goto('/explorer');
-  await page.getByPlaceholder('搜索 event_type / asset / ledger_tx_id / chain_tx_hash / address').fill(reviewWithdraw.tx_hash);
+  await page.getByPlaceholder(/搜索 event_id/).fill(reviewWithdraw.tx_hash);
   await expect(page.getByText(reviewWithdraw.tx_hash.slice(0, 8), { exact: false }).first()).toBeVisible();
-  await expect(page.getByText('US$10,001.00').first()).toBeVisible();
+  await expect(page.getByText('10,001 USDC').first()).toBeVisible();
 });

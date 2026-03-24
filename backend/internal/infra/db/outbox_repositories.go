@@ -69,6 +69,21 @@ func (r *OutboxRepository) ListPending(ctx context.Context, limit int) ([]Outbox
 	return events, nil
 }
 
+func (r *OutboxRepository) ListPendingByEventType(ctx context.Context, eventType string, limit int) ([]OutboxEventModel, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var events []OutboxEventModel
+	if err := DB(ctx, r.db).
+		Where("status = ? AND event_type = ?", "PENDING", eventType).
+		Order("created_at ASC").
+		Limit(limit).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID string, publishedAt time.Time) error {
 	result := DB(ctx, r.db).Model(&OutboxEventModel{}).
 		Where("event_id = ?", eventID).
@@ -109,6 +124,12 @@ func (r *MessageConsumptionRepository) TryBegin(ctx context.Context, consumerNam
 		return false, nil
 	}
 	return false, err
+}
+
+func (r *MessageConsumptionRepository) Delete(ctx context.Context, consumerName string, eventID string) error {
+	return DB(ctx, r.db).
+		Where("consumer_name = ? AND event_id = ?", consumerName, eventID).
+		Delete(&MessageConsumptionModel{}).Error
 }
 
 func isUniqueConstraintError(err error) bool {

@@ -2,6 +2,7 @@ package httptransport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gin-gonic/gin"
@@ -122,6 +123,10 @@ func (h *AccountHandler) transfer(c *gin.Context) {
 	}
 	toUserID, err := h.resolver.ResolveUserIDByAddress(c.Request.Context(), req.ToAddress)
 	if err != nil {
+		if errors.Is(err, errorsx.ErrNotFound) {
+			writeError(c, fmt.Errorf("%w: 收款地址未注册，无法内部转账", errorsx.ErrInvalidArgument))
+			return
+		}
 		writeError(c, err)
 		return
 	}

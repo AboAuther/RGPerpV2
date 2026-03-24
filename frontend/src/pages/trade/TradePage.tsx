@@ -24,7 +24,7 @@ import KlineChart from '../../components/trading/KlineChart';
 import { api } from '../../shared/api';
 import { EmptyStateCard, ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
 import { useAuth } from '../../shared/auth';
-import type { AccountSummary, FillItem, OrderCreateRequest, OrderItem, PositionItem, RiskSnapshot, SymbolItem, TickerItem } from '../../shared/domain';
+import type { AccountSummary, FillItem, FundingQuoteItem, OrderCreateRequest, OrderItem, PositionItem, RiskSnapshot, SymbolItem, TickerItem } from '../../shared/domain';
 import { formatDateTime, formatDecimal, formatDecimalAdaptive, formatPercent, formatSignedUsd, formatSignedUsdAdaptive, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 
@@ -197,6 +197,7 @@ function getOrderDisplayPrice(order: Pick<OrderItem, 'price' | 'trigger_price' |
 interface TradeState {
   symbols: SymbolItem[];
   tickers: TickerItem[];
+  fundingQuotes: FundingQuoteItem[];
   orders: OrderItem[];
   fills: FillItem[];
   positions: PositionItem[];
@@ -221,6 +222,17 @@ function getPriceTone(current: number, previous: number): 'up' | 'down' | 'flat'
   return 'flat';
 }
 
+function formatCountdown(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return '00:00:00';
+  }
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
 export function TradePage() {
   const { session } = useAuth();
   const [msgApi, contextHolder] = message.useMessage();
@@ -230,6 +242,7 @@ export function TradePage() {
   const [interval, setInterval] = useState<ChartInterval>('15m');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [activityTab, setActivityTab] = useState<ActivityTabKey>('positions');
@@ -266,9 +279,9 @@ export function TradePage() {
     }
     marketPollingRef.current = true;
     try {
-      const tickers = await api.market.getTickers();
+      const [symbols, tickers, fundingQuotes] = await Promise.all([api.market.getSymbols(), api.market.getTickers(), api.market.getFundingQuotes()]);
       snapshotPreviousTickers();
-      setState((current) => (current ? { ...current, tickers } : current));
+      setState((current) => (current ? { ...current, symbols, tickers, fundingQuotes } : current));
     } catch (loadError) {
       setError(loadError);
     } finally {
@@ -321,9 +334,10 @@ export function TradePage() {
     setError(null);
 
     try {
-      const [symbols, tickers, orders, fills, positions, summary, risk] = await Promise.all([
+      const [symbols, tickers, fundingQuotes, orders, fills, positions, summary, risk] = await Promise.all([
         api.market.getSymbols(),
         api.market.getTickers(),
+        api.market.getFundingQuotes(),
         session ? api.orders.getOrders() : Promise.resolve([]),
         session ? api.fills.getFills() : Promise.resolve([]),
         session ? api.positions.getPositions() : Promise.resolve([]),
@@ -336,6 +350,7 @@ export function TradePage() {
       setState({
         symbols,
         tickers,
+        fundingQuotes,
         orders,
         fills,
         positions,
@@ -373,6 +388,11 @@ export function TradePage() {
   }, [state]);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setClockNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!state || !session) {
       return;
     }
@@ -405,6 +425,7 @@ export function TradePage() {
     return {
       ...symbol,
       ticker: state.tickers.find((item) => item.symbol === symbol.symbol) || null,
+      fundingQuote: state.fundingQuotes.find((item) => item.symbol === symbol.symbol) || null,
     };
   }, [selectedSymbol, state]);
 
@@ -414,7 +435,10 @@ export function TradePage() {
   );
   const accountOrderHistory = useMemo(() => state?.orders || [], [state?.orders]);
   const accountTradeHistory = useMemo(() => state?.fills || [], [state?.fills]);
-  const accountOpenPositions = useMemo(() => state?.positions.filter((item) => item.status === 'OPEN') || [], [state?.positions]);
+  const accountActivePositions = useMemo(
+    () => state?.positions.filter((item) => item.status === 'OPEN') || [],
+    [state?.positions],
+  );
   const latestCancelableOrder = useMemo(
     () => accountOpenOrders[0] ?? null,
     [accountOpenOrders],
@@ -427,6 +451,7 @@ export function TradePage() {
   const canOpenRisk = state?.risk ? state.risk.can_open_risk : true;
 
   const currentTicker = selectedMarket?.ticker ?? null;
+  const currentFundingQuote = selectedMarket?.fundingQuote ?? null;
   const previousTicker = selectedMarket ? previousTickers[selectedMarket.symbol] ?? null : null;
   const markPriceValue = Number(currentTicker?.mark_price ?? 0);
   const previousMarkPriceValue = Number(previousTicker?.mark_price ?? 0);
@@ -443,6 +468,12 @@ export function TradePage() {
   const indexTone = getPriceTone(indexPriceValue, previousIndexPriceValue);
   const bestBidTone = getPriceTone(bestBidValue, previousBestBidValue);
   const bestAskTone = getPriceTone(bestAskValue, previousBestAskValue);
+  const fundingNotApplicable = currentFundingQuote?.status === 'NOT_APPLICABLE';
+  const fundingRateLabel = fundingNotApplicable ? 'N/A' : (currentFundingQuote?.estimated_rate ? formatPercent(currentFundingQuote.estimated_rate, 4) : '--');
+  const countdownSeconds = currentFundingQuote && !fundingNotApplicable
+    ? Math.max(0, Math.floor((new Date(currentFundingQuote.next_funding_at).getTime() - clockNowMs) / 1000))
+    : 0;
+  const fundingCountdownLabel = fundingNotApplicable ? 'N/A' : (currentFundingQuote ? formatCountdown(countdownSeconds) : '--');
 
   const marketOptions = useMemo(
     () =>
@@ -459,7 +490,7 @@ export function TradePage() {
   useEffect(() => {
     setReduceQtyByPosition((current) => {
       const next: Record<string, string> = {};
-      for (const position of accountOpenPositions) {
+      for (const position of accountActivePositions) {
         const market = marketBySymbol.get(position.symbol);
         if (!market) {
           continue;
@@ -479,7 +510,7 @@ export function TradePage() {
       }
       return next;
     });
-  }, [accountOpenPositions, marketBySymbol]);
+  }, [accountActivePositions, marketBySymbol]);
 
   const orderEntryDisabled =
     !session ||
@@ -502,8 +533,8 @@ export function TradePage() {
         ? Number(entryTriggerPrice)
         : markPriceValue;
   const estimatedNotional = Number(entryQty || 0) * (Number.isFinite(referencePrice) ? referencePrice : 0);
-  const leverageMax = 40;
-  const estimatedMargin = estimatedNotional > 0 && entryLeverage > 0 ? estimatedNotional / entryLeverage : 0;
+  const leverageMax = Math.max(1, Math.floor(Number(selectedMarket?.max_leverage || '1') || 1));
+  const estimatedMargin = entryEffect === 'OPEN' && estimatedNotional > 0 && entryLeverage > 0 ? estimatedNotional / entryLeverage : 0;
   const estimatedReserve = (isLimitOrder || isTriggerOrder) && entryEffect === 'OPEN' ? estimatedMargin : 0;
   const marketProtectText = `${entryMaxSlippageBps} bps`;
   const quoteHintPrice = isLimitOrder ? Number(entryPrice || 0) : isTriggerOrder ? Number(entryTriggerPrice || 0) : referencePrice;
@@ -587,6 +618,10 @@ export function TradePage() {
       void msgApi.error('市价保护必须大于 0 bps');
       return;
     }
+    if (entryEffect === 'OPEN' && (!Number.isFinite(entryLeverage) || entryLeverage <= 0 || entryLeverage > leverageMax)) {
+      void msgApi.error(`杠杆必须在 1 到 ${leverageMax}x 之间`);
+      return;
+    }
     await submitOrder(
       {
         client_order_id: `cli_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
@@ -595,6 +630,8 @@ export function TradePage() {
         position_effect: entryEffect,
         type: entryType,
         qty,
+        leverage: entryEffect === 'OPEN' ? String(entryLeverage) : null,
+        margin_mode: entryMarginMode === 'isolated' ? 'ISOLATED' : 'CROSS',
         price: isLimitOrder ? price : null,
         trigger_price: isTriggerOrder ? triggerPrice : null,
         reduce_only: entryReduceOnly,
@@ -619,6 +656,7 @@ export function TradePage() {
         position_effect: 'CLOSE',
         type: 'MARKET',
         qty: position.qty,
+        margin_mode: position.margin_mode === 'ISOLATED' ? 'ISOLATED' : 'CROSS',
         reduce_only: true,
       },
       `${position.symbol} 市价平仓已提交`,
@@ -658,6 +696,7 @@ export function TradePage() {
         position_effect: 'REDUCE',
         type: 'MARKET',
         qty,
+        margin_mode: position.margin_mode === 'ISOLATED' ? 'ISOLATED' : 'CROSS',
         reduce_only: true,
       },
       `${position.symbol} 市价减仓已提交`,
@@ -706,6 +745,9 @@ export function TradePage() {
           <Space size={[8, 8]} wrap>
             <Text strong>{record.symbol}</Text>
             <StatusTag value={record.side} />
+            <Tag color={record.margin_mode === 'ISOLATED' ? 'blue' : 'gold'}>
+              {record.margin_mode === 'ISOLATED' ? '逐仓' : '全仓'}
+            </Tag>
           </Space>
         ),
       },
@@ -748,6 +790,7 @@ export function TradePage() {
             submitting ||
             accountLiquidating ||
             !rowMarket ||
+            record.status === 'LIQUIDATING' ||
             rowMarket.status === 'PAUSED' ||
             rowTicker?.stale ||
             !rowTicker ||
@@ -872,9 +915,9 @@ export function TradePage() {
       children: (
         <Table
           rowKey="position_id"
-          dataSource={accountOpenPositions}
+          dataSource={accountActivePositions}
           pagination={false}
-          locale={{ emptyText: 'No open positions yet' }}
+          locale={{ emptyText: 'No active positions yet' }}
           scroll={{ x: 1380 }}
           columns={positionsColumns}
         />
@@ -992,7 +1035,7 @@ export function TradePage() {
                   </div>
                   <div className="trade-quote-stat trade-quote-stat--reserved">
                     <Text className="trade-quote-stat__label">Funding / Countdown</Text>
-                    <Text className="trade-quote-stat__value trade-quote-stat__value--muted">-- / --</Text>
+                    <Text className="trade-quote-stat__value trade-quote-stat__value--muted">{`${fundingRateLabel} / ${fundingCountdownLabel}`}</Text>
                   </div>
                 </div>
               </div>
@@ -1270,7 +1313,7 @@ export function TradePage() {
                         </div>
                         <div className="trade-order-slider">
                           <div className="trade-meta-row">
-                            <Text type="secondary">杠杆滑块</Text>
+                            <Text type="secondary">杠杆滑块 / 上限 {leverageMax}x</Text>
                             <Text strong>{entryLeverage}x</Text>
                           </div>
                           <Slider
@@ -1297,7 +1340,7 @@ export function TradePage() {
                                   : `${formatUsd(referencePrice)} (标记价)`}
                             </Descriptions.Item>
                             <Descriptions.Item label="名义价值">{formatUsd(estimatedNotional)}</Descriptions.Item>
-                            <Descriptions.Item label="预估保证金">{formatUsd(estimatedMargin)}</Descriptions.Item>
+                            <Descriptions.Item label="预估保证金">{entryEffect === 'OPEN' ? formatUsd(estimatedMargin) : '--'}</Descriptions.Item>
                             <Descriptions.Item label="路由">
                               {isLimitOrder
                                 ? `RESTING / ${entryTimeInForce}`

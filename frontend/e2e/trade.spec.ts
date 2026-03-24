@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 type LoginData = {
@@ -61,7 +61,9 @@ type ExplorerEvent = {
 };
 
 const apiBaseUrl = 'http://127.0.0.1:8080';
-const contractsEnvPath = join(process.cwd(), '..', '.local', 'contracts.env');
+const contractsEnvPath = existsSync(join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env'))
+  ? join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env')
+  : join(process.cwd(), '..', '.local', 'contracts.env');
 const adminPrivateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 const userAddress = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC';
 const userPrivateKey = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
@@ -281,7 +283,7 @@ test('trade page submits open, resting limit, cancel and close against real back
 
   await page.goto('/trade');
   await expect(page.getByText('Trade Console')).toBeVisible();
-  await expect(page.getByText('Order Entry · BTC-USDC')).toBeVisible();
+  await expect(page.getByText(/^Order Entry · /)).toBeVisible();
 
   await waitForFreshTicker('BTC-USDC');
   await createOrder(session.access_token, {
@@ -415,6 +417,6 @@ test('trade page submits open, resting limit, cancel and close against real back
 
   await page.goto('/explorer');
   await expect(page.getByText('Event Explorer')).toBeVisible();
-  await page.getByPlaceholder(/搜索 event_type/).fill(createdLimitOrder);
+  await page.getByPlaceholder(/搜索 event_id/).fill(createdLimitOrder);
   await expect(page.getByText(createdLimitOrder.slice(0, 6), { exact: false }).first()).toBeVisible();
 });

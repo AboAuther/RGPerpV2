@@ -8,9 +8,14 @@ import type {
   DepositItem,
   ExplorerEvent,
   FillItem,
+  FundingQuoteItem,
   FundingItem,
   LoginResponse,
   AdminWithdrawReviewItem,
+  AdminLiquidationItem,
+  AdminLiquidationActionResult,
+  InsuranceFundTopUpRequest,
+  InsuranceFundTopUpResult,
   OrderItem,
   OrderCreateRequest,
   LedgerOverview,
@@ -158,6 +163,9 @@ export const api = {
     getRisk(): Promise<RiskSnapshot> {
       return requestJson<RiskSnapshot>('/api/v1/account/risk');
     },
+    getFundingHistory(): Promise<FundingItem[]> {
+      return requestJson<FundingItem[]>('/api/v1/account/funding');
+    },
   },
 
   wallet: {
@@ -201,6 +209,9 @@ export const api = {
     },
     getTickers(): Promise<TickerItem[]> {
       return requestJson<TickerItem[]>('/api/v1/markets/tickers');
+    },
+    getFundingQuotes(): Promise<FundingQuoteItem[]> {
+      return requestJson<FundingQuoteItem[]>('/api/v1/markets/funding');
     },
   },
 
@@ -251,6 +262,28 @@ export const api = {
     getWithdrawals(): Promise<AdminWithdrawReviewItem[]> {
       return requestJson<AdminWithdrawReviewItem[]>('/api/v1/admin/withdrawals');
     },
+    getLiquidations(): Promise<AdminLiquidationItem[]> {
+      return requestJson<AdminLiquidationItem[]>('/api/v1/admin/liquidations');
+    },
+    retryLiquidation(liquidationId: string): Promise<AdminLiquidationActionResult> {
+      return requestJson<AdminLiquidationActionResult>(`/api/v1/admin/liquidations/${liquidationId}/retry`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('liqretry'),
+        },
+      });
+    },
+    closeLiquidation(liquidationId: string, reason: string): Promise<AdminLiquidationActionResult> {
+      return requestJson<AdminLiquidationActionResult>(`/api/v1/admin/liquidations/${liquidationId}/close`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('liqclose'),
+        },
+      });
+    },
     getRiskMonitorDashboard(): Promise<RiskMonitorDashboard> {
       return requestJson<RiskMonitorDashboard>('/api/v1/admin/risk/net-exposures');
     },
@@ -270,6 +303,16 @@ export const api = {
     getLedgerOverview(asset?: string): Promise<LedgerOverview> {
       const params = asset ? `?asset=${encodeURIComponent(asset)}` : '';
       return requestJson<LedgerOverview>(`/api/v1/admin/ledger/overview${params}`);
+    },
+    topUpInsuranceFund(input: InsuranceFundTopUpRequest): Promise<InsuranceFundTopUpResult> {
+      return requestJson<InsuranceFundTopUpResult>('/api/v1/admin/ledger/insurance-fund/topups', {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('iftop'),
+        },
+      });
     },
     getLatestLedgerAudit(asset?: string): Promise<LedgerAuditReport> {
       const params = asset ? `?asset=${encodeURIComponent(asset)}` : '';
@@ -302,11 +345,29 @@ export const api = {
         },
       });
     },
+    returnWithdrawalToReview(withdrawId: string): Promise<{ withdraw_id: string; status: string }> {
+      return requestJson<{ withdraw_id: string; status: string }>(`/api/v1/admin/withdrawals/${withdrawId}/review`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('wdreview'),
+        },
+      });
+    },
+    refundWithdrawal(withdrawId: string): Promise<{ withdraw_id: string; status: string }> {
+      return requestJson<{ withdraw_id: string; status: string }>(`/api/v1/admin/withdrawals/${withdrawId}/refund`, {
+        method: 'POST',
+        headers: {
+          'X-Trace-Id': buildTraceId(),
+          'Idempotency-Key': buildId('wdrefund'),
+        },
+      });
+    },
   },
 
   funding: {
     getHistory(): Promise<FundingItem[]> {
-      return requestJson<FundingItem[]>('/api/v1/account/funding');
+      return api.account.getFundingHistory();
     },
   },
 

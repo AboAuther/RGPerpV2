@@ -28,7 +28,7 @@
 - [ ] 实现订单 API、订单状态及取消流程
 - [ ] 实现市价单和限价单的交易引擎
 - [ ] 实现仓位更新及已实现/未实现 PnL
-- [ ] 实现账户和订单更新的 WebSocket 推送
+- [ ] 实现账户、订单、仓位与行情的轮询刷新机制
 
 ### 里程碑 4：风险、强平及资金费率
 
@@ -241,6 +241,19 @@
 - `completed_at` datetime null
 - `created_at` datetime
 - `updated_at` datetime
+
+#### `signer_nonce_states`
+
+- `id` bigint pk
+- `chain_id` bigint
+- `signer_address` varchar(64)
+- `next_nonce` bigint
+- `created_at` datetime
+- `updated_at` datetime
+
+唯一键：
+
+- `(chain_id, signer_address)`
 
 #### `chain_cursors`
 
@@ -621,14 +634,11 @@
 - `GET /api/v1/admin/funding-batches`
 - `GET /api/v1/admin/hedges`
 
-### 3.8 WebSocket 通道
+### 3.8 刷新机制
 
-- `account.updates`
-- `order.updates`
-- `position.updates`
-- `market.tickers`
-- `market.markPrices`
-- `notification.events`
+- 交易页通过 HTTP 轮询获取 `tickers`、订单、仓位、账户概览
+- 关键写操作成功后主动重载账户、订单、仓位数据
+- 断线、接口失败、页面回到前台时主动刷新关键读模型
 
 ## 4. 事件模型
 
@@ -764,7 +774,7 @@
 | 充值 | 重复链日志交付 | 集成 | 充值仅入账一次 |
 | 充值 | 检测后最终确认前的重组 | 集成 | 充值回滚且不入账 |
 | 提现 | 余额不足的提现请求 | 集成 | 请求被拒且无账本变更 |
-| 提现 | 锁定后广播失败 | 集成 | 锁定回滚且余额恢复 |
+| 提现 | 预留 nonce 后广播结果不确定 | 集成 | 保持 `SIGNING + broadcast_nonce`，只能复用同一 nonce 重试或由 Indexer/人工对账收敛 |
 | 账本 | 平衡账本不变性检查 | 单元 | 每笔 ledger tx 金额之和为零 |
 | 账本 | 并发划转请求 | 并发 | 无超额支出且最终余额一致 |
 | 订单 | 市价单正常路径 | E2E | 订单接受、成交、仓位更新 |

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
 	orderdomain "github.com/xiaobao/rgperp/backend/internal/domain/order"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
@@ -20,20 +21,22 @@ const (
 )
 
 type Snapshot struct {
-	SymbolID              uint64    `json:"symbol_id"`
-	Symbol                string    `json:"symbol"`
-	Status                string    `json:"status"`
-	ContractMultiplier    string    `json:"contract_multiplier"`
-	TickSize              string    `json:"tick_size"`
-	StepSize              string    `json:"step_size"`
-	MinNotional           string    `json:"min_notional"`
-	InitialMarginRate     string    `json:"initial_margin_rate"`
-	MaintenanceMarginRate string    `json:"maintenance_margin_rate"`
-	IndexPrice            string    `json:"index_price"`
-	MarkPrice             string    `json:"mark_price"`
-	BestBid               string    `json:"best_bid"`
-	BestAsk               string    `json:"best_ask"`
-	TS                    time.Time `json:"ts"`
+	SymbolID              uint64                 `json:"symbol_id"`
+	Symbol                string                 `json:"symbol"`
+	Status                string                 `json:"status"`
+	SessionPolicy         string                 `json:"session_policy"`
+	ContractMultiplier    string                 `json:"contract_multiplier"`
+	TickSize              string                 `json:"tick_size"`
+	StepSize              string                 `json:"step_size"`
+	MinNotional           string                 `json:"min_notional"`
+	InitialMarginRate     string                 `json:"initial_margin_rate"`
+	MaintenanceMarginRate string                 `json:"maintenance_margin_rate"`
+	RiskTiers             []orderdomain.RiskTier `json:"risk_tiers"`
+	IndexPrice            string                 `json:"index_price"`
+	MarkPrice             string                 `json:"mark_price"`
+	BestBid               string                 `json:"best_bid"`
+	BestAsk               string                 `json:"best_ask"`
+	TS                    time.Time              `json:"ts"`
 }
 
 type Cache struct {
@@ -91,12 +94,14 @@ func (c *Cache) GetTradableSymbol(ctx context.Context, symbol string) (orderdoma
 		StepSize:              snapshot.StepSize,
 		MinNotional:           snapshot.MinNotional,
 		Status:                snapshot.Status,
+		SessionPolicy:         snapshot.SessionPolicy,
 		IndexPrice:            snapshot.IndexPrice,
 		MarkPrice:             snapshot.MarkPrice,
 		BestBid:               snapshot.BestBid,
 		BestAsk:               snapshot.BestAsk,
 		InitialMarginRate:     snapshot.InitialMarginRate,
 		MaintenanceMarginRate: snapshot.MaintenanceMarginRate,
+		RiskTiers:             append([]orderdomain.RiskTier(nil), snapshot.RiskTiers...),
 		SnapshotTS:            snapshot.TS,
 	}, nil
 }
