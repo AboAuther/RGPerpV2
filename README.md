@@ -17,6 +17,73 @@
 - 交易对种子、行情聚合、下单、成交、仓位、PnL、风险率、强平、资金费率
 - 管理后台页面、用户侧 Explorer 页面、docker compose 本地联调环境、E2E 基础用例
 
+## 快速启动
+
+本地联调推荐按下面的顺序启动。链节点与后端服务已经解耦，先起三条链并部署合约，再起后端，最后起前端。
+
+1. 启动本地三链并部署或复用合约
+
+```bash
+bash deploy/scripts/bootstrap-local-multichain.sh
+```
+
+这个脚本会：
+
+- 启动宿主机上的 `Ethereum / Arbitrum / Base` 三条本地链
+- 部署或复用本地联调合约
+- 写出 `deploy/env/local-chains.env`
+- 写出前端本地环境文件 `frontend/.env.local`
+
+2. 启动后端依赖和服务
+
+```bash
+docker compose up -d --build
+```
+
+启动后可访问：
+
+- API: `http://127.0.0.1:8080`
+- RabbitMQ: `http://127.0.0.1:15672`
+- MySQL: `127.0.0.1:3306`
+- Redis: `127.0.0.1:6379`
+
+3. 启动前端
+
+```bash
+sh deploy/scripts/start-frontend-local.sh
+```
+
+前端默认运行在：
+
+- Frontend: `http://127.0.0.1:5173`
+
+4. 本地手动挖块
+
+本地 Anvil 不会像真实链那样持续自动推进确认块。充值后如果需要手动增加确认数，可以执行：
+
+```bash
+bash deploy/scripts/mine-local-blocks.sh eth 6
+bash deploy/scripts/mine-local-blocks.sh arb 6
+bash deploy/scripts/mine-local-blocks.sh base 6
+```
+
+参数说明：
+
+- 第一个参数：`eth | arb | base`
+- 第二个参数：要手动挖出的区块数量
+
+例如，给 ETH 链补 12 个确认块：
+
+```bash
+bash deploy/scripts/mine-local-blocks.sh eth 12
+```
+
+当前本地充值确认数要求默认是：
+
+- Ethereum: `12`
+- Arbitrum: `20`
+- Base: `20`
+
 ## 目录结构
 
 - `frontend/`: 前端应用

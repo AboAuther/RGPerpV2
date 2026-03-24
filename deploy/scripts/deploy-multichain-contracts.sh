@@ -14,14 +14,75 @@ mkdir -p "$(dirname "$OUTPUT_FILE")" "$MANIFEST_DIR"
 ETH_HOST_RPC_URL="${ETH_HOST_RPC_URL:-http://127.0.0.1:8545}"
 ETH_DEPLOY_RPC_URL="${ETH_DEPLOY_RPC_URL:-${ETH_HOST_RPC_URL}}"
 ETH_DOCKER_RPC_URL="${ETH_DOCKER_RPC_URL:-http://host.docker.internal:8545}"
+ETH_CHAIN_CONFIRMATIONS="${ETH_CHAIN_CONFIRMATIONS:-12}"
 
 ARB_HOST_RPC_URL="${ARB_HOST_RPC_URL:-http://127.0.0.1:8546}"
 ARB_DEPLOY_RPC_URL="${ARB_DEPLOY_RPC_URL:-${ARB_HOST_RPC_URL}}"
 ARB_DOCKER_RPC_URL="${ARB_DOCKER_RPC_URL:-http://host.docker.internal:8546}"
+ARB_CHAIN_CONFIRMATIONS="${ARB_CHAIN_CONFIRMATIONS:-20}"
 
 BASE_HOST_RPC_URL="${BASE_HOST_RPC_URL:-http://127.0.0.1:8547}"
 BASE_DEPLOY_RPC_URL="${BASE_DEPLOY_RPC_URL:-${BASE_HOST_RPC_URL}}"
 BASE_DOCKER_RPC_URL="${BASE_DOCKER_RPC_URL:-http://host.docker.internal:8547}"
+BASE_CHAIN_CONFIRMATIONS="${BASE_CHAIN_CONFIRMATIONS:-20}"
+
+seed_chain_env_file() {
+  local prefix="$1"
+  local chain_env_file="$2"
+  if [ ! -s "$OUTPUT_FILE" ]; then
+    return 0
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  source "$OUTPUT_FILE"
+  set +a
+
+  local enabled chain_id display_name local_testnet host_rpc docker_rpc confirmations token_address vault_address factory_address deploy_block usdc_tx vault_tx factory_tx admin_wallets admin_address admin_private_key
+  enabled="$(eval "printf '%s' \"\${${prefix}_ENABLED:-}\"")"
+  if [ -z "$enabled" ]; then
+    return 0
+  fi
+
+  chain_id="$(eval "printf '%s' \"\${${prefix}_CHAIN_ID:-}\"")"
+  display_name="$(eval "printf '%s' \"\${${prefix}_DISPLAY_NAME:-}\"")"
+  local_testnet="$(eval "printf '%s' \"\${${prefix}_LOCAL_TESTNET:-}\"")"
+  host_rpc="$(eval "printf '%s' \"\${${prefix}_RPC_URL_HOST:-}\"")"
+  docker_rpc="$(eval "printf '%s' \"\${${prefix}_RPC_URL_DOCKER:-}\"")"
+  confirmations="$(eval "printf '%s' \"\${${prefix}_CONFIRMATIONS:-1}\"")"
+  token_address="$(eval "printf '%s' \"\${${prefix}_USDC_ADDRESS:-}\"")"
+  vault_address="$(eval "printf '%s' \"\${${prefix}_VAULT_ADDRESS:-}\"")"
+  factory_address="$(eval "printf '%s' \"\${${prefix}_FACTORY_ADDRESS:-}\"")"
+  deploy_block="$(eval "printf '%s' \"\${${prefix}_DEPLOY_BLOCK:-}\"")"
+  usdc_tx="$(eval "printf '%s' \"\${${prefix}_USDC_DEPLOY_TX_HASH:-}\"")"
+  vault_tx="$(eval "printf '%s' \"\${${prefix}_VAULT_DEPLOY_TX_HASH:-}\"")"
+  factory_tx="$(eval "printf '%s' \"\${${prefix}_FACTORY_DEPLOY_TX_HASH:-}\"")"
+  admin_wallets="${ADMIN_WALLETS:-}"
+  admin_address="${LOCAL_ANVIL_ADMIN_ADDRESS:-}"
+  admin_private_key="${LOCAL_ANVIL_ADMIN_PRIVATE_KEY:-$ADMIN_PRIVATE_KEY}"
+
+  cat > "${chain_env_file}.tmp" <<EOF
+export ${prefix}_ENABLED=${enabled}
+export ${prefix}_CHAIN_ID=${chain_id}
+export ${prefix}_DISPLAY_NAME="${display_name}"
+export ${prefix}_LOCAL_TESTNET=${local_testnet}
+export ${prefix}_RPC_URL=${host_rpc}
+export ${prefix}_RPC_URL_HOST=${host_rpc}
+export ${prefix}_RPC_URL_DOCKER=${docker_rpc}
+export ${prefix}_CONFIRMATIONS=${confirmations}
+export ${prefix}_USDC_ADDRESS=${token_address}
+export ${prefix}_VAULT_ADDRESS=${vault_address}
+export ${prefix}_FACTORY_ADDRESS=${factory_address}
+export ${prefix}_DEPLOY_BLOCK=${deploy_block}
+export ${prefix}_USDC_DEPLOY_TX_HASH=${usdc_tx}
+export ${prefix}_VAULT_DEPLOY_TX_HASH=${vault_tx}
+export ${prefix}_FACTORY_DEPLOY_TX_HASH=${factory_tx}
+export ADMIN_WALLETS=${admin_wallets}
+export LOCAL_ANVIL_ADMIN_ADDRESS=${admin_address}
+export LOCAL_ANVIL_ADMIN_PRIVATE_KEY=${admin_private_key}
+EOF
+  mv "${chain_env_file}.tmp" "$chain_env_file"
+}
 
 deploy_chain() {
   local prefix="$1"
@@ -31,14 +92,18 @@ deploy_chain() {
   local deploy_rpc_url="$5"
   local host_rpc_url="$6"
   local docker_rpc_url="$7"
+  local chain_confirmations="$8"
   local chain_env_file="${TMP_DIR}/${prefix}.env"
   local manifest_file="${MANIFEST_DIR}/${key}.json"
+
+  seed_chain_env_file "$prefix" "$chain_env_file"
 
   RPC_URL="$deploy_rpc_url" \
   OUTPUT_FILE="$chain_env_file" \
   OUTPUT_HOST_RPC_URL="$host_rpc_url" \
   OUTPUT_DOCKER_RPC_URL="$docker_rpc_url" \
   ADMIN_PRIVATE_KEY="$ADMIN_PRIVATE_KEY" \
+  CHAIN_CONFIRMATIONS="$chain_confirmations" \
   CHAIN_ENV_PREFIX="$prefix" \
   CHAIN_KEY="$key" \
   CHAIN_DISPLAY_NAME="$display_name" \
@@ -94,9 +159,9 @@ with open(path, "w", encoding="utf-8") as fh:
 PY
 }
 
-deploy_chain ETH ethereum "Local Ethereum" 31337 "$ETH_DEPLOY_RPC_URL" "$ETH_HOST_RPC_URL" "$ETH_DOCKER_RPC_URL"
-deploy_chain ARB arbitrum "Local Arbitrum" 31338 "$ARB_DEPLOY_RPC_URL" "$ARB_HOST_RPC_URL" "$ARB_DOCKER_RPC_URL"
-deploy_chain BASE base "Local Base" 31339 "$BASE_DEPLOY_RPC_URL" "$BASE_HOST_RPC_URL" "$BASE_DOCKER_RPC_URL"
+deploy_chain ETH ethereum "Local Ethereum" 31337 "$ETH_DEPLOY_RPC_URL" "$ETH_HOST_RPC_URL" "$ETH_DOCKER_RPC_URL" "$ETH_CHAIN_CONFIRMATIONS"
+deploy_chain ARB arbitrum "Local Arbitrum" 31338 "$ARB_DEPLOY_RPC_URL" "$ARB_HOST_RPC_URL" "$ARB_DOCKER_RPC_URL" "$ARB_CHAIN_CONFIRMATIONS"
+deploy_chain BASE base "Local Base" 31339 "$BASE_DEPLOY_RPC_URL" "$BASE_HOST_RPC_URL" "$BASE_DOCKER_RPC_URL" "$BASE_CHAIN_CONFIRMATIONS"
 
 cat > "${OUTPUT_FILE}.tmp" <<EOF
 # RGPerp local multichain config
@@ -112,7 +177,7 @@ export ETH_LOCAL_TESTNET=${ETH_LOCAL_TESTNET}
 export ETH_RPC_URL=${ETH_RPC_URL}
 export ETH_RPC_URL_HOST=${ETH_RPC_URL_HOST}
 export ETH_RPC_URL_DOCKER=${ETH_RPC_URL_DOCKER}
-export ETH_CONFIRMATIONS=${ETH_CONFIRMATIONS}
+export ETH_CONFIRMATIONS=${ETH_CHAIN_CONFIRMATIONS}
 export ETH_USDC_ADDRESS=${ETH_USDC_ADDRESS}
 export ETH_VAULT_ADDRESS=${ETH_VAULT_ADDRESS}
 export ETH_FACTORY_ADDRESS=${ETH_FACTORY_ADDRESS}
@@ -129,7 +194,7 @@ export ARB_LOCAL_TESTNET=${ARB_LOCAL_TESTNET}
 export ARB_RPC_URL=${ARB_RPC_URL}
 export ARB_RPC_URL_HOST=${ARB_RPC_URL_HOST}
 export ARB_RPC_URL_DOCKER=${ARB_RPC_URL_DOCKER}
-export ARB_CONFIRMATIONS=${ARB_CONFIRMATIONS}
+export ARB_CONFIRMATIONS=${ARB_CHAIN_CONFIRMATIONS}
 export ARB_USDC_ADDRESS=${ARB_USDC_ADDRESS}
 export ARB_VAULT_ADDRESS=${ARB_VAULT_ADDRESS}
 export ARB_FACTORY_ADDRESS=${ARB_FACTORY_ADDRESS}
@@ -146,7 +211,7 @@ export BASE_LOCAL_TESTNET=${BASE_LOCAL_TESTNET}
 export BASE_RPC_URL=${BASE_RPC_URL}
 export BASE_RPC_URL_HOST=${BASE_RPC_URL_HOST}
 export BASE_RPC_URL_DOCKER=${BASE_RPC_URL_DOCKER}
-export BASE_CONFIRMATIONS=${BASE_CONFIRMATIONS}
+export BASE_CONFIRMATIONS=${BASE_CHAIN_CONFIRMATIONS}
 export BASE_USDC_ADDRESS=${BASE_USDC_ADDRESS}
 export BASE_VAULT_ADDRESS=${BASE_VAULT_ADDRESS}
 export BASE_FACTORY_ADDRESS=${BASE_FACTORY_ADDRESS}
