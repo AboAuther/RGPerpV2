@@ -100,10 +100,10 @@ type stubWithdrawRepo struct {
 	broadcasts []string
 	refunds    []string
 	detailed   []struct {
-		withdrawID      string
-		to              string
-		riskFlag        *string
-		clearBroadcast  bool
+		withdrawID     string
+		to             string
+		riskFlag       *string
+		clearBroadcast bool
 	}
 }
 
@@ -160,15 +160,25 @@ func (s *stubTransferResolver) ResolveUserIDByAddress(_ context.Context, _ strin
 }
 
 type stubLedger struct {
-	req  ledgerdomain.PostingRequest
-	reqs []ledgerdomain.PostingRequest
-	err  error
+	req                ledgerdomain.PostingRequest
+	reqs               []ledgerdomain.PostingRequest
+	err                error
+	txByIdempotencyKey map[string]ledgerdomain.LedgerTx
 }
 
 func (s *stubLedger) Post(_ context.Context, req ledgerdomain.PostingRequest) error {
 	s.req = req
 	s.reqs = append(s.reqs, req)
 	return s.err
+}
+
+func (s *stubLedger) GetTxByIdempotencyKey(_ context.Context, idempotencyKey string) (ledgerdomain.LedgerTx, error) {
+	if s.txByIdempotencyKey != nil {
+		if tx, ok := s.txByIdempotencyKey[idempotencyKey]; ok {
+			return tx, nil
+		}
+	}
+	return ledgerdomain.LedgerTx{}, errorsx.ErrNotFound
 }
 
 type stubTxManager struct{ err error }
@@ -1052,6 +1062,63 @@ func TestRequestWithdraw_ConcurrentDoesNotOverspend(t *testing.T) {
 	}
 }
 
+func TestRequestWithdraw_DuplicateIdempotencyReturnsExistingWithdraw(t *testing.T) {
+	withdraws := &stubWithdrawRepo{
+		withdraw: WithdrawRequest{
+			WithdrawID: "wd_existing",
+			UserID:     7,
+			ChainID:    8453,
+			Asset:      "USDC",
+			Amount:     "80",
+			FeeAmount:  "1",
+			ToAddress:  "0x0000000000000000000000000000000000000001",
+			Status:     StatusHold,
+		},
+	}
+	ledger := &stubLedger{
+		txByIdempotencyKey: map[string]ledgerdomain.LedgerTx{
+			"idem_existing": {
+				ID:             "ldg_existing",
+				BizType:        "WITHDRAW_HOLD",
+				BizRefID:       "wd_existing",
+				IdempotencyKey: "idem_existing",
+			},
+		},
+	}
+	svc := NewService(
+		&stubDepositRepo{},
+		withdraws,
+		&stubTransferResolver{},
+		ledger,
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"unused"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+
+	withdraw, err := svc.RequestWithdraw(context.Background(), RequestWithdrawInput{
+		UserID:         7,
+		ChainID:        8453,
+		Asset:          "USDC",
+		Amount:         "80",
+		FeeAmount:      "1",
+		ToAddress:      "0x0000000000000000000000000000000000000001",
+		IdempotencyKey: "idem_existing",
+		TraceID:        "trace_existing",
+	})
+	if err != nil {
+		t.Fatalf("request withdraw: %v", err)
+	}
+	if withdraw.WithdrawID != "wd_existing" {
+		t.Fatalf("expected existing withdraw, got %+v", withdraw)
+	}
+	if len(ledger.reqs) != 0 {
+		t.Fatalf("expected no new ledger posting on duplicate withdraw request")
+	}
+}
+
 func TestTransfer_ReadOnlyRejected(t *testing.T) {
 	svc := NewService(
 		&stubDepositRepo{},
@@ -1134,6 +1201,47 @@ func TestTransfer_ConcurrentDoesNotOverspend(t *testing.T) {
 	}
 	if got := state.balances[81]; got != "80" {
 		t.Fatalf("expected receiver balance 80, got %s", got)
+	}
+}
+
+func TestTransfer_DuplicateIdempotencyReturnsWithoutReposting(t *testing.T) {
+	ledger := &stubLedger{
+		txByIdempotencyKey: map[string]ledgerdomain.LedgerTx{
+			"transfer:7:existing": {
+				ID:             "ldg_existing",
+				BizType:        "TRANSFER",
+				BizRefID:       "trf_existing",
+				IdempotencyKey: "transfer:7:existing",
+			},
+		},
+	}
+	svc := NewService(
+		&stubDepositRepo{},
+		&stubWithdrawRepo{},
+		&stubTransferResolver{},
+		ledger,
+		stubTxManager{},
+		fakeClock{now: time.Now()},
+		&fakeIDGen{values: []string{"unused"}},
+		stubAccounts{},
+		stubBalances{value: "1000"},
+		stubDepositAddresses{},
+	)
+
+	err := svc.Transfer(context.Background(), TransferRequest{
+		TransferID:     "trf_existing",
+		FromUserID:     7,
+		ToUserID:       8,
+		Asset:          "USDC",
+		Amount:         "10",
+		IdempotencyKey: "transfer:7:existing",
+		TraceID:        "trace_transfer_existing",
+	})
+	if err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	if len(ledger.reqs) != 0 {
+		t.Fatalf("expected no new ledger posting on duplicate transfer request")
 	}
 }
 

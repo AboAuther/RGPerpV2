@@ -3,17 +3,22 @@ package db
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	ledgerdomain "github.com/xiaobao/rgperp/backend/internal/domain/ledger"
 	"github.com/xiaobao/rgperp/backend/internal/pkg/decimalx"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type LedgerRepository struct {
 	db *gorm.DB
+}
+
+type snapshotDeltaKey struct {
+	AccountID uint64
+	Asset     string
 }
 
 func NewLedgerRepository(db *gorm.DB) *LedgerRepository {
@@ -44,7 +49,7 @@ func (r *LedgerRepository) CreatePosting(ctx context.Context, posting ledgerdoma
 	}
 
 	entries := make([]LedgerEntryModel, 0, len(posting.Entries))
-	deltas := map[string]decimalx.Decimal{}
+	deltas := map[snapshotDeltaKey]decimalx.Decimal{}
 	for _, entry := range posting.Entries {
 		entries = append(entries, LedgerEntryModel{
 			LedgerTxID: posting.LedgerTx.ID,
@@ -56,7 +61,7 @@ func (r *LedgerRepository) CreatePosting(ctx context.Context, posting ledgerdoma
 			CreatedAt:  now,
 		})
 
-		key := fmt.Sprintf("%d:%s", entry.AccountID, entry.Asset)
+		key := snapshotDeltaKey{AccountID: entry.AccountID, Asset: entry.Asset}
 		amount := decimalx.MustFromString(entry.Amount)
 		if current, ok := deltas[key]; ok {
 			deltas[key] = current.Add(amount)
@@ -70,38 +75,24 @@ func (r *LedgerRepository) CreatePosting(ctx context.Context, posting ledgerdoma
 	}
 
 	for key, delta := range deltas {
-		var accountID uint64
-		var asset string
-		if _, err := fmt.Sscanf(key, "%d:%s", &accountID, &asset); err != nil {
-			return err
+		snapshot := AccountBalanceSnapshotModel{
+			AccountID: key.AccountID,
+			Asset:     key.Asset,
+			Balance:   delta.String(),
+			Version:   1,
+			UpdatedAt: now,
 		}
-
-		var snapshot AccountBalanceSnapshotModel
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("account_id = ? AND asset = ?", accountID, asset).
-			Take(&snapshot).Error
-		if err != nil {
-			if err == gorm.ErrRecordNotFound {
-				snapshot = AccountBalanceSnapshotModel{
-					AccountID: accountID,
-					Asset:     asset,
-					Balance:   delta.String(),
-					Version:   1,
-					UpdatedAt: now,
-				}
-				if err := tx.Create(&snapshot).Error; err != nil {
-					return err
-				}
-				continue
-			}
-			return err
-		}
-
-		current := decimalx.MustFromString(snapshot.Balance)
-		snapshot.Balance = current.Add(delta).String()
-		snapshot.Version++
-		snapshot.UpdatedAt = now
-		if err := tx.Save(&snapshot).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "account_id"},
+				{Name: "asset"},
+			},
+			DoUpdates: clause.Assignments(map[string]any{
+				"balance":    gorm.Expr("balance + ?", delta.String()),
+				"version":    gorm.Expr("version + 1"),
+				"updated_at": now,
+			}),
+		}).Create(&snapshot).Error; err != nil {
 			return err
 		}
 	}
@@ -125,4 +116,29 @@ func (r *LedgerRepository) CreatePosting(ctx context.Context, posting ledgerdoma
 		Status:        "PENDING",
 		CreatedAt:     now,
 	}).Error
+}
+
+func (r *LedgerRepository) GetTxByIdempotencyKey(ctx context.Context, idempotencyKey string) (ledgerdomain.LedgerTx, error) {
+	var model LedgerTxModel
+	if err := DB(ctx, r.db).
+		Where("idempotency_key = ?", idempotencyKey).
+		Take(&model).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return ledgerdomain.LedgerTx{}, errorsx.ErrNotFound
+		}
+		return ledgerdomain.LedgerTx{}, err
+	}
+	return ledgerdomain.LedgerTx{
+		ID:             model.LedgerTxID,
+		EventID:        model.EventID,
+		BizType:        model.BizType,
+		BizRefID:       model.BizRefID,
+		Asset:          model.Asset,
+		IdempotencyKey: model.IdempotencyKey,
+		OperatorType:   model.OperatorType,
+		OperatorID:     model.OperatorID,
+		TraceID:        model.TraceID,
+		Status:         model.Status,
+		CreatedAt:      model.CreatedAt,
+	}, nil
 }

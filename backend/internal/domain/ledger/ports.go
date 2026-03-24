@@ -14,4 +14,5 @@ type DecimalFactory interface {
 
 type Repository interface {
 	CreatePosting(ctx context.Context, posting PostingRequest) error
+	GetTxByIdempotencyKey(ctx context.Context, idempotencyKey string) (LedgerTx, error)
 }

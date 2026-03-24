@@ -383,6 +383,75 @@ func TestExecuteLiquidationMarksManualRequiredWhenCoverageIsInsufficient(t *test
 	}
 }
 
+func TestExecuteLiquidationUsesFundingAccrualInSettlement(t *testing.T) {
+	repo := &liquidationStubRepo{
+		liquidationErr: errorsx.ErrNotFound,
+		balances: CoverageBalances{
+			UserWalletBalance:    "20",
+			InsuranceFundBalance: "100",
+		},
+		positions: []Position{{
+			PositionID:         "pos_1",
+			UserID:             7,
+			SymbolID:           1,
+			Symbol:             "BTC-PERP",
+			Side:               "LONG",
+			Qty:                "1",
+			AvgEntryPrice:      "100",
+			MarkPrice:          "50",
+			InitialMargin:      "10",
+			MaintenanceMargin:  "5",
+			RealizedPnL:        "0",
+			UnrealizedPnL:      "-50",
+			FundingAccrual:     "3",
+			LiquidationPrice:   "60",
+			BankruptcyPrice:    "0",
+			ContractMultiplier: "1",
+			Status:             "OPEN",
+			CreatedAt:          time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+		}},
+	}
+	ledger := &liquidationStubLedger{}
+	outbox := &liquidationStubOutbox{}
+	risk := &liquidationStubRisk{snapshots: []riskdomain.Snapshot{
+		{Equity: "-37", AvailableBalance: "-42", MaintenanceMargin: "5", MarginRatio: "-7.4", RiskLevel: riskdomain.RiskLevelLiquidating},
+		{Equity: "-37", AvailableBalance: "-42", MaintenanceMargin: "5", MarginRatio: "-7.4", RiskLevel: riskdomain.RiskLevelLiquidating},
+		{Equity: "0", AvailableBalance: "0", MaintenanceMargin: "0", MarginRatio: "999", RiskLevel: riskdomain.RiskLevelSafe},
+	}}
+	service, err := NewService(ServiceConfig{
+		Asset:            "USDC",
+		PenaltyRate:      "0.01",
+		ExtraSlippageBps: 0,
+	}, liquidationFakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)}, &liquidationFakeIDGen{
+		values: []string{"ldg_1", "evt_1", "ord_1", "fill_1", "evt_2"},
+	}, liquidationStubTxManager{}, repo, liquidationStubAccounts{}, ledger, risk, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	liquidation, err := service.Execute(context.Background(), ExecuteInput{
+		LiquidationID:         "liq_1",
+		UserID:                7,
+		TriggerRiskSnapshotID: 99,
+		TraceID:               "trace_1",
+	})
+	if err != nil {
+		t.Fatalf("execute liquidation: %v", err)
+	}
+	if liquidation.InsuranceFundUsed != "17.5" || liquidation.BankruptAmount != "0" {
+		t.Fatalf("unexpected liquidation totals: %+v", liquidation)
+	}
+	if len(ledger.postings) != 1 {
+		t.Fatalf("expected one ledger posting, got %d", len(ledger.postings))
+	}
+	if ledger.postings[0].Entries[0].Amount != "-13" {
+		t.Fatalf("expected liquidation to release position margin including funding accrual, got %+v", ledger.postings[0].Entries)
+	}
+	if repo.positions[0].FundingAccrual != "0" || repo.positions[0].Status != "CLOSED" {
+		t.Fatalf("expected liquidation to zero funding accrual on closed position, got %+v", repo.positions[0])
+	}
+}
+
 func TestExecuteLiquidationIsIdempotentForExecutedLiquidation(t *testing.T) {
 	repo := &liquidationStubRepo{
 		liquidation: Liquidation{

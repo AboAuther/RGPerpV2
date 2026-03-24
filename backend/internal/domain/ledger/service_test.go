@@ -41,6 +41,10 @@ func (s *stubRepo) CreatePosting(_ context.Context, req PostingRequest) error {
 	return s.err
 }
 
+func (s *stubRepo) GetTxByIdempotencyKey(_ context.Context, _ string) (LedgerTx, error) {
+	return LedgerTx{}, errors.New("not implemented")
+}
+
 func TestPost_BalancedPosting(t *testing.T) {
 	repo := &stubRepo{}
 	svc := NewService(repo, fakeDecimalFactory{})

@@ -60,6 +60,10 @@ type Service struct {
 	runtime         RuntimeConfigProvider
 }
 
+type ledgerLookup interface {
+	GetTxByIdempotencyKey(ctx context.Context, idempotencyKey string) (ledgerdomain.LedgerTx, error)
+}
+
 func NewService(
 	deposits DepositRepository,
 	withdraws WithdrawRepository,
@@ -293,6 +297,11 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 	if err := s.ensureWritable(); err != nil {
 		return WithdrawRequest{}, err
 	}
+	if existing, ok, err := s.existingWithdrawByIdempotencyKey(ctx, input.IdempotencyKey); err != nil {
+		return WithdrawRequest{}, err
+	} else if ok {
+		return existing, nil
+	}
 	if _, err := authx.NormalizeEVMAddress(input.ToAddress); err != nil {
 		return WithdrawRequest{}, err
 	}
@@ -378,6 +387,12 @@ func (s *Service) RequestWithdraw(ctx context.Context, input RequestWithdrawInpu
 				{AccountID: userWalletID, Asset: input.Asset, Amount: negate(input.Amount), EntryType: "WITHDRAW_HOLD_OUT"},
 			},
 		}); err != nil {
+			if existing, ok, lookupErr := s.existingWithdrawByIdempotencyKey(txCtx, input.IdempotencyKey); lookupErr != nil {
+				return lookupErr
+			} else if ok {
+				withdraw = existing
+				return nil
+			}
 			return err
 		}
 		return s.withdraws.Create(txCtx, withdraw)
@@ -757,6 +772,11 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 	if err := ensurePositiveAmount(req.Amount); err != nil {
 		return err
 	}
+	if ok, err := s.transferAlreadyPosted(ctx, req.IdempotencyKey); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
 	return s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
 		fromWalletID, err := s.accountResolver.UserWalletAccountID(txCtx, req.FromUserID, req.Asset)
 		if err != nil {
@@ -769,7 +789,7 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 		if err != nil {
 			return err
 		}
-		return s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
+		if err := s.ledger.Post(txCtx, ledgerdomain.PostingRequest{
 			LedgerTx: ledgerdomain.LedgerTx{
 				ID:             s.idgen.NewID("ldg"),
 				EventID:        s.idgen.NewID("evt"),
@@ -787,7 +807,15 @@ func (s *Service) Transfer(ctx context.Context, req TransferRequest) error {
 				{AccountID: toWalletID, UserID: &req.ToUserID, Asset: req.Asset, Amount: req.Amount, EntryType: "TRANSFER_IN"},
 				{AccountID: fromWalletID, UserID: &req.FromUserID, Asset: req.Asset, Amount: negate(req.Amount), EntryType: "TRANSFER_OUT"},
 			},
-		})
+		}); err != nil {
+			if ok, lookupErr := s.transferAlreadyPosted(txCtx, req.IdempotencyKey); lookupErr != nil {
+				return lookupErr
+			} else if ok {
+				return nil
+			}
+			return err
+		}
+		return nil
 	})
 }
 
@@ -873,4 +901,46 @@ func ensureNonNegativeAmount(raw string) error {
 		return fmt.Errorf("%w: amount must be non-negative", errorsx.ErrInvalidArgument)
 	}
 	return nil
+}
+
+func (s *Service) lookupLedgerTxByIdempotencyKey(ctx context.Context, idempotencyKey string) (ledgerdomain.LedgerTx, bool, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return ledgerdomain.LedgerTx{}, false, nil
+	}
+	lookup, ok := s.ledger.(ledgerLookup)
+	if !ok {
+		return ledgerdomain.LedgerTx{}, false, nil
+	}
+	tx, err := lookup.GetTxByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil {
+		if err == errorsx.ErrNotFound {
+			return ledgerdomain.LedgerTx{}, false, nil
+		}
+		return ledgerdomain.LedgerTx{}, false, err
+	}
+	return tx, true, nil
+}
+
+func (s *Service) existingWithdrawByIdempotencyKey(ctx context.Context, idempotencyKey string) (WithdrawRequest, bool, error) {
+	tx, ok, err := s.lookupLedgerTxByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil || !ok {
+		return WithdrawRequest{}, ok, err
+	}
+	if tx.BizType != "WITHDRAW_HOLD" || strings.TrimSpace(tx.BizRefID) == "" {
+		return WithdrawRequest{}, false, nil
+	}
+	withdraw, err := s.withdraws.GetByID(ctx, tx.BizRefID)
+	if err != nil {
+		return WithdrawRequest{}, false, err
+	}
+	return withdraw, true, nil
+}
+
+func (s *Service) transferAlreadyPosted(ctx context.Context, idempotencyKey string) (bool, error) {
+	tx, ok, err := s.lookupLedgerTxByIdempotencyKey(ctx, idempotencyKey)
+	if err != nil || !ok {
+		return ok, err
+	}
+	return tx.BizType == "TRANSFER", nil
 }

@@ -1383,6 +1383,89 @@ func TestCreateOrder_CloseLongRealizesProfit(t *testing.T) {
 	}
 }
 
+func TestCreateOrder_CloseReleasesFundingAccrualFromPositionMargin(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.position = Position{
+		PositionID:        "pos_1",
+		UserID:            7,
+		SymbolID:          1,
+		Side:              PositionSideLong,
+		Qty:               "1",
+		AvgEntryPrice:     "100",
+		MarkPrice:         "120",
+		Notional:          "120",
+		InitialMargin:     "10",
+		MaintenanceMargin: "5",
+		RealizedPnL:       "0",
+		UnrealizedPnL:     "20",
+		FundingAccrual:    "3",
+		LiquidationPrice:  "0",
+		BankruptcyPrice:   "0",
+		Status:            PositionStatusOpen,
+		CreatedAt:         time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC),
+	}
+	ledger := &stubLedger{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 1, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1", "ldg_fill", "evt_fill", "fill_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "120",
+			MarkPrice:             "120",
+			BestBid:               "119",
+			BestAsk:               "121",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_close_funding",
+		Symbol:         "BTC-PERP",
+		Side:           "SELL",
+		PositionEffect: "CLOSE",
+		Type:           "MARKET",
+		Qty:            "1",
+		IdempotencyKey: "idem_close_funding",
+		TraceID:        "trace_close_funding",
+	})
+	if err != nil {
+		t.Fatalf("close order: %v", err)
+	}
+	if order.Status != OrderStatusFilled || order.FilledQty != "1" {
+		t.Fatalf("unexpected close order: %+v", order)
+	}
+	if len(ledger.reqs) != 1 {
+		t.Fatalf("expected a single close settlement posting, got %d", len(ledger.reqs))
+	}
+	entries := ledger.reqs[0].Entries
+	if entries[0].Amount != "-13" {
+		t.Fatalf("expected full position margin including funding accrual to be released, got %+v", entries)
+	}
+	if entries[1].Amount != "31.9286" {
+		t.Fatalf("expected wallet settlement to include funding accrual, got %+v", entries)
+	}
+	if repo.position.Status != PositionStatusClosed || repo.position.InitialMargin != "0" || repo.position.FundingAccrual != "0" {
+		t.Fatalf("expected position to be fully closed and released, got %+v", repo.position)
+	}
+}
+
 func TestCreateOrder_ReduceOnlyWithoutPositionFailsClosed(t *testing.T) {
 	repo := newStubOrderRepo()
 	ledger := &stubLedger{}

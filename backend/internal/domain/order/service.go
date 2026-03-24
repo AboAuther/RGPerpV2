@@ -529,7 +529,7 @@ func (s *Service) createCloseOrder(
 	multiplier := decimalx.MustFromString(market.ContractMultiplier)
 	closeNotional := closeQty.Mul(executionPrice).Mul(multiplier)
 	closeFee := closeNotional.Mul(feeRate)
-	releasedMargin := closeMarginRelease(position, market, closeQty)
+	releasedMargin := closeMarginRelease(position, closeQty)
 	realizedPnL := realizedPnLDelta(targetPositionSide, closeQty, executionPrice, entryPrice, multiplier)
 	userWalletDelta := releasedMargin.Add(realizedPnL).Sub(closeFee)
 
@@ -1103,7 +1103,7 @@ func (s *Service) executeTriggeredCloseOrder(txCtx context.Context, order Order,
 	multiplier := decimalx.MustFromString(market.ContractMultiplier)
 	closeNotional := closeQty.Mul(executionPrice).Mul(multiplier)
 	closeFee := closeNotional.Mul(decimalx.MustFromString(runtimeCfg.TakerFeeRate))
-	releasedMargin := closeMarginRelease(position, market, closeQty)
+	releasedMargin := closeMarginRelease(position, closeQty)
 	realizedPnL := realizedPnLDelta(targetPositionSide, closeQty, executionPrice, entryPrice, multiplier)
 
 	order.Status = OrderStatusFilled
@@ -1409,6 +1409,7 @@ func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.D
 	currentQty := decimalx.MustFromString(current.Qty)
 	remainingQty := currentQty.Sub(closeQty)
 	currentInitialMargin := decimalx.MustFromString(current.InitialMargin)
+	currentFundingAccrual := decimalx.MustFromString(defaultDecimalString(current.FundingAccrual))
 	currentRealized := decimalx.MustFromString(current.RealizedPnL)
 	entryPrice := decimalx.MustFromString(current.AvgEntryPrice)
 	mark := decimalx.MustFromString(market.MarkPrice)
@@ -1416,8 +1417,10 @@ func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.D
 	if remainingQty.LessThan(decimalx.MustFromString("0")) {
 		remainingQty = decimalx.MustFromString("0")
 	}
+	releasedInitialMargin, releasedFundingAccrual := closeMarginReleaseComponents(current, closeQty)
 	current.Qty = remainingQty.String()
-	current.InitialMargin = currentInitialMargin.Sub(releasedMargin).String()
+	current.InitialMargin = currentInitialMargin.Sub(releasedInitialMargin).String()
+	current.FundingAccrual = currentFundingAccrual.Sub(releasedFundingAccrual).String()
 	current.RealizedPnL = currentRealized.Add(realizedPnL).String()
 	current.MarkPrice = mark.String()
 	if remainingQty.IsZero() {
@@ -1425,6 +1428,7 @@ func applyCloseFill(current Position, market TradableSymbol, closeQty decimalx.D
 		current.Leverage = "0"
 		current.MaintenanceMargin = "0"
 		current.UnrealizedPnL = "0"
+		current.FundingAccrual = "0"
 		current.LiquidationPrice = "0"
 		current.BankruptcyPrice = "0"
 		current.Status = PositionStatusClosed
@@ -1489,16 +1493,24 @@ func (s *Service) handlePostTradeRisk(ctx context.Context, userID uint64, traceI
 	return s.risk.RecalculateAfterTrade(ctx, userID, traceID)
 }
 
-func closeMarginRelease(current Position, market TradableSymbol, closeQty decimalx.Decimal) decimalx.Decimal {
+func closeMarginRelease(current Position, closeQty decimalx.Decimal) decimalx.Decimal {
+	releasedInitialMargin, releasedFundingAccrual := closeMarginReleaseComponents(current, closeQty)
+	return releasedInitialMargin.Add(releasedFundingAccrual)
+}
+
+func closeMarginReleaseComponents(current Position, closeQty decimalx.Decimal) (decimalx.Decimal, decimalx.Decimal) {
 	currentQty := decimalx.MustFromString(defaultDecimalString(current.Qty))
 	currentInitialMargin := decimalx.MustFromString(defaultDecimalString(current.InitialMargin))
+	currentFundingAccrual := decimalx.MustFromString(defaultDecimalString(current.FundingAccrual))
 	if !currentQty.GreaterThan(decimalx.MustFromString("0")) {
-		return decimalx.MustFromString("0")
+		zero := decimalx.MustFromString("0")
+		return zero, zero
 	}
 	if closeQty.GreaterThanOrEqual(currentQty) {
-		return currentInitialMargin
+		return currentInitialMargin, currentFundingAccrual
 	}
-	return currentInitialMargin.Mul(closeQty).Div(currentQty)
+	ratio := closeQty.Div(currentQty)
+	return currentInitialMargin.Mul(ratio), currentFundingAccrual.Mul(ratio)
 }
 
 func requiredInitialMargin(market TradableSymbol, notional decimalx.Decimal) decimalx.Decimal {

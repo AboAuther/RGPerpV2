@@ -45,3 +45,7 @@ func (s *Service) Post(ctx context.Context, req PostingRequest) error {
 	}
 	return s.repo.CreatePosting(ctx, req)
 }
+
+func (s *Service) GetTxByIdempotencyKey(ctx context.Context, idempotencyKey string) (LedgerTx, error) {
+	return s.repo.GetTxByIdempotencyKey(ctx, idempotencyKey)
+}

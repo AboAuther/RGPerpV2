@@ -254,6 +254,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			qty := decimalx.MustFromString(position.Qty)
 			entryPrice := decimalx.MustFromString(position.AvgEntryPrice)
 			initialMargin := decimalx.MustFromString(position.InitialMargin)
+			fundingAccrual := decimalx.MustFromString(defaultDecimalString(position.FundingAccrual))
 			multiplier := decimalx.MustFromString(position.ContractMultiplier)
 			realizedPnL := realizedPnL(position.Side, qty, executionPrice, entryPrice, multiplier)
 			liquidatedNotional := qty.Mul(executionPrice).Mul(multiplier)
@@ -265,7 +266,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 				realizedPnL:    realizedPnL,
 				penalty:        penalty,
 			})
-			totalInitial = totalInitial.Add(initialMargin)
+			totalInitial = totalInitial.Add(initialMargin.Add(fundingAccrual))
 			totalPenalty = totalPenalty.Add(penalty)
 			totalRealizedPnL = totalRealizedPnL.Add(realizedPnL)
 		}
@@ -443,6 +444,7 @@ func (s *Service) Execute(ctx context.Context, input ExecuteInput) (Liquidation,
 			position.MaintenanceMargin = "0"
 			position.RealizedPnL = decimalx.MustFromString(position.RealizedPnL).Add(execution.realizedPnL).String()
 			position.UnrealizedPnL = "0"
+			position.FundingAccrual = "0"
 			position.LiquidationPrice = "0"
 			position.BankruptcyPrice = "0"
 			position.Status = "CLOSED"
@@ -734,6 +736,13 @@ func oppositeSide(positionSide string) string {
 		return "SELL"
 	}
 	return "BUY"
+}
+
+func defaultDecimalString(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "0"
+	}
+	return value
 }
 
 func uint64Ptr(v uint64) *uint64 { return &v }
