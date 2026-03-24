@@ -236,7 +236,7 @@
 ### 里程碑 5 当前执行清单
 
 - [x] 补齐 Explorer 服务端过滤查询：`q / event_type / asset / limit`
-- [ ] 补齐更细粒度的服务端过滤：`ledger_tx_id / chain_tx_hash / order_id / fill_id / position_id / address / funding_batch_id`
+- [x] 补齐更细粒度的服务端过滤：`ledger_tx_id / chain_tx_hash / order_id / fill_id / position_id / address / funding_batch_id / block_height`
 - [ ] 补齐对账任务、对冲连接器与完整审计治理
 
 ### 退出标准

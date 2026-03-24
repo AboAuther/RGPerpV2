@@ -1,4 +1,4 @@
-import { Button, Card, Descriptions, Input, Space, Spin, Table, Tag, Typography } from 'antd';
+import { Button, Card, Descriptions, Input, Select, Space, Spin, Table, Tag, Typography } from 'antd';
 import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
@@ -7,6 +7,27 @@ import { formatAddress, formatDateTime, formatDecimalAdaptive } from '../../shar
 import { hasAdminAccess, useAuth } from '../../shared/auth';
 
 const { Paragraph, Text } = Typography;
+
+type ExplorerExactFilterKey =
+  | 'ledgerTxId'
+  | 'chainTxHash'
+  | 'orderId'
+  | 'fillId'
+  | 'positionId'
+  | 'address'
+  | 'fundingBatchId'
+  | 'blockHeight';
+
+const exactFilterOptions: Array<{ label: string; value: ExplorerExactFilterKey }> = [
+  { label: '账本交易', value: 'ledgerTxId' },
+  { label: '链上交易', value: 'chainTxHash' },
+  { label: '订单 ID', value: 'orderId' },
+  { label: '成交 ID', value: 'fillId' },
+  { label: '仓位 ID', value: 'positionId' },
+  { label: '地址', value: 'address' },
+  { label: '资金费批次', value: 'fundingBatchId' },
+  { label: '区块高度', value: 'blockHeight' },
+];
 
 const primarySummaryKeys = [
   'symbol',
@@ -379,6 +400,10 @@ export function ExplorerPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [query, setQuery] = useState('');
+  const [eventType, setEventType] = useState('');
+  const [asset, setAsset] = useState('');
+  const [exactFilterKey, setExactFilterKey] = useState<ExplorerExactFilterKey>('ledgerTxId');
+  const [exactFilterValue, setExactFilterValue] = useState('');
 
   async function loadData(background = false, search = query) {
     if (background && events.length > 0) {
@@ -389,7 +414,13 @@ export function ExplorerPage() {
     setError(null);
 
     try {
-      const response = await api.explorer.getEvents({ query: search.trim() || undefined, limit: 100 });
+      const response = await api.explorer.getEvents({
+        query: search.trim() || undefined,
+        eventType: eventType.trim() || undefined,
+        asset: asset.trim() || undefined,
+        [exactFilterKey]: exactFilterValue.trim() || undefined,
+        limit: 100,
+      });
       setEvents(response);
     } catch (loadError) {
       setError(loadError);
@@ -411,7 +442,7 @@ export function ExplorerPage() {
       void loadData(false, query);
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [session, query]);
+  }, [session, query, eventType, asset, exactFilterKey, exactFilterValue]);
 
   return (
     <div className="rg-app-page rg-app-page--explorer">
@@ -434,16 +465,44 @@ export function ExplorerPage() {
         />
 
         <Card className="surface-card">
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="搜索 event_id / event_type / symbol / tx_hash / ledger_tx_id / order_id / fill_id / position_id / address"
             />
+            <Space wrap style={{ width: '100%' }}>
+              <Input
+                value={eventType}
+                onChange={(event) => setEventType(event.target.value)}
+                placeholder="精确事件类型，例如 trade.fill.created"
+                style={{ minWidth: 260 }}
+              />
+              <Input
+                value={asset}
+                onChange={(event) => setAsset(event.target.value)}
+                placeholder="资产，例如 USDC"
+                style={{ width: 180 }}
+              />
+            </Space>
+            <Space wrap style={{ width: '100%' }}>
+              <Select
+                value={exactFilterKey}
+                options={exactFilterOptions}
+                onChange={(value) => setExactFilterKey(value)}
+                style={{ width: 180 }}
+              />
+              <Input
+                value={exactFilterValue}
+                onChange={(event) => setExactFilterValue(event.target.value)}
+                placeholder="精确引用值"
+                style={{ minWidth: 320 }}
+              />
+            </Space>
             <Paragraph type="secondary" style={{ marginBottom: 0 }}>
               {isAdminExplorer
-                ? '管理员可搜索事件类型、交易对、链上哈希、账本交易、订单、成交、仓位、地址以及风控运营字段。'
-                : '支持按事件类型、交易对、链上哈希、账本交易、订单、成交、仓位、地址和 payload 字段搜索。'}
+                ? '管理员可组合全文搜索、事件类型、资产和精确引用过滤，检索资金、交易、风控与运营事件。'
+                : '支持按全文搜索、事件类型、资产和精确引用过滤，查询链上链下事件。'}
             </Paragraph>
           </Space>
         </Card>

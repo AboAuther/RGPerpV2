@@ -400,8 +400,16 @@ type ExplorerEvent struct {
 }
 
 type ExplorerEventFilter struct {
-	Query     string
-	EventType string
-	Asset     string
-	Limit     int
+	Query          string
+	EventType      string
+	Asset          string
+	LedgerTxID     string
+	ChainTxHash    string
+	OrderID        string
+	FillID         string
+	PositionID     string
+	Address        string
+	FundingBatchID string
+	BlockHeight    string
+	Limit          int
 }

@@ -998,6 +998,46 @@ paths:
           required: false
           schema:
             type: string
+        - name: ledger_tx_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: chain_tx_hash
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: order_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: fill_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: position_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: address
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: funding_batch_id
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: block_height
+          in: query
+          required: false
+          schema:
+            type: string
         - name: limit
           in: query
           required: false

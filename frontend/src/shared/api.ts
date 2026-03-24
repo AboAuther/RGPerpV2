@@ -352,7 +352,20 @@ export const api = {
   },
 
   explorer: {
-    getEvents(filters?: { query?: string; eventType?: string; asset?: string; limit?: number }): Promise<ExplorerEvent[]> {
+    getEvents(filters?: {
+      query?: string;
+      eventType?: string;
+      asset?: string;
+      ledgerTxId?: string;
+      chainTxHash?: string;
+      orderId?: string;
+      fillId?: string;
+      positionId?: string;
+      address?: string;
+      fundingBatchId?: string;
+      blockHeight?: string;
+      limit?: number;
+    }): Promise<ExplorerEvent[]> {
       const search = new URLSearchParams();
       if (filters?.query) {
         search.set('q', filters.query);
@@ -362,6 +375,30 @@ export const api = {
       }
       if (filters?.asset) {
         search.set('asset', filters.asset);
+      }
+      if (filters?.ledgerTxId) {
+        search.set('ledger_tx_id', filters.ledgerTxId);
+      }
+      if (filters?.chainTxHash) {
+        search.set('chain_tx_hash', filters.chainTxHash);
+      }
+      if (filters?.orderId) {
+        search.set('order_id', filters.orderId);
+      }
+      if (filters?.fillId) {
+        search.set('fill_id', filters.fillId);
+      }
+      if (filters?.positionId) {
+        search.set('position_id', filters.positionId);
+      }
+      if (filters?.address) {
+        search.set('address', filters.address);
+      }
+      if (filters?.fundingBatchId) {
+        search.set('funding_batch_id', filters.fundingBatchId);
+      }
+      if (filters?.blockHeight) {
+        search.set('block_height', filters.blockHeight);
       }
       if (filters?.limit) {
         search.set('limit', String(filters.limit));

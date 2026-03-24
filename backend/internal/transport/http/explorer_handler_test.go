@@ -94,7 +94,7 @@ func TestExplorerHandler_ForwardsServerSideFilter(t *testing.T) {
 		nil,
 	)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/events?q=btc&event_type=trade.fill.created&asset=USDC&limit=25", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/explorer/events?q=btc&event_type=trade.fill.created&asset=USDC&order_id=ord_1&chain_tx_hash=0xabc&funding_batch_id=fb_1&block_height=123&limit=25", nil)
 	req.Header.Set("Authorization", "Bearer token")
 	resp := httptest.NewRecorder()
 	engine.ServeHTTP(resp, req)
@@ -102,7 +102,7 @@ func TestExplorerHandler_ForwardsServerSideFilter(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.Code)
 	}
-	if reader.filter.Query != "btc" || reader.filter.EventType != "trade.fill.created" || reader.filter.Asset != "USDC" || reader.filter.Limit != 25 {
+	if reader.filter.Query != "btc" || reader.filter.EventType != "trade.fill.created" || reader.filter.Asset != "USDC" || reader.filter.OrderID != "ord_1" || reader.filter.ChainTxHash != "0xabc" || reader.filter.FundingBatchID != "fb_1" || reader.filter.BlockHeight != "123" || reader.filter.Limit != 25 {
 		t.Fatalf("unexpected filter: %+v", reader.filter)
 	}
 }

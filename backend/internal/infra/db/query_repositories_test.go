@@ -283,6 +283,56 @@ func TestExplorerQueryRepository_ListEventsAppliesServerSideQuery(t *testing.T) 
 	}
 }
 
+func TestExplorerQueryRepository_ListEventsAppliesExactReferenceFilters(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewExplorerQueryRepository(db)
+	now := time.Now().UTC()
+
+	if err := db.Create(&[]LedgerTxModel{
+		{LedgerTxID: "ldg_fill_user", EventID: "evt_fill_user", BizType: "TRADE", BizRefID: "ord_user", Asset: "USDC", IdempotencyKey: "idem_fill_user", OperatorType: "system", OperatorID: "order-executor", TraceID: "trace_fill_user", Status: "COMMITTED", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed ledger tx: %v", err)
+	}
+	if err := db.Create(&[]OrderModel{
+		{OrderID: "ord_user", ClientOrderID: "cli_user", UserID: 7, SymbolID: 1, Side: "BUY", PositionEffect: "OPEN", Type: "MARKET", TimeInForce: "IOC", Qty: "1", FilledQty: "1", AvgFillPrice: "100", ReduceOnly: false, MaxSlippageBps: 100, Status: "FILLED", FrozenMargin: "10", CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed order: %v", err)
+	}
+	if err := db.Create(&[]PositionModel{
+		{PositionID: "pos_user", UserID: 7, SymbolID: 1, Side: "LONG", Qty: "1", AvgEntryPrice: "100", MarkPrice: "101", Notional: "101", InitialMargin: "10", MaintenanceMargin: "5", RealizedPnL: "0", UnrealizedPnL: "1", FundingAccrual: "0", LiquidationPrice: "0", BankruptcyPrice: "0", Status: "OPEN", CreatedAt: now, UpdatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed position: %v", err)
+	}
+	if err := db.Create(&[]FillModel{
+		{FillID: "fill_user", OrderID: "ord_user", UserID: 7, SymbolID: 1, Side: "BUY", Qty: "1", Price: "100", FeeAmount: "0.1", LedgerTxID: "ldg_fill_user", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed fill: %v", err)
+	}
+	if err := db.Create(&[]OutboxEventModel{
+		{EventID: "evt_fill_user", AggregateType: "fill", AggregateID: "fill_user", EventType: "trade.fill.created", PayloadJSON: "{\"fill_id\":\"fill_user\",\"order_id\":\"ord_user\",\"position_id\":\"pos_user\",\"ledger_tx_id\":\"ldg_fill_user\",\"tx_hash\":\"0xchain_fill\",\"address\":\"0xuser\",\"funding_batch_id\":\"fb_1\",\"block_height\":123}", Status: "PENDING", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed outbox: %v", err)
+	}
+
+	items, err := repo.ListEvents(context.Background(), 7, false, readmodel.ExplorerEventFilter{
+		OrderID:        "ord_user",
+		FillID:         "fill_user",
+		PositionID:     "pos_user",
+		LedgerTxID:     "ldg_fill_user",
+		ChainTxHash:    "0xchain_fill",
+		Address:        "0xuser",
+		FundingBatchID: "fb_1",
+		BlockHeight:    "123",
+		Limit:          50,
+	})
+	if err != nil {
+		t.Fatalf("list exact filtered explorer events: %v", err)
+	}
+	if len(items) != 1 || items[0].EventID != "evt_fill_user" {
+		t.Fatalf("unexpected exact filtered events: %+v", items)
+	}
+}
+
 func TestAccountQueryRepository_ListTransfersIncludesReceiver(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewAccountQueryRepository(db)

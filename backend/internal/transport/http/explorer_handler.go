@@ -49,10 +49,18 @@ func (h *ExplorerHandler) getEvents(c *gin.Context) {
 		limit = parsed
 	}
 	items, err := h.reader.ListEvents(c.Request.Context(), userIDFromContext(c), isAdmin, readmodel.ExplorerEventFilter{
-		Query:     strings.TrimSpace(c.Query("q")),
-		EventType: strings.TrimSpace(c.Query("event_type")),
-		Asset:     strings.TrimSpace(c.Query("asset")),
-		Limit:     limit,
+		Query:          strings.TrimSpace(c.Query("q")),
+		EventType:      strings.TrimSpace(c.Query("event_type")),
+		Asset:          strings.TrimSpace(c.Query("asset")),
+		LedgerTxID:     strings.TrimSpace(c.Query("ledger_tx_id")),
+		ChainTxHash:    strings.TrimSpace(c.Query("chain_tx_hash")),
+		OrderID:        strings.TrimSpace(c.Query("order_id")),
+		FillID:         strings.TrimSpace(c.Query("fill_id")),
+		PositionID:     strings.TrimSpace(c.Query("position_id")),
+		Address:        strings.TrimSpace(c.Query("address")),
+		FundingBatchID: strings.TrimSpace(c.Query("funding_batch_id")),
+		BlockHeight:    strings.TrimSpace(c.Query("block_height")),
+		Limit:          limit,
 	})
 	if err != nil {
 		writeError(c, err)

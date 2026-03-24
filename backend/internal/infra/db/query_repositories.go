@@ -921,7 +921,11 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 				(outbox_events.aggregate_type = 'position' AND positions.user_id = ?)
 			`, userID, userID, fmt.Sprintf("%d", userID), userID, userID, userID, userID, userID)
 	}
-	if err := query.Order("outbox_events.created_at DESC").Limit(limit).Find(&rows).Error; err != nil {
+	queryLimit := limit
+	if hasExactExplorerFilter(filter) && queryLimit < 500 {
+		queryLimit = 500
+	}
+	if err := query.Order("outbox_events.created_at DESC").Limit(queryLimit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	items := make([]readmodel.ExplorerEvent, 0, len(rows))
@@ -980,7 +984,71 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 			Payload:     payload,
 		})
 	}
-	return items, nil
+	filtered := filterExplorerEvents(items, filter)
+	if len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	return filtered, nil
+}
+
+func filterExplorerEvents(items []readmodel.ExplorerEvent, filter readmodel.ExplorerEventFilter) []readmodel.ExplorerEvent {
+	if filter.LedgerTxID == "" && filter.ChainTxHash == "" && filter.OrderID == "" && filter.FillID == "" && filter.PositionID == "" && filter.Address == "" && filter.FundingBatchID == "" && filter.BlockHeight == "" {
+		return items
+	}
+	filtered := make([]readmodel.ExplorerEvent, 0, len(items))
+	for _, item := range items {
+		if filter.LedgerTxID != "" && !matchOptional(item.LedgerTxID, filter.LedgerTxID) {
+			continue
+		}
+		if filter.ChainTxHash != "" && !matchOptional(item.ChainTxHash, filter.ChainTxHash) {
+			continue
+		}
+		if filter.OrderID != "" && !matchOptional(item.OrderID, filter.OrderID) {
+			continue
+		}
+		if filter.FillID != "" && !matchOptional(item.FillID, filter.FillID) {
+			continue
+		}
+		if filter.PositionID != "" && !matchOptional(item.PositionID, filter.PositionID) {
+			continue
+		}
+		if filter.Address != "" && !matchOptional(item.Address, filter.Address) {
+			continue
+		}
+		if filter.FundingBatchID != "" && !matchPayload(item.Payload, filter.FundingBatchID, "funding_batch_id", "biz_ref_id") {
+			continue
+		}
+		if filter.BlockHeight != "" && !matchPayload(item.Payload, filter.BlockHeight, "block_height", "block_number") {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
+}
+
+func hasExactExplorerFilter(filter readmodel.ExplorerEventFilter) bool {
+	return filter.LedgerTxID != "" || filter.ChainTxHash != "" || filter.OrderID != "" || filter.FillID != "" || filter.PositionID != "" || filter.Address != "" || filter.FundingBatchID != "" || filter.BlockHeight != ""
+}
+
+func matchOptional(value *string, target string) bool {
+	if value == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(*value), strings.TrimSpace(target))
+}
+
+func matchPayload(payload map[string]any, target string, keys ...string) bool {
+	target = strings.TrimSpace(target)
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *ExplorerQueryRepository) lookupExplorerChainRefs(ctx context.Context, bizType string, bizRefID string) (string, string) {
