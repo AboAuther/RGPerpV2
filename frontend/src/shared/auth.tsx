@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { PropsWithChildren } from 'react';
 import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import type { AuthenticatedSession, User } from './domain';
-import { setApiAccessToken } from './api';
+import { api, configureAuthSessionHooks, setApiAccessToken } from './api';
 import { appConfig } from './env';
 
 interface AuthContextValue {
@@ -37,11 +37,11 @@ function readPersistedSession(): AuthenticatedSession | null {
 
   try {
     const parsed = JSON.parse(raw) as AuthenticatedSession;
-    if (!parsed.accessToken || !parsed.user) {
+    if (!parsed.accessToken || !parsed.refreshToken || !parsed.user) {
       window.sessionStorage.removeItem(sessionStorageKey);
       return null;
     }
-    if (isSessionExpired(parsed)) {
+    if (isSessionExpired(parsed) && !parsed.refreshToken) {
       window.sessionStorage.removeItem(sessionStorageKey);
       return null;
     }
@@ -90,6 +90,23 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setApiAccessToken(session?.accessToken);
   }, [session]);
 
+  useEffect(() => {
+    configureAuthSessionHooks({
+      getRefreshToken: () => session?.refreshToken,
+      onSessionRefreshed(nextSession) {
+        setApiAccessToken(nextSession.accessToken);
+        setSession(nextSession);
+        window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(nextSession));
+      },
+      onSessionInvalidated() {
+        setApiAccessToken(undefined);
+        setSession(null);
+        window.sessionStorage.removeItem(sessionStorageKey);
+      },
+    });
+    return () => configureAuthSessionHooks(undefined);
+  }, [session]);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       session,
@@ -100,6 +117,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
         window.sessionStorage.setItem(sessionStorageKey, JSON.stringify(nextSession));
       },
       signOut() {
+        if (session?.accessToken) {
+          void api.auth.logout().catch(() => undefined);
+        }
         setApiAccessToken(undefined);
         setSession(null);
         window.sessionStorage.removeItem(sessionStorageKey);

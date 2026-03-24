@@ -290,8 +290,12 @@ func main() {
 		}
 	}
 
-	verifier := &accessVerifierAdapter{verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret)}
-	authHandler := httptransport.NewAuthHandler(authService, cfg.Admin.Wallets)
+	sessionRepo := db.NewSessionRepository(gormDB)
+	verifier := &accessVerifierAdapter{
+		verifier: authinfra.NewJWTVerifier(cfg.Auth.AccessSecret, cfg.Auth.RefreshSecret),
+		sessions: sessionRepo,
+	}
+	authHandler := httptransport.NewAuthHandler(authService, verifier, cfg.Admin.Wallets)
 	marketReadRepo := db.NewMarketReadRepository(gormDB, latestMarketCache, time.Duration(runtimeCfg.Market.MaxSourceAgeSec)*time.Second, serviceRuntimeProvider, serviceRuntimeProvider)
 	tradingReadRepo := db.NewTradingReadRepository(gormDB)
 	marketHandler := httptransport.NewMarketHandler(marketReadRepo)
@@ -481,6 +485,9 @@ func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []con
 
 type accessVerifierAdapter struct {
 	verifier *authinfra.JWTVerifier
+	sessions interface {
+		GetActiveByAccessJTI(ctx context.Context, accessJTI string) (authdomain.Session, error)
+	}
 }
 
 type httpRuntimeConfigProvider struct {
@@ -505,9 +512,44 @@ func (a *accessVerifierAdapter) VerifyAccessToken(token string) (httptransport.A
 	if claims.UserID == "" {
 		return httptransport.AccessClaims{}, errorsx.ErrUnauthorized
 	}
+	if a.sessions == nil {
+		return httptransport.AccessClaims{}, errorsx.ErrUnauthorized
+	}
+	session, err := a.sessions.GetActiveByAccessJTI(context.Background(), claims.JTI)
+	if err != nil {
+		return httptransport.AccessClaims{}, errorsx.ErrUnauthorized
+	}
+	if session.UserID == 0 || session.UserID != parseUint64OrZero(claims.UserID) {
+		return httptransport.AccessClaims{}, errorsx.ErrUnauthorized
+	}
 	return httptransport.AccessClaims{
 		UserID:    claims.UserID,
 		Address:   claims.Address,
 		SessionID: claims.SessionID,
+		JTI:       claims.JTI,
+	}, nil
+}
+
+func parseUint64OrZero(raw string) uint64 {
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func (a *accessVerifierAdapter) VerifyRefreshToken(token string) (httptransport.AccessClaims, error) {
+	claims, err := a.verifier.VerifyRefreshToken(token)
+	if err != nil {
+		return httptransport.AccessClaims{}, err
+	}
+	if claims.UserID == "" {
+		return httptransport.AccessClaims{}, errorsx.ErrUnauthorized
+	}
+	return httptransport.AccessClaims{
+		UserID:    claims.UserID,
+		Address:   claims.Address,
+		SessionID: claims.SessionID,
+		JTI:       claims.JTI,
 	}, nil
 }

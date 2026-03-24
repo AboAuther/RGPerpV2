@@ -398,3 +398,10 @@ type ExplorerEvent struct {
 	Address     *string        `json:"address,omitempty"`
 	Payload     map[string]any `json:"payload"`
 }
+
+type ExplorerEventFilter struct {
+	Query     string
+	EventType string
+	Asset     string
+	Limit     int
+}

@@ -19,12 +19,14 @@ const (
 
 type AccessVerifier interface {
 	VerifyAccessToken(token string) (AccessClaims, error)
+	VerifyRefreshToken(token string) (AccessClaims, error)
 }
 
 type AccessClaims struct {
 	UserID    string
 	Address   string
 	SessionID string
+	JTI       string
 }
 
 type HTTPRuntimeConfig struct {

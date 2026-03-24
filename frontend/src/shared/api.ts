@@ -32,6 +32,7 @@ import type {
   WithdrawItem,
   WithdrawRequest,
   SystemChainItem,
+  User,
 } from './domain';
 
 export class ApiError extends Error {
@@ -47,6 +48,22 @@ export class ApiError extends Error {
 }
 
 let accessToken: string | undefined;
+let refreshInFlight: Promise<boolean> | null = null;
+
+type SessionRefreshPayload = {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: string;
+  user: User;
+};
+
+type AuthSessionHooks = {
+  getRefreshToken: () => string | undefined;
+  onSessionRefreshed: (session: SessionRefreshPayload) => void;
+  onSessionInvalidated: () => void;
+};
+
+let authSessionHooks: AuthSessionHooks | undefined;
 
 function buildTraceId(): string {
   return `trace_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`;
@@ -75,7 +92,60 @@ function buildRequestHeaders(init?: RequestInit): Headers {
   return headers;
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function tryRefreshSession(): Promise<boolean> {
+  if (refreshInFlight) {
+    return refreshInFlight;
+  }
+  if (!authSessionHooks) {
+    return false;
+  }
+  const refreshToken = authSessionHooks.getRefreshToken();
+  if (!refreshToken) {
+    return false;
+  }
+
+  refreshInFlight = (async () => {
+    try {
+      const response = await fetch(`${appConfig.apiBaseUrl.replace(/\/$/, '')}/api/v1/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'X-Trace-Id': buildTraceId(),
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const parsed = (await response.json()) as ApiEnvelope<{
+        access_token: string;
+        refresh_token: string;
+        expires_at?: string;
+        user: User;
+      }>;
+      if (!response.ok || !parsed?.data?.access_token || !parsed?.data?.refresh_token) {
+        throw new Error(parsed?.message || `Refresh failed with status ${response.status}`);
+      }
+      const nextSession: SessionRefreshPayload = {
+        accessToken: parsed.data.access_token,
+        refreshToken: parsed.data.refresh_token,
+        expiresAt: parsed.data.expires_at,
+        user: parsed.data.user,
+      };
+      setApiAccessToken(nextSession.accessToken);
+      authSessionHooks.onSessionRefreshed(nextSession);
+      return true;
+    } catch {
+      setApiAccessToken(undefined);
+      authSessionHooks.onSessionInvalidated();
+      return false;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+
+  return refreshInFlight;
+}
+
+async function requestJson<T>(path: string, init?: RequestInit, retryAuth = true): Promise<T> {
   const response = await fetch(`${appConfig.apiBaseUrl.replace(/\/$/, '')}${path}`, {
     ...init,
     headers: buildRequestHeaders(init),
@@ -89,6 +159,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
+    if (response.status === 401 && retryAuth && !path.startsWith('/api/v1/auth/')) {
+      const refreshed = await tryRefreshSession();
+      if (refreshed) {
+        return requestJson<T>(path, init, false);
+      }
+    }
     throw new ApiError(parsed?.message || `Request failed with status ${response.status}`, parsed?.trace_id, response.status);
   }
   if (!parsed) {
@@ -97,12 +173,18 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return parsed.data;
 }
 
-async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
+async function requestBlob(path: string, init?: RequestInit, retryAuth = true): Promise<Blob> {
   const response = await fetch(`${appConfig.apiBaseUrl.replace(/\/$/, '')}${path}`, {
     ...init,
     headers: buildRequestHeaders(init),
   });
   if (!response.ok) {
+    if (response.status === 401 && retryAuth && !path.startsWith('/api/v1/auth/')) {
+      const refreshed = await tryRefreshSession();
+      if (refreshed) {
+        return requestBlob(path, init, false);
+      }
+    }
     let parsed: ApiEnvelope<unknown> | null = null;
     try {
       parsed = (await response.json()) as ApiEnvelope<unknown>;
@@ -116,6 +198,10 @@ async function requestBlob(path: string, init?: RequestInit): Promise<Blob> {
 
 export function setApiAccessToken(token?: string) {
   accessToken = token;
+}
+
+export function configureAuthSessionHooks(hooks?: AuthSessionHooks) {
+  authSessionHooks = hooks;
 }
 
 export const api = {
@@ -150,6 +236,19 @@ export const api = {
         }),
         headers: { 'X-Trace-Id': buildTraceId() },
       });
+    },
+    refresh(refreshToken: string): Promise<LoginResponse> {
+      return requestJson<LoginResponse>('/api/v1/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+        headers: { 'X-Trace-Id': buildTraceId() },
+      }, false);
+    },
+    logout(): Promise<{ status: string }> {
+      return requestJson<{ status: string }>('/api/v1/auth/logout', {
+        method: 'POST',
+        headers: { 'X-Trace-Id': buildTraceId() },
+      }, false);
     },
   },
 
@@ -253,8 +352,22 @@ export const api = {
   },
 
   explorer: {
-    getEvents(): Promise<ExplorerEvent[]> {
-      return requestJson<ExplorerEvent[]>('/api/v1/explorer/events');
+    getEvents(filters?: { query?: string; eventType?: string; asset?: string; limit?: number }): Promise<ExplorerEvent[]> {
+      const search = new URLSearchParams();
+      if (filters?.query) {
+        search.set('q', filters.query);
+      }
+      if (filters?.eventType) {
+        search.set('event_type', filters.eventType);
+      }
+      if (filters?.asset) {
+        search.set('asset', filters.asset);
+      }
+      if (filters?.limit) {
+        search.set('limit', String(filters.limit));
+      }
+      const suffix = search.toString();
+      return requestJson<ExplorerEvent[]>(`/api/v1/explorer/events${suffix ? `?${suffix}` : ''}`);
     },
   },
 

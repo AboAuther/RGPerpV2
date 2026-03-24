@@ -3,28 +3,33 @@ package httptransport
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	authdomain "github.com/xiaobao/rgperp/backend/internal/domain/auth"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
 type AuthUseCase interface {
 	IssueChallenge(ctx context.Context, input authdomain.IssueChallengeInput) (authdomain.IssueChallengeOutput, error)
 	Login(ctx context.Context, input authdomain.LoginInput) (authdomain.LoginResult, error)
+	Refresh(ctx context.Context, input authdomain.RefreshInput) (authdomain.LoginResult, error)
+	Logout(ctx context.Context, input authdomain.LogoutInput) error
 }
 
 type AuthHandler struct {
 	authUC       AuthUseCase
+	verifier     AccessVerifier
 	adminWallets map[string]struct{}
 }
 
-func NewAuthHandler(authUC AuthUseCase, adminWallets []string) *AuthHandler {
+func NewAuthHandler(authUC AuthUseCase, verifier AccessVerifier, adminWallets []string) *AuthHandler {
 	allow := make(map[string]struct{}, len(adminWallets))
 	for _, wallet := range adminWallets {
 		allow[strings.ToLower(strings.TrimSpace(wallet))] = struct{}{}
 	}
-	return &AuthHandler{authUC: authUC, adminWallets: allow}
+	return &AuthHandler{authUC: authUC, verifier: verifier, adminWallets: allow}
 }
 
 type issueChallengeRequest struct {
@@ -42,10 +47,16 @@ type loginRequest struct {
 	UserAgent         string `json:"user_agent"`
 }
 
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
 func (h *AuthHandler) Register(r gin.IRoutes) {
 	r.POST("/auth/challenge", h.issueChallenge)
 	r.POST("/auth/nonce", h.issueChallenge)
 	r.POST("/auth/login", h.login)
+	r.POST("/auth/refresh", h.refresh)
+	r.POST("/auth/logout", h.logout)
 }
 
 func (h *AuthHandler) issueChallenge(c *gin.Context) {
@@ -113,6 +124,68 @@ func (h *AuthHandler) login(c *gin.Context) {
 			"is_admin":    h.isAdminWallet(resp.User.EVMAddress),
 		},
 	})
+}
+
+func (h *AuthHandler) refresh(c *gin.Context) {
+	if h.verifier == nil {
+		writeError(c, errorsx.ErrUnauthorized)
+		return
+	}
+
+	var req refreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, err)
+		return
+	}
+	claims, err := h.verifier.VerifyRefreshToken(req.RefreshToken)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	userID, err := strconv.ParseUint(claims.UserID, 10, 64)
+	if err != nil || userID == 0 {
+		writeError(c, errorsx.ErrUnauthorized)
+		return
+	}
+	resp, err := h.authUC.Refresh(c.Request.Context(), authdomain.RefreshInput{
+		UserID:     userID,
+		Address:    claims.Address,
+		SessionID:  claims.SessionID,
+		RefreshJTI: claims.JTI,
+	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeOK(c, gin.H{
+		"access_token":  resp.AccessToken,
+		"refresh_token": resp.RefreshToken,
+		"expires_at":    resp.ExpiresAt,
+		"user": gin.H{
+			"id":          resp.User.ID,
+			"evm_address": resp.User.EVMAddress,
+			"status":      resp.User.Status,
+			"is_admin":    h.isAdminWallet(resp.User.EVMAddress),
+		},
+	})
+}
+
+func (h *AuthHandler) logout(c *gin.Context) {
+	if h.verifier == nil {
+		writeError(c, errorsx.ErrUnauthorized)
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(c.GetHeader("Authorization")), "Bearer"))
+	claims, err := h.verifier.VerifyAccessToken(token)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	if err := h.authUC.Logout(c.Request.Context(), authdomain.LogoutInput{AccessJTI: claims.JTI}); err != nil {
+		writeError(c, err)
+		return
+	}
+	writeOK(c, gin.H{"status": "LOGGED_OUT"})
 }
 
 func (h *AuthHandler) isAdminWallet(address string) bool {

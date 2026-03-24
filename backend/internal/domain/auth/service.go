@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -187,4 +188,75 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (LoginResult, err
 		RefreshToken: refreshToken,
 		ExpiresAt:    session.AccessExpiresAt,
 	}, nil
+}
+
+func (s *Service) Refresh(ctx context.Context, input RefreshInput) (LoginResult, error) {
+	if input.UserID == 0 || input.Address == "" || input.RefreshJTI == "" {
+		return LoginResult{}, fmt.Errorf("%w: incomplete refresh request", errorsx.ErrInvalidArgument)
+	}
+
+	now := s.clock.Now()
+	var (
+		user        User
+		nextSession Session
+	)
+	if err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		current, err := s.sessions.GetActiveByRefreshJTI(txCtx, input.RefreshJTI)
+		if err != nil {
+			return err
+		}
+		if current.UserID != input.UserID {
+			return fmt.Errorf("%w: refresh token binding mismatch", errorsx.ErrUnauthorized)
+		}
+		if !now.Before(current.RefreshExpiresAt) {
+			return fmt.Errorf("%w: refresh token expired", errorsx.ErrExpired)
+		}
+
+		user, err = s.users.GetByID(txCtx, current.UserID)
+		if err != nil {
+			return err
+		}
+		if user.EVMAddress != input.Address {
+			return fmt.Errorf("%w: refresh token address mismatch", errorsx.ErrUnauthorized)
+		}
+
+		nextSession = current
+		nextSession.ID = input.SessionID
+		nextSession.AccessJTI = s.idgen.NewID("access")
+		nextSession.RefreshJTI = s.idgen.NewID("refresh")
+		nextSession.AccessExpiresAt = now.Add(s.cfg.AccessTTL)
+		nextSession.RefreshExpiresAt = now.Add(s.cfg.RefreshTTL)
+		return s.sessions.Rotate(txCtx, input.RefreshJTI, nextSession)
+	}); err != nil {
+		return LoginResult{}, err
+	}
+
+	accessToken, err := s.tokens.IssueAccessToken(ctx, user, nextSession)
+	if err != nil {
+		return LoginResult{}, err
+	}
+	refreshToken, err := s.tokens.IssueRefreshToken(ctx, user, nextSession)
+	if err != nil {
+		return LoginResult{}, err
+	}
+
+	return LoginResult{
+		User:         user,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    nextSession.AccessExpiresAt,
+	}, nil
+}
+
+func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
+	if input.AccessJTI == "" {
+		return fmt.Errorf("%w: missing access jti", errorsx.ErrInvalidArgument)
+	}
+	err := s.txManager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		return s.sessions.RevokeByAccessJTI(txCtx, input.AccessJTI)
+	})
+	if errors.Is(err, errorsx.ErrNotFound) {
+		return nil
+	}
+	return err
 }

@@ -53,11 +53,19 @@ func (s *stubNonceRepo) MarkUsed(_ context.Context, nonceID string) error {
 type stubUserRepo struct {
 	user        User
 	getErr      error
+	getByIDUser User
+	getByIDErr  error
 	createdUser User
 	createErr   error
 }
 
 func (s *stubUserRepo) GetByAddress(_ context.Context, _ string) (User, error) {
+	return s.user, s.getErr
+}
+func (s *stubUserRepo) GetByID(_ context.Context, _ uint64) (User, error) {
+	if s.getByIDUser.ID != 0 || s.getByIDUser.EVMAddress != "" || s.getByIDErr != nil {
+		return s.getByIDUser, s.getByIDErr
+	}
 	return s.user, s.getErr
 }
 func (s *stubUserRepo) Create(_ context.Context, user User) (User, error) {
@@ -71,11 +79,34 @@ func (s *stubUserRepo) Create(_ context.Context, user User) (User, error) {
 
 type stubSessionRepo struct {
 	session Session
+	active  Session
+	rotated Session
+	revoked string
 	err     error
 }
 
 func (s *stubSessionRepo) Create(_ context.Context, session Session) error {
 	s.session = session
+	return s.err
+}
+func (s *stubSessionRepo) GetActiveByAccessJTI(_ context.Context, _ string) (Session, error) {
+	if s.err != nil {
+		return Session{}, s.err
+	}
+	return s.active, nil
+}
+func (s *stubSessionRepo) GetActiveByRefreshJTI(_ context.Context, _ string) (Session, error) {
+	if s.err != nil {
+		return Session{}, s.err
+	}
+	return s.active, nil
+}
+func (s *stubSessionRepo) Rotate(_ context.Context, _ string, session Session) error {
+	s.rotated = session
+	return s.err
+}
+func (s *stubSessionRepo) RevokeByAccessJTI(_ context.Context, accessJTI string) error {
+	s.revoked = accessJTI
 	return s.err
 }
 
@@ -253,6 +284,73 @@ func TestLogin_RejectsExpiredNonce(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, errorsx.ErrExpired) {
 		t.Fatalf("expected expired error, got %v", err)
+	}
+}
+
+func TestRefresh_RotatesSessionTokens(t *testing.T) {
+	now := time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)
+	users := &stubUserRepo{getByIDUser: User{ID: 42, EVMAddress: "0x0000000000000000000000000000000000000001", Status: "ACTIVE"}}
+	sessions := &stubSessionRepo{active: Session{
+		UserID:            42,
+		AccessJTI:         "access_1",
+		RefreshJTI:        "refresh_1",
+		DeviceFingerprint: "device",
+		IP:                "127.0.0.1",
+		UserAgent:         "ua",
+		AccessExpiresAt:   now.Add(10 * time.Minute),
+		RefreshExpiresAt:  now.Add(time.Hour),
+		CreatedAt:         now.Add(-time.Hour),
+	}}
+	svc := NewService(
+		ServiceConfig{Domain: "localhost", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour},
+		fakeClock{now: now},
+		&fakeIDGen{values: []string{"access_2", "refresh_2"}},
+		&stubNonceRepo{},
+		users,
+		sessions,
+		stubVerifier{},
+		stubTokens{access: "access-token-next", refresh: "refresh-token-next"},
+		stubTxManager{},
+		nil,
+	)
+
+	got, err := svc.Refresh(context.Background(), RefreshInput{
+		UserID:     42,
+		Address:    "0x0000000000000000000000000000000000000001",
+		SessionID:  "session_1",
+		RefreshJTI: "refresh_1",
+	})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if got.AccessToken != "access-token-next" || got.RefreshToken != "refresh-token-next" {
+		t.Fatalf("unexpected tokens: %+v", got)
+	}
+	if sessions.rotated.AccessJTI != "access_2" || sessions.rotated.RefreshJTI != "refresh_2" {
+		t.Fatalf("expected rotated session, got %+v", sessions.rotated)
+	}
+}
+
+func TestLogout_RevokesSessionByAccessJTI(t *testing.T) {
+	sessions := &stubSessionRepo{}
+	svc := NewService(
+		ServiceConfig{Domain: "localhost", AccessTTL: time.Hour, RefreshTTL: 24 * time.Hour},
+		fakeClock{now: time.Date(2026, 3, 21, 10, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"noop"}},
+		&stubNonceRepo{},
+		&stubUserRepo{},
+		sessions,
+		stubVerifier{},
+		stubTokens{},
+		stubTxManager{},
+		nil,
+	)
+
+	if err := svc.Logout(context.Background(), LogoutInput{AccessJTI: "access_1"}); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if sessions.revoked != "access_1" {
+		t.Fatalf("expected session revoke, got %q", sessions.revoked)
 	}
 }
 

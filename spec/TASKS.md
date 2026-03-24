@@ -99,6 +99,7 @@
 - [x] 为自动提现执行器、风控决策器补充 UT
 - [x] 完成真实后端烟测：充值、自动提现、复核提现、Explorer 提现查询
 - [x] 完成前端提现真实 E2E：页面提交提现、状态回读、Explorer 查询
+- [x] 补齐 `refresh/logout` session management
 
 ## 里程碑 3：交易核心 P0
 
@@ -226,11 +227,17 @@
 - [ ] 实现 Hyperliquid 测试网连接器
 - [ ] 实现对冲意图、订单、成交与仓位持久化
 - [ ] 实现对冲失败降级策略
-- [ ] 实现 Explorer 查询与事件页
+- [x] 实现 Explorer 查询与事件页
 - [ ] 实现钱包、账本、资金费率、仓位对账任务
 - [ ] 实现审计日志与管理操作
-- [ ] 实现后台风险、提现、配置、对账页面
-- [ ] 实现用户侧 Explorer 页面与链上链下事件检索
+- [x] 实现后台风险、提现、配置、对账页面
+- [x] 实现用户侧 Explorer 页面与链上链下事件检索
+
+### 里程碑 5 当前执行清单
+
+- [x] 补齐 Explorer 服务端过滤查询：`q / event_type / asset / limit`
+- [ ] 补齐更细粒度的服务端过滤：`ledger_tx_id / chain_tx_hash / order_id / fill_id / position_id / address / funding_batch_id`
+- [ ] 补齐对账任务、对冲连接器与完整审计治理
 
 ### 退出标准
 
@@ -253,8 +260,8 @@
 
 ### 交付物
 
-- [ ] 添加 docker compose 编排
-- [ ] 添加  水龙头与种子测试流程
+- [x] 添加 docker compose 编排
+- [x] 添加  水龙头与种子测试流程
 - [ ] 添加 mock / replay 行情源
 - [ ] 添加可观测性与死信处理
 - [ ] 添加 E2E 与故障恢复测试

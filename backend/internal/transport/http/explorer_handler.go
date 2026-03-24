@@ -2,14 +2,16 @@ package httptransport
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	readmodel "github.com/xiaobao/rgperp/backend/internal/domain/readmodel"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
 type ExplorerReader interface {
-	ListEvents(ctx context.Context, userID uint64, isAdmin bool, limit int) ([]readmodel.ExplorerEvent, error)
+	ListEvents(ctx context.Context, userID uint64, isAdmin bool, filter readmodel.ExplorerEventFilter) ([]readmodel.ExplorerEvent, error)
 }
 
 type ExplorerHandler struct {
@@ -34,7 +36,24 @@ func (h *ExplorerHandler) getEvents(c *gin.Context) {
 		return
 	}
 	_, isAdmin := h.adminWallets[strings.ToLower(strings.TrimSpace(addressFromContext(c)))]
-	items, err := h.reader.ListEvents(c.Request.Context(), userIDFromContext(c), isAdmin, 100)
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeError(c, errorsx.ErrInvalidArgument)
+			return
+		}
+		if parsed > 200 {
+			parsed = 200
+		}
+		limit = parsed
+	}
+	items, err := h.reader.ListEvents(c.Request.Context(), userIDFromContext(c), isAdmin, readmodel.ExplorerEventFilter{
+		Query:     strings.TrimSpace(c.Query("q")),
+		EventType: strings.TrimSpace(c.Query("event_type")),
+		Asset:     strings.TrimSpace(c.Query("asset")),
+		Limit:     limit,
+	})
 	if err != nil {
 		writeError(c, err)
 		return

@@ -8,13 +8,14 @@
 - Contracts: Solidity + Foundry
 - Hedge Venue: Hyperliquid Testnet
 
-当前仓库处于里程碑 1，已完成：
+当前仓库的实现基线已经完成里程碑 2，基本打通里程碑 3 和里程碑 4 的核心链路，并进入里程碑 5 的局部增强阶段。
 
-- 需求拆解与实施路线
-- Architecture Document
-- 实施级规格文档
-- API / Event / DDL 初稿
-- 仓库目录骨架
+当前已经落地的主能力包括：
+
+- 链上托管、充值、提现、内部转账、统一账本、Explorer 基础事件链路
+- EVM 登录、access/refresh token、refresh/logout session management
+- 交易对种子、行情聚合、下单、成交、仓位、PnL、风险率、强平、资金费率
+- 管理后台页面、用户侧 Explorer 页面、docker compose 本地联调环境、E2E 基础用例
 
 ## 目录结构
 
@@ -34,8 +35,8 @@
 
 ## 当前阶段
 
-当前阶段目标是完成 Milestone 1：
+当前阶段以里程碑 5 和里程碑 6 的收口为主，重点包括：
 
-- 固化仓库布局
-- 固化配置与环境边界
-- 为 Milestone 2 的合约、账本、钱包、鉴权编码建立稳定基础
+- 会话与权限治理继续补强
+- Explorer、后台和审计能力继续完善
+- 对账、对冲、可观测性、故障恢复与交付文档补齐

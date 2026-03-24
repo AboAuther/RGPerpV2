@@ -92,8 +92,22 @@ components:
           type: string
         refresh_token:
           type: string
+        expires_at:
+          type: string
+          format: date-time
         user:
           $ref: '#/components/schemas/User'
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+      required: [refresh_token]
+    LogoutResponse:
+      type: object
+      properties:
+        status:
+          type: string
     User:
       type: object
       properties:
@@ -103,6 +117,8 @@ components:
           type: string
         status:
           type: string
+        is_admin:
+          type: boolean
       required: [id, evm_address, status]
     AccountSummary:
       type: object
@@ -577,6 +593,45 @@ paths:
                     properties:
                       data:
                         $ref: '#/components/schemas/LoginResponse'
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新访问令牌
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LoginResponse'
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      security: [{ bearerAuth: [] }]
+      summary: 注销当前会话
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LogoutResponse'
   /api/v1/account/summary:
     get:
       tags: [Account]
@@ -927,6 +982,29 @@ paths:
       tags: [Explorer]
       security: [{ bearerAuth: [] }]
       summary: Explorer 查询事件
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: asset
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
       responses:
         '200':
           description: ok

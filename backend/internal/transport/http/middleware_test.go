@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 )
 
 type fakeHTTPRuntimeConfigProvider struct {
@@ -59,5 +60,24 @@ func TestTraceMiddleware_RejectsMissingTraceHeaderWhenRequired(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestAuthMiddleware_RejectsRevokedSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	engine := gin.New()
+	engine.Use(AuthMiddleware(fakeAccessVerifier{err: errorsx.ErrUnauthorized}))
+	engine.GET("/api/v1/account/summary", func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/account/summary", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+	engine.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected %d, got %d", http.StatusUnauthorized, rec.Code)
 	}
 }

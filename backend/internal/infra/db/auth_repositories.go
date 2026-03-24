@@ -80,8 +80,16 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 }
 
 func (r *UserRepository) GetByAddress(ctx context.Context, address string) (authdomain.User, error) {
+	return r.getByScope(DB(ctx, r.db).Where("evm_address = ?", address))
+}
+
+func (r *UserRepository) GetByID(ctx context.Context, userID uint64) (authdomain.User, error) {
+	return r.getByScope(DB(ctx, r.db).Where("id = ?", userID))
+}
+
+func (r *UserRepository) getByScope(tx *gorm.DB) (authdomain.User, error) {
 	var model UserModel
-	err := DB(ctx, r.db).Where("evm_address = ?", address).First(&model).Error
+	err := tx.First(&model).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return authdomain.User{}, errorsx.ErrNotFound
@@ -139,4 +147,89 @@ func (r *SessionRepository) Create(ctx context.Context, session authdomain.Sessi
 		RefreshExpiresAt:  session.RefreshExpiresAt,
 		CreatedAt:         session.CreatedAt,
 	}).Error
+}
+
+func (r *SessionRepository) GetActiveByAccessJTI(ctx context.Context, accessJTI string) (authdomain.Session, error) {
+	var model SessionModel
+	err := DB(ctx, r.db).
+		Where("access_jti = ? AND revoked_at IS NULL", accessJTI).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return authdomain.Session{}, errorsx.ErrNotFound
+		}
+		return authdomain.Session{}, err
+	}
+	return authdomain.Session{
+		UserID:            model.UserID,
+		AccessJTI:         model.AccessJTI,
+		RefreshJTI:        model.RefreshJTI,
+		DeviceFingerprint: model.DeviceFingerprint,
+		IP:                model.IP,
+		UserAgent:         model.UserAgent,
+		AccessExpiresAt:   model.AccessExpiresAt,
+		RefreshExpiresAt:  model.RefreshExpiresAt,
+		CreatedAt:         model.CreatedAt,
+	}, nil
+}
+
+func (r *SessionRepository) GetActiveByRefreshJTI(ctx context.Context, refreshJTI string) (authdomain.Session, error) {
+	var model SessionModel
+	err := DB(ctx, r.db).
+		Where("refresh_jti = ? AND revoked_at IS NULL", refreshJTI).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return authdomain.Session{}, errorsx.ErrNotFound
+		}
+		return authdomain.Session{}, err
+	}
+	return authdomain.Session{
+		UserID:            model.UserID,
+		AccessJTI:         model.AccessJTI,
+		RefreshJTI:        model.RefreshJTI,
+		DeviceFingerprint: model.DeviceFingerprint,
+		IP:                model.IP,
+		UserAgent:         model.UserAgent,
+		AccessExpiresAt:   model.AccessExpiresAt,
+		RefreshExpiresAt:  model.RefreshExpiresAt,
+		CreatedAt:         model.CreatedAt,
+	}, nil
+}
+
+func (r *SessionRepository) Rotate(ctx context.Context, previousRefreshJTI string, session authdomain.Session) error {
+	updates := map[string]any{
+		"access_jti":         session.AccessJTI,
+		"refresh_jti":        session.RefreshJTI,
+		"access_expires_at":  session.AccessExpiresAt,
+		"refresh_expires_at": session.RefreshExpiresAt,
+		"device_fingerprint": session.DeviceFingerprint,
+		"ip":                 session.IP,
+		"user_agent":         session.UserAgent,
+	}
+	result := DB(ctx, r.db).
+		Model(&SessionModel{}).
+		Where("refresh_jti = ? AND revoked_at IS NULL", previousRefreshJTI).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrNotFound
+	}
+	return nil
+}
+
+func (r *SessionRepository) RevokeByAccessJTI(ctx context.Context, accessJTI string) error {
+	result := DB(ctx, r.db).
+		Model(&SessionModel{}).
+		Where("access_jti = ? AND revoked_at IS NULL", accessJTI).
+		Update("revoked_at", gorm.Expr("CURRENT_TIMESTAMP"))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errorsx.ErrNotFound
+	}
+	return nil
 }

@@ -827,7 +827,8 @@ func NewExplorerQueryRepository(db *gorm.DB) *ExplorerQueryRepository {
 	return &ExplorerQueryRepository{db: db}
 }
 
-func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64, isAdmin bool, limit int) ([]readmodel.ExplorerEvent, error) {
+func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64, isAdmin bool, filter readmodel.ExplorerEventFilter) ([]readmodel.ExplorerEvent, error) {
+	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
@@ -854,6 +855,24 @@ func (r *ExplorerQueryRepository) ListEvents(ctx context.Context, userID uint64,
 		Joins("LEFT JOIN orders ON outbox_events.aggregate_type = 'order' AND orders.order_id = outbox_events.aggregate_id").
 		Joins("LEFT JOIN fills ON outbox_events.aggregate_type = 'fill' AND fills.fill_id = outbox_events.aggregate_id").
 		Joins("LEFT JOIN positions ON outbox_events.aggregate_type = 'position' AND positions.position_id = outbox_events.aggregate_id")
+	if filter.EventType != "" {
+		query = query.Where("outbox_events.event_type = ?", filter.EventType)
+	}
+	if filter.Asset != "" {
+		query = query.Where("(ledger_tx.asset = ? OR LOWER(outbox_events.payload_json) LIKE ?)", filter.Asset, "%\"asset\":\""+strings.ToLower(filter.Asset)+"\"%")
+	}
+	if filter.Query != "" {
+		like := "%" + strings.ToLower(filter.Query) + "%"
+		query = query.Where(`
+			LOWER(outbox_events.event_id) LIKE ?
+			OR LOWER(outbox_events.event_type) LIKE ?
+			OR LOWER(outbox_events.aggregate_id) LIKE ?
+			OR LOWER(COALESCE(ledger_tx.ledger_tx_id, '')) LIKE ?
+			OR LOWER(COALESCE(ledger_tx.biz_ref_id, '')) LIKE ?
+			OR LOWER(COALESCE(ledger_tx.asset, '')) LIKE ?
+			OR LOWER(outbox_events.payload_json) LIKE ?
+		`, like, like, like, like, like, like, like)
+	}
 	if !isAdmin {
 		query = query.Where(`
 			(

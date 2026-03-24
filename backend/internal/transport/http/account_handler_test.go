@@ -21,6 +21,10 @@ func (f fakeAccessVerifier) VerifyAccessToken(_ string) (AccessClaims, error) {
 	return f.claims, f.err
 }
 
+func (f fakeAccessVerifier) VerifyRefreshToken(_ string) (AccessClaims, error) {
+	return f.claims, f.err
+}
+
 type fakeAccountReader struct{}
 
 func (fakeAccountReader) GetSummary(_ context.Context, _ uint64) (readmodel.AccountSummary, error) {

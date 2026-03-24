@@ -88,6 +88,22 @@ func TestAuthRepository_CRUD(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+
+	activeByAccess, err := sessionRepo.GetActiveByAccessJTI(ctx, "access_1")
+	if err != nil {
+		t.Fatalf("get active session by access_jti: %v", err)
+	}
+	if activeByAccess.UserID != user.ID {
+		t.Fatalf("unexpected user id via access_jti: %+v", activeByAccess)
+	}
+
+	if err := sessionRepo.RevokeByAccessJTI(ctx, "access_1"); err != nil {
+		t.Fatalf("revoke session by access_jti: %v", err)
+	}
+	_, err = sessionRepo.GetActiveByAccessJTI(ctx, "access_1")
+	if !errors.Is(err, errorsx.ErrNotFound) {
+		t.Fatalf("expected revoked session to be hidden, got %v", err)
+	}
 }
 
 func TestNonceRepository_MarkUsed_IsSingleUse(t *testing.T) {

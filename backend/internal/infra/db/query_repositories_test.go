@@ -138,7 +138,7 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 		t.Fatalf("seed funding ledger entries: %v", err)
 	}
 
-	items, err := repo.ListEvents(context.Background(), 7, false, 100)
+	items, err := repo.ListEvents(context.Background(), 7, false, readmodel.ExplorerEventFilter{Limit: 100})
 	if err != nil {
 		t.Fatalf("list scoped explorer events: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 		t.Fatalf("expected risk snapshot event to remain admin-only, got %#v", got)
 	}
 
-	adminItems, err := repo.ListEvents(context.Background(), 7, true, 100)
+	adminItems, err := repo.ListEvents(context.Background(), 7, true, readmodel.ExplorerEventFilter{Limit: 100})
 	if err != nil {
 		t.Fatalf("list admin explorer events: %v", err)
 	}
@@ -244,6 +244,42 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 	if fundingEvent.Amount == nil || *fundingEvent.Amount != "-4.12" {
 		t.Fatalf("expected funding event amount to be exposed, got %+v", fundingEvent)
+	}
+}
+
+func TestExplorerQueryRepository_ListEventsAppliesServerSideQuery(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewExplorerQueryRepository(db)
+	now := time.Now().UTC()
+
+	if err := db.Create(&[]LedgerTxModel{
+		{LedgerTxID: "ldg_alpha", EventID: "evt_alpha", BizType: "TRANSFER", BizRefID: "trf_alpha", Asset: "USDC", IdempotencyKey: "idem_alpha", OperatorType: "user", OperatorID: "7", TraceID: "trace_alpha", Status: "COMMITTED", CreatedAt: now},
+		{LedgerTxID: "ldg_beta", EventID: "evt_beta", BizType: "TRANSFER", BizRefID: "trf_beta", Asset: "BTC", IdempotencyKey: "idem_beta", OperatorType: "user", OperatorID: "7", TraceID: "trace_beta", Status: "COMMITTED", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed ledger txs: %v", err)
+	}
+	if err := db.Create(&[]OutboxEventModel{
+		{EventID: "evt_alpha", AggregateType: "ledger_tx", AggregateID: "ldg_alpha", EventType: "transfer.created", PayloadJSON: "{\"symbol\":\"BTC-USDC\",\"address\":\"0xalpha\"}", Status: "PENDING", CreatedAt: now},
+		{EventID: "evt_beta", AggregateType: "ledger_tx", AggregateID: "ldg_beta", EventType: "transfer.created", PayloadJSON: "{\"symbol\":\"ETH-USDC\",\"address\":\"0xbeta\"}", Status: "PENDING", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed outbox: %v", err)
+	}
+	if err := db.Create(&[]LedgerEntryModel{
+		{LedgerTxID: "ldg_alpha", AccountID: 1, UserID: uint64Ptr(7), Asset: "USDC", Amount: "-1", EntryType: "TRANSFER_OUT", CreatedAt: now},
+		{LedgerTxID: "ldg_beta", AccountID: 2, UserID: uint64Ptr(7), Asset: "BTC", Amount: "-2", EntryType: "TRANSFER_OUT", CreatedAt: now},
+	}).Error; err != nil {
+		t.Fatalf("seed ledger entries: %v", err)
+	}
+
+	items, err := repo.ListEvents(context.Background(), 7, false, readmodel.ExplorerEventFilter{
+		Query: "btc-usdc",
+		Limit: 20,
+	})
+	if err != nil {
+		t.Fatalf("list filtered explorer events: %v", err)
+	}
+	if len(items) != 1 || items[0].EventID != "evt_alpha" {
+		t.Fatalf("unexpected filtered events: %+v", items)
 	}
 }
 

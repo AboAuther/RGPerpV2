@@ -63,3 +63,14 @@ type LoginResult struct {
 	RefreshToken string
 	ExpiresAt    time.Time
 }
+
+type RefreshInput struct {
+	UserID     uint64
+	Address    string
+	SessionID  string
+	RefreshJTI string
+}
+
+type LogoutInput struct {
+	AccessJTI string
+}

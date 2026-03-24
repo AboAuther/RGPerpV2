@@ -1,5 +1,5 @@
 import { Button, Card, Descriptions, Input, Space, Spin, Table, Tag, Typography } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../../shared/api';
 import { ErrorAlert, LoginRequiredCard, PageIntro, StatusTag } from '../../shared/components';
 import type { ExplorerEvent } from '../../shared/domain';
@@ -380,7 +380,7 @@ export function ExplorerPage() {
   const [error, setError] = useState<unknown>(null);
   const [query, setQuery] = useState('');
 
-  async function loadData(background = false) {
+  async function loadData(background = false, search = query) {
     if (background && events.length > 0) {
       setRefreshing(true);
     } else {
@@ -389,7 +389,7 @@ export function ExplorerPage() {
     setError(null);
 
     try {
-      const response = await api.explorer.getEvents();
+      const response = await api.explorer.getEvents({ query: search.trim() || undefined, limit: 100 });
       setEvents(response);
     } catch (loadError) {
       setError(loadError);
@@ -407,38 +407,11 @@ export function ExplorerPage() {
       setError(null);
       return;
     }
-    void loadData();
-  }, [session]);
-
-  const filtered = useMemo(() => {
-    if (!query.trim()) {
-      return events;
-    }
-
-    const keyword = query.toLowerCase();
-    return events.filter((event) => {
-      const summaryMatches = buildSummaryItems(event).some((item) => item.value.toLowerCase().includes(keyword));
-      if (summaryMatches) {
-        return true;
-      }
-
-      return [
-        event.event_id,
-        event.event_type,
-        event.asset,
-        event.amount,
-        event.ledger_tx_id,
-        event.chain_tx_hash,
-        event.order_id,
-        event.fill_id,
-        event.position_id,
-        event.address,
-        JSON.stringify(event.payload),
-      ]
-        .filter(Boolean)
-        .some((item) => String(item).toLowerCase().includes(keyword));
-    });
-  }, [events, query]);
+    const timer = window.setTimeout(() => {
+      void loadData(false, query);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [session, query]);
 
   return (
     <div className="rg-app-page rg-app-page--explorer">
@@ -454,7 +427,7 @@ export function ExplorerPage() {
           titleEffect="shiny"
           descriptionEffect="proximity"
           extra={
-            <Button onClick={() => void loadData(true)} loading={refreshing}>
+            <Button onClick={() => void loadData(true, query)} loading={refreshing}>
               刷新事件
             </Button>
           }
@@ -479,10 +452,10 @@ export function ExplorerPage() {
         <ErrorAlert error={error} />
         {!session ? <LoginRequiredCard title="登录后查询 Explorer" description="Explorer 允许未登录进入页面，但资金事件、充值提现追踪和链上哈希检索需要登录后才可查询。" /> : null}
 
-        <Card className="table-card" title={`${isAdminExplorer ? 'Admin Events' : 'Events'}${session ? ` · ${filtered.length}` : ''}`}>
+        <Card className="table-card" title={`${isAdminExplorer ? 'Admin Events' : 'Events'}${session ? ` · ${events.length}` : ''}`}>
           <Table
             rowKey="event_id"
-            dataSource={filtered}
+            dataSource={events}
             scroll={{ x: 1320 }}
             pagination={false}
             expandable={{

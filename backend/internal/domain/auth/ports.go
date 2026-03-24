@@ -10,11 +10,16 @@ type NonceRepository interface {
 
 type UserRepository interface {
 	GetByAddress(ctx context.Context, address string) (User, error)
+	GetByID(ctx context.Context, userID uint64) (User, error)
 	Create(ctx context.Context, user User) (User, error)
 }
 
 type SessionRepository interface {
 	Create(ctx context.Context, session Session) error
+	GetActiveByAccessJTI(ctx context.Context, accessJTI string) (Session, error)
+	GetActiveByRefreshJTI(ctx context.Context, refreshJTI string) (Session, error)
+	Rotate(ctx context.Context, previousRefreshJTI string, session Session) error
+	RevokeByAccessJTI(ctx context.Context, accessJTI string) error
 }
 
 type SignatureVerifier interface {

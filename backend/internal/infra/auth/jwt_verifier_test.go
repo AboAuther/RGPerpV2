@@ -9,6 +9,7 @@ import (
 
 func TestJWTVerifier_VerifyAccessToken(t *testing.T) {
 	secret := "access-secret"
+	refreshSecret := "refresh-secret"
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":        "42",
 		"address":    "0xabc",
@@ -21,7 +22,7 @@ func TestJWTVerifier_VerifyAccessToken(t *testing.T) {
 		t.Fatalf("sign token: %v", err)
 	}
 
-	claims, err := NewJWTVerifier(secret).VerifyAccessToken(signed)
+	claims, err := NewJWTVerifier(secret, refreshSecret).VerifyAccessToken(signed)
 	if err != nil {
 		t.Fatalf("verify token: %v", err)
 	}
