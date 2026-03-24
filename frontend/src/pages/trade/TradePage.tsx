@@ -36,6 +36,9 @@ type EntryTimeInForce = 'GTC';
 type EntryOrderType = 'MARKET' | 'LIMIT' | 'STOP_MARKET' | 'TAKE_PROFIT_MARKET';
 type ActivityTabKey = 'positions' | 'open-orders' | 'trade-history' | 'order-history';
 
+// The decimal helpers deliberately avoid floating-point drift for order sizing,
+// trigger pricing, and step alignment. That keeps the UI consistent with the
+// backend's stricter decimal validation rules.
 function decimalScale(input: string): number {
   const normalized = input.trim();
   if (!normalized) {
@@ -258,6 +261,9 @@ export function TradePage() {
   const [entryTimeInForce, setEntryTimeInForce] = useState<EntryTimeInForce>('GTC');
   const [entryMaxSlippageBps, setEntryMaxSlippageBps] = useState(100);
   const [reduceQtyByPosition, setReduceQtyByPosition] = useState<Record<string, string>>({});
+
+  // Public market data is polled more aggressively than private state so the
+  // page stays responsive without pushing unnecessary authenticated traffic.
   const orderEntryCardRef = useRef<HTMLDivElement | null>(null);
   const stateRef = useRef<TradeState | null>(null);
   const loadingRef = useRef(false);

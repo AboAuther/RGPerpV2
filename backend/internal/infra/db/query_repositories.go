@@ -24,6 +24,9 @@ type BalanceRepository struct {
 	db *gorm.DB
 }
 
+// NewBalanceRepository exposes balance reads from the same snapshot tables used
+// by the write path, which keeps fast reads aligned with the ledger-backed
+// source of truth.
 func NewBalanceRepository(db *gorm.DB) *BalanceRepository {
 	return &BalanceRepository{db: db}
 }
@@ -87,6 +90,9 @@ type DepositAddressRepository struct {
 	confirmations map[int64]int
 }
 
+// Deposit addresses are returned together with chain-specific confirmation
+// requirements so clients see the same operational settlement policy enforced
+// later by the indexer and wallet domain.
 func NewDepositAddressRepository(db *gorm.DB, confirmations map[int64]int) *DepositAddressRepository {
 	return &DepositAddressRepository{db: db, confirmations: cloneConfirmations(confirmations)}
 }
@@ -188,6 +194,9 @@ func NewAccountQueryRepositoryWithRuntime(db *gorm.DB, runtime RiskRuntimeConfig
 	return &AccountQueryRepository{db: db, runtime: runtime}
 }
 
+// ListBalances keeps balance presentation grounded in account snapshots rather
+// than ad-hoc business tables, which makes the read model fast without creating
+// a second financial truth source.
 func (r *AccountQueryRepository) ListBalances(ctx context.Context, userID uint64) ([]readmodel.BalanceItem, error) {
 	var rows []struct {
 		AccountCode string

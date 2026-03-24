@@ -37,6 +37,9 @@ type Service struct {
 	runtime RuntimeConfigProvider
 }
 
+// NewService creates a snapshot-driven risk engine. The service persists risk
+// state first and then emits durable follow-up events, which keeps downstream
+// liquidation and hedge workflows anchored to stored facts.
 func NewService(cfg ServiceConfig, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, outbox OutboxPublisher) (*Service, error) {
 	if cfg.RiskBufferRatio == "" || cfg.SoftThresholdRatio == "" || cfg.HardThresholdRatio == "" || cfg.TakerFeeRate == "" {
 		return nil, fmt.Errorf("%w: risk config is incomplete", errorsx.ErrInvalidArgument)
@@ -81,6 +84,9 @@ func (s *Service) RefreshAccountRisk(ctx context.Context, userID uint64, trigger
 	return snapshot, err
 }
 
+// recalculateAccountRisk always saves a fresh snapshot before any liquidation
+// side effect is published. That makes operator inspection, replay, and worker
+// consumption converge on the same persisted record.
 func (s *Service) recalculateAccountRisk(ctx context.Context, userID uint64, triggeredBy string, allowLiquidationTrigger bool) (Snapshot, *LiquidationTrigger, error) {
 	if userID == 0 {
 		return Snapshot{}, nil, fmt.Errorf("%w: user id is required", errorsx.ErrInvalidArgument)
@@ -209,6 +215,8 @@ func (s *Service) EvaluateAllHedges(ctx context.Context) ([]HedgeDecision, error
 	return out, nil
 }
 
+// publishLiquidationTriggered emits a downstream command only after the
+// snapshot and trigger inputs have been durably established in storage.
 func (s *Service) publishLiquidationTriggered(ctx context.Context, trigger *LiquidationTrigger) error {
 	payload := map[string]any{
 		"liquidation_id":     trigger.LiquidationID,

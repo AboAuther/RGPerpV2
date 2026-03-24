@@ -94,6 +94,8 @@ function buildRequestHeaders(init?: RequestInit): Headers {
   return headers;
 }
 
+// Session refresh is serialized on purpose so multiple protected requests do
+// not stampede the refresh endpoint with the same expired credentials.
 async function tryRefreshSession(): Promise<boolean> {
   if (refreshInFlight) {
     return refreshInFlight;
@@ -206,6 +208,8 @@ export function configureAuthSessionHooks(hooks?: AuthSessionHooks) {
   authSessionHooks = hooks;
 }
 
+// The API facade centralizes auth, tracing, and envelope handling so feature
+// pages can stay focused on operator and trader workflows.
 export const api = {
   system: {
     getChains(): Promise<SystemChainItem[]> {

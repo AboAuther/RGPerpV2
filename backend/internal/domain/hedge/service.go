@@ -24,6 +24,9 @@ type Service struct {
 	outbox OutboxPublisher
 }
 
+// NewService constructs a hedge executor that is intentionally separate from
+// user trading state. The hedge domain manages platform risk actions without
+// mutating customer orders or positions.
 func NewService(cfg ServiceConfig, clock Clock, idgen IDGenerator, txm TxManager, repo Repository, venue VenueAdapter, outbox OutboxPublisher) (*Service, error) {
 	if strings.TrimSpace(cfg.Venue) == "" {
 		return nil, fmt.Errorf("%w: hedge venue is required", errorsx.ErrInvalidArgument)
@@ -42,6 +45,9 @@ func NewService(cfg ServiceConfig, clock Clock, idgen IDGenerator, txm TxManager
 	}, nil
 }
 
+// ExecuteIntent processes a single hedge intent against the configured venue.
+// Only the latest open intent per symbol is allowed to execute, which prevents
+// historical backlog from amplifying platform exposure.
 func (s *Service) ExecuteIntent(ctx context.Context, intentID string) (Intent, error) {
 	if strings.TrimSpace(intentID) == "" {
 		return Intent{}, fmt.Errorf("%w: intent id is required", errorsx.ErrInvalidArgument)
@@ -79,11 +85,11 @@ func (s *Service) ExecuteIntent(ctx context.Context, intentID string) (Intent, e
 				AggregateID:   loadedIntent.ID,
 				EventType:     "hedge.superseded",
 				Payload: map[string]any{
-					"hedge_intent_id":          loadedIntent.ID,
+					"hedge_intent_id":         loadedIntent.ID,
 					"superseded_by_intent_id": latestOpenIntent.ID,
-					"symbol":                   loadedIntent.Symbol,
-					"side":                     loadedIntent.Side,
-					"status":                   loadedIntent.Status,
+					"symbol":                  loadedIntent.Symbol,
+					"side":                    loadedIntent.Side,
+					"status":                  loadedIntent.Status,
 				},
 				CreatedAt: now,
 			})
@@ -271,6 +277,8 @@ func (s *Service) applyFill(ctx context.Context, symbol string, orderSide string
 	fillQty := decimalx.MustFromString(fill.Qty)
 	fillPrice := decimalx.MustFromString(fill.Price)
 
+	// Hedge inventory is mirrored in a dedicated platform-facing position view so
+	// external risk actions never leak back into the user position model.
 	newQty := currentQty.Add(fillQty)
 	if currentQty.IsZero() {
 		currentAvg = fillPrice
@@ -284,6 +292,8 @@ func (s *Service) applyFill(ctx context.Context, symbol string, orderSide string
 	return s.repo.UpsertPosition(ctx, position)
 }
 
+// normalizeOrderStatus prefers explicit venue lifecycle values and otherwise
+// derives a consistent internal status from the observed fills.
 func normalizeOrderStatus(result ExecutionResult) string {
 	switch strings.ToUpper(strings.TrimSpace(result.Status)) {
 	case OrderStatusSent, OrderStatusFilled, OrderStatusFailed, OrderStatusPartial:

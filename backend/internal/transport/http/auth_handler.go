@@ -24,6 +24,9 @@ type AuthHandler struct {
 	adminWallets map[string]struct{}
 }
 
+// NewAuthHandler keeps authentication orchestration thin at the HTTP edge. The
+// handler delegates all trust decisions to the auth domain and only enriches
+// the response with transport-facing metadata such as admin flags.
 func NewAuthHandler(authUC AuthUseCase, verifier AccessVerifier, adminWallets []string) *AuthHandler {
 	allow := make(map[string]struct{}, len(adminWallets))
 	for _, wallet := range adminWallets {
@@ -59,6 +62,8 @@ func (h *AuthHandler) Register(r gin.IRoutes) {
 	r.POST("/auth/logout", h.logout)
 }
 
+// issueChallenge is intentionally small: the transport layer validates shape,
+// while nonce issuance and message construction stay in the auth domain.
 func (h *AuthHandler) issueChallenge(c *gin.Context) {
 	var req issueChallengeRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -126,6 +131,9 @@ func (h *AuthHandler) login(c *gin.Context) {
 	})
 }
 
+// refresh verifies the refresh token at the edge and then hands off session
+// rotation to the auth domain, keeping token parsing separate from session
+// lifecycle rules.
 func (h *AuthHandler) refresh(c *gin.Context) {
 	if h.verifier == nil {
 		writeError(c, errorsx.ErrUnauthorized)
@@ -170,6 +178,8 @@ func (h *AuthHandler) refresh(c *gin.Context) {
 	})
 }
 
+// logout is backed by access-token session revocation, so the resulting logout
+// is immediate from the API perspective rather than merely best-effort.
 func (h *AuthHandler) logout(c *gin.Context) {
 	if h.verifier == nil {
 		writeError(c, errorsx.ErrUnauthorized)

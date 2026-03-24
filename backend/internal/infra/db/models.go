@@ -6,6 +6,9 @@ import (
 	"gorm.io/gorm"
 )
 
+// These GORM models are the canonical persistence map for the runtime system.
+// They are intentionally grouped in one file so schema review can track the
+// full operational data model in one place.
 type UserModel struct {
 	ID         uint64    `gorm:"primaryKey;autoIncrement"`
 	EVMAddress string    `gorm:"column:evm_address;size:64;uniqueIndex;not null"`
@@ -45,6 +48,9 @@ type SessionModel struct {
 
 func (SessionModel) TableName() string { return "sessions" }
 
+// Accounts, ledger transactions, and balance snapshots form the monetary core.
+// Snapshot tables optimize reads, while ledger tables remain the durable source
+// of truth for every balance-affecting transition.
 type AccountModel struct {
 	ID          uint64    `gorm:"primaryKey;autoIncrement"`
 	UserID      *uint64   `gorm:"column:user_id;index:uk_user_code_asset,unique"`
@@ -182,6 +188,8 @@ type MessageConsumptionModel struct {
 
 func (MessageConsumptionModel) TableName() string { return "message_consumptions" }
 
+// Deposit and withdraw tables model the full on-chain settlement state machine.
+// They preserve enough detail for replay, reconciliation, and operator review.
 type DepositAddressModel struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement"`
 	UserID    uint64    `gorm:"column:user_id;not null;uniqueIndex:uk_user_chain_asset;index"`

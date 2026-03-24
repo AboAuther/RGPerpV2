@@ -1,5 +1,7 @@
 export type AppEnv = 'dev' | 'staging' | 'prod';
 
+// Shared frontend contracts mirror backend read/write DTOs. Keeping them in a
+// single module makes the UI data boundary explicit and easy to review.
 export interface ApiEnvelope<T> {
   code: string;
   message: string;
@@ -99,6 +101,9 @@ export interface TransferRequest {
   amount: string;
 }
 
+// WithdrawItem reflects the operational state machine exposed by the backend,
+// not just a final success/failure flag. The UI can therefore present the same
+// intermediate states that operators and explorers inspect.
 export interface WithdrawItem {
   withdraw_id: string;
   chain_id: number;
@@ -175,6 +180,8 @@ export interface OrderItem {
   created_at: string;
 }
 
+// OrderCreateRequest stays close to the backend command shape so tests, forms,
+// and API calls all speak the same trading contract.
 export interface OrderCreateRequest {
   client_order_id: string;
   symbol: string;

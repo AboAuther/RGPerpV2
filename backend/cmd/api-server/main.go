@@ -95,6 +95,9 @@ func main() {
 		defer latestMarketCache.Close()
 	}
 
+	// The API server keeps the core synchronous business path in one process so
+	// monetary writes, policy checks, and durable outbox publication stay easy to
+	// reason about and audit.
 	txManager := db.NewTxManager(gormDB)
 	userRepo := db.NewUserRepository(gormDB)
 	authService := authdomain.NewService(
@@ -192,6 +195,8 @@ func main() {
 		log.Fatalf("create runtime config service: %v", err)
 	}
 	confirmations := config.EnabledChainConfirmations(cfg)
+	// Deposit confirmations are resolved once from static chain config so every
+	// wallet-facing read model exposes a consistent settlement policy.
 	depositAddressRepo := db.NewDepositAddressRepository(gormDB, confirmations)
 	vaultBalanceChains := make([]chaininfra.VaultBalanceReaderChainConfig, 0, len(enabledChains))
 	for _, chain := range enabledChains {

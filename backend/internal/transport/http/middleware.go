@@ -37,6 +37,9 @@ type HTTPRuntimeConfigProvider interface {
 	CurrentHTTPRuntimeConfig() HTTPRuntimeConfig
 }
 
+// TraceMiddleware can be tightened at runtime without process restart. This is
+// useful for production-style auditability while staying lightweight in local
+// development.
 func TraceMiddleware(provider HTTPRuntimeConfigProvider) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		traceID := strings.TrimSpace(c.GetHeader("X-Trace-Id"))
@@ -81,6 +84,9 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+// AuthMiddleware only accepts verified access tokens and injects normalized
+// claims into the request context. Handlers can then depend on typed context
+// values instead of reparsing transport headers.
 func AuthMiddleware(verifier AccessVerifier) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if verifier == nil {

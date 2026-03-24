@@ -1892,6 +1892,8 @@ function hasMeaningfulHedgeValue(item: SystemHedgeSnapshotItem) {
     || !isZeroDecimalString(item.external_drift_qty);
 }
 
+// Non-zero hedge rows are promoted first so operators land on symbols that
+// actually need attention instead of scanning a long tail of flat markets.
 function compareHedgeSnapshotRows(left: SystemHedgeSnapshotItem, right: SystemHedgeSnapshotItem) {
   const leftHasValue = hasMeaningfulHedgeValue(left);
   const rightHasValue = hasMeaningfulHedgeValue(right);
@@ -1924,6 +1926,8 @@ function hedgeIntentPriority(row: AdminHedgeIntentItem) {
   return 3;
 }
 
+// Open and failed intents remain at the top; completed history is still shown,
+// but it should never displace the tasks that require immediate operator review.
 function compareHedgeIntentRows(left: AdminHedgeIntentItem, right: AdminHedgeIntentItem) {
   const statusDelta = hedgeIntentPriority(left) - hedgeIntentPriority(right);
   if (statusDelta !== 0) {
