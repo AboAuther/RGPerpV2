@@ -18,6 +18,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/order-executor-worker
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/risk-engine-worker ./cmd/risk-engine-worker
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/funding-worker ./cmd/funding-worker
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/liquidator-worker ./cmd/liquidator-worker
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/hedger-worker ./cmd/hedger-worker
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/migrator ./cmd/migrator
 
 FROM debian:bookworm-slim
@@ -25,7 +26,8 @@ FROM debian:bookworm-slim
 WORKDIR /workspace
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates python3 python3-pip \
+  && python3 -m pip install --break-system-packages --no-cache-dir hyperliquid-python-sdk eth-account \
   && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/api-server /usr/local/bin/api-server
@@ -35,8 +37,10 @@ COPY --from=builder /out/order-executor-worker /usr/local/bin/order-executor-wor
 COPY --from=builder /out/risk-engine-worker /usr/local/bin/risk-engine-worker
 COPY --from=builder /out/funding-worker /usr/local/bin/funding-worker
 COPY --from=builder /out/liquidator-worker /usr/local/bin/liquidator-worker
+COPY --from=builder /out/hedger-worker /usr/local/bin/hedger-worker
 COPY --from=builder /out/migrator /usr/local/bin/migrator
 COPY deploy /workspace/deploy
+COPY backend/scripts /workspace/backend/scripts
 
 RUN chmod +x /workspace/deploy/scripts/*.sh
 

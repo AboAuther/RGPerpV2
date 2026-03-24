@@ -131,7 +131,7 @@ func main() {
 	defer ticker.Stop()
 
 	runOnce := func() {
-		events, err := outboxRepo.ListPendingByEventType(ctx, liquidationTriggerEventType, 100)
+		events, err := outboxRepo.ListPendingByEventTypeForConsumer(ctx, liquidationTriggerEventType, liquidatorConsumerName, 100)
 		if err != nil {
 			log.Printf("list pending liquidation triggers failed: %v", err)
 			return

@@ -2,7 +2,7 @@ import { Alert, Button, Card, Input, InputNumber, List, Modal, Select, Space, Sp
 import { useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '../../shared/api';
 import { EmptyStateCard, ErrorAlert, MetricCard, PageIntro, StatusTag } from '../../shared/components';
-import type { AdminLiquidationItem, AdminWithdrawReviewItem, LedgerAuditReport, LedgerAssetOverview, LedgerChainBalance, LedgerOverview, RiskMonitorDashboard, RuntimeConfigHistoryItem, RuntimeConfigPairOverrideView, RuntimeConfigPairPatchRequest, RuntimeConfigPatchRequest, RuntimeConfigSnapshotView, RuntimeConfigView, SymbolItem, SymbolNetExposureItem } from '../../shared/domain';
+import type { AdminHedgeIntentItem, AdminLiquidationItem, AdminWithdrawReviewItem, LedgerAuditReport, LedgerAssetOverview, LedgerChainBalance, LedgerOverview, RiskMonitorDashboard, RuntimeConfigHistoryItem, RuntimeConfigPairOverrideView, RuntimeConfigPairPatchRequest, RuntimeConfigPatchRequest, RuntimeConfigSnapshotView, RuntimeConfigView, SymbolItem, SymbolNetExposureItem, SystemHedgeSnapshotItem } from '../../shared/domain';
 import { formatAddress, formatChainName, formatDateTime, formatDecimal, formatPercent, formatUsd } from '../../shared/format';
 import { useWindowRefetch } from '../../shared/refetch';
 import { useSystemConfig } from '../../shared/system';
@@ -302,9 +302,13 @@ function toPairOverridePatch(override: EditablePairOverride) {
 export function AdminDashboardPage() {
   const [selectedAsset, setSelectedAsset] = useState<string>('ALL');
   const [showAllRiskRows, setShowAllRiskRows] = useState(false);
+  const [showAllHedgeRows, setShowAllHedgeRows] = useState(false);
+  const [showAllHedgeIntentRows, setShowAllHedgeIntentRows] = useState(false);
   const [overview, setOverview] = useState<LedgerOverview | null>(null);
   const [audit, setAudit] = useState<LedgerAuditReport | null>(null);
   const [riskDashboard, setRiskDashboard] = useState<RiskMonitorDashboard | null>(null);
+  const [hedgeIntents, setHedgeIntents] = useState<AdminHedgeIntentItem[]>([]);
+  const [hedgeSnapshots, setHedgeSnapshots] = useState<SystemHedgeSnapshotItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [runningAudit, setRunningAudit] = useState(false);
   const [exporting, setExporting] = useState<'json' | 'csv' | null>(null);
@@ -317,7 +321,7 @@ export function AdminDashboardPage() {
     setError(null);
     try {
       const scopeAsset = asset === 'ALL' ? undefined : asset;
-      const [overviewData, riskData, latestAudit] = await Promise.all([
+      const [overviewData, riskData, latestAudit, hedgeIntentData, hedgeSnapshotData] = await Promise.all([
         api.admin.getLedgerOverview(scopeAsset),
         api.admin.getRiskMonitorDashboard(),
         api.admin.getLatestLedgerAudit(scopeAsset).catch((loadError) => {
@@ -327,10 +331,14 @@ export function AdminDashboardPage() {
           }
           throw loadError;
         }),
+        api.admin.getHedgeIntents(),
+        api.admin.getHedgeSnapshots(),
       ]);
       setOverview(overviewData);
       setRiskDashboard(riskData);
       setAudit(latestAudit);
+      setHedgeIntents(hedgeIntentData);
+      setHedgeSnapshots(hedgeSnapshotData);
     } catch (loadError) {
       setError(loadError);
     } finally {
@@ -340,6 +348,13 @@ export function AdminDashboardPage() {
 
   useEffect(() => {
     void loadData(selectedAsset);
+  }, [selectedAsset]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadData(selectedAsset, true);
+    }, 5000);
+    return () => window.clearInterval(timer);
   }, [selectedAsset]);
 
   useWindowRefetch(() => {
@@ -391,8 +406,22 @@ export function AdminDashboardPage() {
   const assetRows = overview?.assets || [];
   const riskRows = riskDashboard?.items || [];
   const visibleRiskRows = showAllRiskRows ? riskRows : riskRows.slice(0, 8);
+  const hedgeRows = useMemo(() => [...hedgeSnapshots].sort(compareHedgeSnapshotRows), [hedgeSnapshots]);
+  const visibleHedgeRows = showAllHedgeRows ? hedgeRows : hedgeRows.slice(0, 8);
+  const sortedHedgeIntents = useMemo(() => [...hedgeIntents].sort(compareHedgeIntentRows), [hedgeIntents]);
+  const activeHedgeIntentRows = useMemo(() => sortedHedgeIntents.filter(isOpenHedgeIntentRow), [sortedHedgeIntents]);
+  const defaultHedgeIntentRows = useMemo(() => {
+    if (activeHedgeIntentRows.length === 0) {
+      return sortedHedgeIntents.slice(0, 8);
+    }
+    const historyRows = sortedHedgeIntents.filter((item) => !isOpenHedgeIntentRow(item));
+    return [...activeHedgeIntentRows, ...historyRows.slice(0, Math.max(0, 8 - activeHedgeIntentRows.length))];
+  }, [activeHedgeIntentRows, sortedHedgeIntents]);
+  const visibleHedgeIntentRows = showAllHedgeIntentRows ? sortedHedgeIntents : defaultHedgeIntentRows;
   const failedChecks = audit?.checks.filter((item) => item.status === 'FAIL').length || 0;
   const blockedSymbols = riskRows.filter((item) => item.blocked_open_side).length;
+  const unhealthyHedgeSnapshots = hedgeSnapshots.filter((item) => !item.hedge_healthy).length;
+  const pendingHedgeIntents = hedgeIntents.filter((item) => item.status === 'PENDING' || item.status === 'EXECUTING').length;
   const assetOptions = useMemo(() => {
     const values = new Set<string>(['ALL']);
     for (const item of overview?.assets || []) {
@@ -453,15 +482,91 @@ export function AdminDashboardPage() {
           <MetricCard label="已检查资产" value={String(audit?.overview.length || assetRows.length)} hint="当前账本资产维度" accent="neutral" />
           <MetricCard label="失败检查项" value={String(failedChecks)} hint={audit ? `最近执行于 ${formatDateTime(audit.finished_at)}` : '暂无审计记录'} accent={failedChecks > 0 ? 'warm' : 'cool'} />
           <MetricCard label="受限交易对" value={String(blockedSymbols)} hint={riskDashboard ? `风险看板更新于 ${formatDateTime(riskDashboard.generated_at)}` : '暂无风险看板'} accent={blockedSymbols > 0 ? 'warm' : 'cool'} />
+          <MetricCard label="待处理对冲" value={String(pendingHedgeIntents)} hint={hedgeIntents.length > 0 ? `最近 intent ${formatDateTime(hedgeIntents[0]?.updated_at)}` : '暂无对冲意图'} accent={pendingHedgeIntents > 0 ? 'warm' : 'cool'} />
+          <MetricCard label="对冲异常快照" value={String(unhealthyHedgeSnapshots)} hint={hedgeSnapshots.length > 0 ? `最近快照 ${formatDateTime(hedgeSnapshots[0]?.created_at)}` : '暂无对冲快照'} accent={unhealthyHedgeSnapshots > 0 ? 'warm' : 'cool'} />
           <MetricCard label="概览更新时间" value={formatDateTime(overview?.generated_at)} hint="账本快照读取时间" accent="neutral" />
         </Space>
+
+        {hedgeSnapshots.length > 0 ? (
+          <Card
+            className="table-card"
+            title="对冲风险快照"
+            extra={
+              showAllHedgeRows || hedgeRows.length > 8 ? (
+                <Button type="text" onClick={() => setShowAllHedgeRows((value) => !value)}>
+                  {showAllHedgeRows ? `收起 · 已显示 ${visibleHedgeRows.length}/${hedgeRows.length}` : `展开全部 · 已显示 ${visibleHedgeRows.length}/${hedgeRows.length}`}
+                </Button>
+              ) : null
+            }
+          >
+            <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              当前对冲执行只基于内部净敞口与系统已管理仓位。外部仓位字段仅作观测展示，不参与新对冲单目标计算。
+            </Paragraph>
+            <Table
+              rowKey="symbol"
+              dataSource={visibleHedgeRows}
+              pagination={false}
+              scroll={{ x: 1180 }}
+              columns={[
+                { title: '交易对', dataIndex: 'symbol', width: 140 },
+                { title: '健康度', dataIndex: 'hedge_healthy', width: 120, render: (value: boolean) => <StatusTag value={value ? 'HEALTHY' : 'DRIFT'} /> },
+                { title: '内部净仓', dataIndex: 'internal_net_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '目标对冲', dataIndex: 'target_hedge_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '已管理仓位', dataIndex: 'managed_hedge_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '外部仓位', dataIndex: 'external_hedge_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '管理漂移', dataIndex: 'managed_drift_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '外部漂移', dataIndex: 'external_drift_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '时间', dataIndex: 'created_at', width: 180, render: (value: string) => formatDateTime(value) },
+              ]}
+            />
+          </Card>
+        ) : null}
+
+        {hedgeIntents.length > 0 ? (
+          <Card
+            className="table-card"
+            title="对冲执行队列"
+            extra={
+              showAllHedgeIntentRows || sortedHedgeIntents.length > defaultHedgeIntentRows.length ? (
+                <Button type="text" onClick={() => setShowAllHedgeIntentRows((value) => !value)}>
+                  {showAllHedgeIntentRows
+                    ? `收起 · 已显示 ${visibleHedgeIntentRows.length}/${sortedHedgeIntents.length}`
+                    : `展开全部 · 已显示 ${visibleHedgeIntentRows.length}/${sortedHedgeIntents.length}`}
+                </Button>
+              ) : null
+            }
+          >
+            <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+              PENDING、EXECUTING、FAILED 是当前需要处理的对冲任务。COMPLETED、SUPERSEDED 是系统历史执行留痕，不代表你手工下过这些数量。
+            </Paragraph>
+            <Table
+              rowKey="hedge_intent_id"
+              dataSource={visibleHedgeIntentRows}
+              pagination={false}
+              scroll={{ x: 1180 }}
+              columns={[
+                { title: 'Intent', dataIndex: 'hedge_intent_id', width: 160, render: (value: string) => formatAddress(value, 8) },
+                { title: '交易对', dataIndex: 'symbol', width: 140 },
+                { title: '方向', dataIndex: 'side', width: 120, render: (value: string) => <StatusTag value={value} /> },
+                { title: '目标数量', dataIndex: 'target_qty', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: '当前净敞口', dataIndex: 'current_net_exposure', align: 'right', render: (value: string) => formatDecimal(value, 8) },
+                { title: 'Intent 状态', dataIndex: 'status', width: 140, render: (value: string) => <StatusTag value={value} /> },
+                { title: 'Venue', dataIndex: 'latest_venue', width: 180, render: (value?: string | null) => value || '--' },
+                { title: '订单状态', dataIndex: 'latest_order_status', width: 140, render: (value?: string | null) => (value ? <StatusTag value={value} /> : '--') },
+                { title: 'Venue Order', dataIndex: 'latest_venue_order_id', render: (value?: string | null) => value || '--' },
+                { title: '错误码', dataIndex: 'latest_error_code', width: 140, render: (value?: string | null) => value || '--' },
+                { title: '更新时间', dataIndex: 'updated_at', width: 180, render: (value: string) => formatDateTime(value) },
+              ]}
+            />
+          </Card>
+        ) : null}
 
         {riskDashboard ? (
           <Card
             className="table-card"
             title="净敞口监控"
             extra={
-              riskRows.length > 8 ? (
+              showAllRiskRows || riskRows.length > 8 ? (
                 <Button type="text" onClick={() => setShowAllRiskRows((value) => !value)}>
                   {showAllRiskRows ? `收起 · 已显示 ${visibleRiskRows.length}/${riskRows.length}` : `展开全部 · 已显示 ${visibleRiskRows.length}/${riskRows.length}`}
                 </Button>
@@ -1772,4 +1877,57 @@ function formatBps(value: number) {
     return `${value} bps`;
   }
   return '0 bps';
+}
+
+function isZeroDecimalString(value?: string | null) {
+  return !value || Number(value) === 0;
+}
+
+function hasMeaningfulHedgeValue(item: SystemHedgeSnapshotItem) {
+  return !isZeroDecimalString(item.internal_net_qty)
+    || !isZeroDecimalString(item.target_hedge_qty)
+    || !isZeroDecimalString(item.managed_hedge_qty)
+    || !isZeroDecimalString(item.external_hedge_qty)
+    || !isZeroDecimalString(item.managed_drift_qty)
+    || !isZeroDecimalString(item.external_drift_qty);
+}
+
+function compareHedgeSnapshotRows(left: SystemHedgeSnapshotItem, right: SystemHedgeSnapshotItem) {
+  const leftHasValue = hasMeaningfulHedgeValue(left);
+  const rightHasValue = hasMeaningfulHedgeValue(right);
+  if (leftHasValue !== rightHasValue) {
+    return leftHasValue ? -1 : 1;
+  }
+  if (left.hedge_healthy !== right.hedge_healthy) {
+    return left.hedge_healthy ? 1 : -1;
+  }
+  return left.symbol.localeCompare(right.symbol);
+}
+
+function isOpenHedgeIntentRow(row: AdminHedgeIntentItem) {
+  return row.status === 'PENDING' || row.status === 'EXECUTING' || row.status === 'FAILED';
+}
+
+function hedgeIntentPriority(row: AdminHedgeIntentItem) {
+  if (row.status === 'EXECUTING') {
+    return 0;
+  }
+  if (row.status === 'PENDING') {
+    return 1;
+  }
+  if (row.status === 'FAILED') {
+    return 2;
+  }
+  if (row.status === 'SUPERSEDED') {
+    return 4;
+  }
+  return 3;
+}
+
+function compareHedgeIntentRows(left: AdminHedgeIntentItem, right: AdminHedgeIntentItem) {
+  const statusDelta = hedgeIntentPriority(left) - hedgeIntentPriority(right);
+  if (statusDelta !== 0) {
+    return statusDelta;
+  }
+  return right.updated_at.localeCompare(left.updated_at);
 }

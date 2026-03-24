@@ -31,6 +31,8 @@ func (hedgeStubTxManager) WithinTransaction(ctx context.Context, fn func(txCtx c
 
 type hedgeStubRepo struct {
 	intent      Intent
+	latestOpen  Intent
+	latestOpenErr error
 	order       Order
 	orderErr    error
 	fills       []Fill
@@ -40,6 +42,13 @@ type hedgeStubRepo struct {
 
 func (s *hedgeStubRepo) GetIntentForUpdate(context.Context, string) (Intent, error) {
 	return s.intent, nil
+}
+
+func (s *hedgeStubRepo) GetLatestOpenIntentForSymbolForUpdate(context.Context, uint64) (Intent, error) {
+	if s.latestOpenErr != nil {
+		return Intent{}, s.latestOpenErr
+	}
+	return s.latestOpen, nil
 }
 
 func (s *hedgeStubRepo) GetLatestOrderByIntentForUpdate(context.Context, string) (Order, error) {
@@ -111,6 +120,14 @@ func TestExecuteIntentUpdatesMirrorPosition(t *testing.T) {
 			TargetQty: "2",
 			Status:    IntentStatusPending,
 		},
+		latestOpen: Intent{
+			ID:        "hint_1",
+			SymbolID:  1,
+			Symbol:    "BTC-PERP",
+			Side:      OrderSideSell,
+			TargetQty: "2",
+			Status:    IntentStatusPending,
+		},
 		orderErr:    errorsx.ErrNotFound,
 		positionErr: errorsx.ErrNotFound,
 	}
@@ -148,6 +165,47 @@ func TestExecuteIntentUpdatesMirrorPosition(t *testing.T) {
 		t.Fatalf("unexpected hedge position: %+v", repo.position)
 	}
 	if len(outbox.events) != 1 || outbox.events[0].EventType != "hedge.updated" {
+		t.Fatalf("unexpected outbox events: %+v", outbox.events)
+	}
+}
+
+func TestExecuteIntentSupersedesOlderIntentWhenNewerOpenIntentExists(t *testing.T) {
+	repo := &hedgeStubRepo{
+		intent: Intent{
+			ID:        "hint_old",
+			SymbolID:  1,
+			Symbol:    "BTC-PERP",
+			Side:      OrderSideSell,
+			TargetQty: "2",
+			Status:    IntentStatusPending,
+		},
+		latestOpen: Intent{
+			ID:        "hint_new",
+			SymbolID:  1,
+			Symbol:    "BTC-PERP",
+			Side:      OrderSideBuy,
+			TargetQty: "1",
+			Status:    IntentStatusPending,
+		},
+		orderErr: errorsx.ErrNotFound,
+	}
+	outbox := &hedgeStubOutbox{}
+	service, err := NewService(ServiceConfig{Venue: "simulated"}, hedgeFakeClock{now: time.Date(2026, 3, 24, 0, 0, 0, 0, time.UTC)}, &hedgeFakeIDGen{values: []string{"evt_1"}}, hedgeStubTxManager{}, repo, hedgeStubVenue{}, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	intent, err := service.ExecuteIntent(context.Background(), "hint_old")
+	if err != nil {
+		t.Fatalf("execute intent: %v", err)
+	}
+	if intent.Status != IntentStatusSuperseded {
+		t.Fatalf("expected superseded intent, got %s", intent.Status)
+	}
+	if repo.order.ID != "" {
+		t.Fatalf("expected no hedge order to be created, got %+v", repo.order)
+	}
+	if len(outbox.events) != 1 || outbox.events[0].EventType != "hedge.superseded" {
 		t.Fatalf("unexpected outbox events: %+v", outbox.events)
 	}
 }

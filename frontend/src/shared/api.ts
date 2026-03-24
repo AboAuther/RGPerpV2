@@ -6,6 +6,7 @@ import type {
   ChallengeResponse,
   DepositAddressItem,
   DepositItem,
+  AdminHedgeIntentItem,
   ExplorerEvent,
   FillItem,
   FundingQuoteItem,
@@ -23,6 +24,7 @@ import type {
   RiskMonitorDashboard,
   RuntimeConfigPatchRequest,
   RuntimeConfigView,
+  SystemHedgeSnapshotItem,
   PositionItem,
   RiskSnapshot,
   SymbolItem,
@@ -436,6 +438,12 @@ export const api = {
     },
     getRiskMonitorDashboard(): Promise<RiskMonitorDashboard> {
       return requestJson<RiskMonitorDashboard>('/api/v1/admin/risk/net-exposures');
+    },
+    getHedgeIntents(limit = 50): Promise<AdminHedgeIntentItem[]> {
+      return requestJson<AdminHedgeIntentItem[]>(`/api/v1/admin/hedges/intents?limit=${limit}`);
+    },
+    getHedgeSnapshots(limit = 50): Promise<SystemHedgeSnapshotItem[]> {
+      return requestJson<SystemHedgeSnapshotItem[]>(`/api/v1/admin/hedges/snapshots?limit=${limit}`);
     },
     getRuntimeConfig(limit = 20): Promise<RuntimeConfigView> {
       return requestJson<RuntimeConfigView>(`/api/v1/admin/configs/runtime?limit=${limit}`);

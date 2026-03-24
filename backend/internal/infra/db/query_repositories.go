@@ -819,6 +819,99 @@ func (r *WalletQueryRepository) ListFundingBatches(ctx context.Context, limit in
 	return items, nil
 }
 
+func (r *WalletQueryRepository) ListAdminHedgeIntents(ctx context.Context, limit int) ([]readmodel.AdminHedgeIntentItem, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []struct {
+		HedgeIntentModel
+		LatestVenue        *string `gorm:"column:latest_venue"`
+		Symbol             string  `gorm:"column:symbol"`
+		LatestOrderStatus  *string `gorm:"column:latest_order_status"`
+		LatestVenueOrderID *string `gorm:"column:latest_venue_order_id"`
+		LatestErrorCode    *string `gorm:"column:latest_error_code"`
+	}
+	if err := DB(ctx, r.db).
+		Table("hedge_intents").
+		Select(`
+			hedge_intents.*,
+			symbols.symbol,
+			latest_orders.venue AS latest_venue,
+			latest_orders.status AS latest_order_status,
+			latest_orders.venue_order_id AS latest_venue_order_id,
+			latest_orders.error_code AS latest_error_code
+		`).
+		Joins("JOIN symbols ON symbols.id = hedge_intents.symbol_id").
+		Joins(`
+			LEFT JOIN hedge_orders AS latest_orders
+				ON latest_orders.id = (
+					SELECT ho2.id
+					FROM hedge_orders ho2
+					WHERE ho2.hedge_intent_id = hedge_intents.hedge_intent_id
+					ORDER BY ho2.id DESC
+					LIMIT 1
+				)
+		`).
+		Order("hedge_intents.created_at DESC, hedge_intents.id DESC").
+		Limit(limit).
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]readmodel.AdminHedgeIntentItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, readmodel.AdminHedgeIntentItem{
+			HedgeIntentID:      row.HedgeIntentID,
+			Symbol:             row.Symbol,
+			Side:               row.Side,
+			TargetQty:          row.TargetQty,
+			CurrentNetExposure: row.CurrentNetExposure,
+			Status:             row.Status,
+			LatestVenue:        row.LatestVenue,
+			LatestOrderStatus:  row.LatestOrderStatus,
+			LatestVenueOrderID: row.LatestVenueOrderID,
+			LatestErrorCode:    row.LatestErrorCode,
+			CreatedAt:          row.CreatedAt.UTC().Format(time.RFC3339),
+			UpdatedAt:          row.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
+func (r *WalletQueryRepository) ListLatestSystemHedgeSnapshots(ctx context.Context, limit int) ([]readmodel.SystemHedgeSnapshotItem, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	var rows []SystemHedgeSnapshotModel
+	if err := DB(ctx, r.db).Raw(`
+SELECT s.*
+FROM system_hedge_snapshots s
+JOIN (
+	SELECT symbol_id, MAX(id) AS max_id
+	FROM system_hedge_snapshots
+	GROUP BY symbol_id
+) latest ON latest.max_id = s.id
+ORDER BY s.created_at DESC, s.id DESC
+LIMIT ?
+`, limit).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	items := make([]readmodel.SystemHedgeSnapshotItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, readmodel.SystemHedgeSnapshotItem{
+			Symbol:           row.Symbol,
+			InternalNetQty:   row.InternalNetQty,
+			TargetHedgeQty:   row.TargetHedgeQty,
+			ManagedHedgeQty:  row.ManagedHedgeQty,
+			ExternalHedgeQty: row.ExternalHedgeQty,
+			ManagedDriftQty:  row.ManagedDriftQty,
+			ExternalDriftQty: row.ExternalDriftQty,
+			HedgeHealthy:     row.HedgeHealthy,
+			CreatedAt:        row.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return items, nil
+}
+
 type ExplorerQueryRepository struct {
 	db *gorm.DB
 }

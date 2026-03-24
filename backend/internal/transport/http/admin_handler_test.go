@@ -122,6 +122,14 @@ func (f *fakeAdminWithdrawalReader) ListFundingBatches(_ context.Context, _ int)
 	return []readmodel.AdminFundingBatchItem{{FundingBatchID: "fb_1", Status: "APPLIED"}}, nil
 }
 
+func (f *fakeAdminWithdrawalReader) ListAdminHedgeIntents(_ context.Context, _ int) ([]readmodel.AdminHedgeIntentItem, error) {
+	return []readmodel.AdminHedgeIntentItem{{HedgeIntentID: "hint_1", Symbol: "BTC-PERP", Status: "COMPLETED"}}, nil
+}
+
+func (f *fakeAdminWithdrawalReader) ListLatestSystemHedgeSnapshots(_ context.Context, _ int) ([]readmodel.SystemHedgeSnapshotItem, error) {
+	return []readmodel.SystemHedgeSnapshotItem{{Symbol: "BTC-PERP", HedgeHealthy: true, CreatedAt: "2026-03-24T00:00:00Z"}}, nil
+}
+
 func (f *fakeAdminWithdrawalReader) GetLedgerOverview(_ context.Context, scope string) (readmodel.LedgerOverview, error) {
 	f.scopeSeen = scope
 	return readmodel.LedgerOverview{}, nil
@@ -283,6 +291,62 @@ func TestAdminHandler_ListLiquidations(t *testing.T) {
 	}
 	if !strings.Contains(resp.Body.String(), "liq_1") {
 		t.Fatalf("expected liquidation payload, got %s", resp.Body.String())
+	}
+}
+
+func TestAdminHandler_ListHedgeIntents(t *testing.T) {
+	reader := &fakeAdminWithdrawalReader{}
+	engine := NewEngine(
+		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		NewAdminHandler(&fakeWithdrawApprover{}, reader, []string{"0xabc"}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/hedges/intents", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("X-Trace-Id", "trace_1")
+	resp := httptest.NewRecorder()
+	engine.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	if !strings.Contains(resp.Body.String(), "hint_1") {
+		t.Fatalf("expected hedge intent payload, got %s", resp.Body.String())
+	}
+}
+
+func TestAdminHandler_ListHedgeSnapshots(t *testing.T) {
+	reader := &fakeAdminWithdrawalReader{}
+	engine := NewEngine(
+		fakeAccessVerifier{claims: AccessClaims{UserID: "7", Address: "0xabc"}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		NewAdminHandler(&fakeWithdrawApprover{}, reader, []string{"0xabc"}),
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/hedges/snapshots", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("X-Trace-Id", "trace_1")
+	resp := httptest.NewRecorder()
+	engine.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.Code)
+	}
+	if !strings.Contains(resp.Body.String(), "BTC-PERP") {
+		t.Fatalf("expected hedge snapshot payload, got %s", resp.Body.String())
 	}
 }
 

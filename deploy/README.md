@@ -37,7 +37,7 @@ docker compose up -d --build
 这会启动：
 
 - MySQL、Redis、RabbitMQ
-- `migrator`、`api-server`、`indexer`、`market-data`、`order-executor-worker`、`risk-engine-worker`、`funding-worker`、`liquidator-worker`
+- `migrator`、`api-server`、`indexer`、`market-data`、`order-executor-worker`、`risk-engine-worker`、`funding-worker`、`liquidator-worker`、`hedger-worker`
 
 如果需要启动前端，再执行：
 

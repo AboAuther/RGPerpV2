@@ -311,9 +311,23 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 		if err != nil && err != errorsx.ErrNotFound {
 			return err
 		}
-		if err == nil && existing.Side == hedgeSideFromSigned(drift) && existing.TargetQty == drift.Abs().String() {
-			decision = &HedgeDecision{Intent: existing, Drift: drift.String(), BreachLevel: breachLevel, TriggerRatio: deltaRatio.String()}
-			return nil
+		if err == nil && strings.TrimSpace(existing.Symbol) == "" {
+			existing.Symbol = state.Symbol
+		}
+		targetQty := drift.Abs()
+		if err == nil {
+			if existing.Status == hedgedomain.IntentStatusExecuting {
+				decision = &HedgeDecision{Intent: existing, Drift: drift.String(), BreachLevel: breachLevel, TriggerRatio: deltaRatio.String()}
+				return nil
+			}
+			if existing.Side == hedgeSideFromSigned(drift) &&
+				decimalx.MustFromString(existing.TargetQty).Equal(targetQty) {
+				decision = &HedgeDecision{Intent: existing, Drift: drift.String(), BreachLevel: breachLevel, TriggerRatio: deltaRatio.String()}
+				return nil
+			}
+			if err := s.repo.SupersedePendingHedgeIntentsForUpdate(txCtx, symbolID, now); err != nil {
+				return err
+			}
 		}
 
 		intent := hedgedomain.Intent{
@@ -321,7 +335,7 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 			SymbolID:           state.SymbolID,
 			Symbol:             state.Symbol,
 			Side:               hedgeSideFromSigned(drift),
-			TargetQty:          drift.Abs().String(),
+			TargetQty:          targetQty.String(),
 			CurrentNetExposure: internalNet.String(),
 			Status:             hedgedomain.IntentStatusPending,
 			CreatedAt:          now,

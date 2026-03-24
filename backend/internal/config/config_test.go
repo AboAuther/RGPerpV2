@@ -31,6 +31,9 @@ func TestLoadStaticConfigFromEnv_Success(t *testing.T) {
 		"REVIEW_FAUCET_ENABLED":           "true",
 		"REVIEW_MOCK_MARKET_DATA_ENABLED": "true",
 		"LOCAL_ANVIL_ADMIN_PRIVATE_KEY":   "0xabc123",
+		"HL_API_URL":                      "https://api.hyperliquid-testnet.xyz",
+		"HL_ACCOUNT_ADDRESS":              "0xa4022bdfa1e6d546f26905111fc62b0b8887d482",
+		"HL_PRIVATE_KEY":                  "0x25c86c1b938d513e89579f42cb1c527f3c179f6b1b9834a03ab880858bc5f10a",
 	}
 
 	cfg, err := LoadStaticConfigFromEnv(func(key string) string {
@@ -45,6 +48,9 @@ func TestLoadStaticConfigFromEnv_Success(t *testing.T) {
 	if cfg.App.RuntimeConfigPath != "deploy/config/runtime/review.yaml" {
 		t.Fatalf("unexpected runtime config path: %s", cfg.App.RuntimeConfigPath)
 	}
+	if !cfg.API.WithdrawExecutorEnabled {
+		t.Fatal("expected withdraw executor enabled by default")
+	}
 	if !cfg.Review.FaucetEnabled {
 		t.Fatal("expected faucet enabled")
 	}
@@ -56,6 +62,9 @@ func TestLoadStaticConfigFromEnv_Success(t *testing.T) {
 	}
 	if cfg.Chains.Ethereum.ChainID != 31337 {
 		t.Fatalf("expected configured ethereum chain id, got %d", cfg.Chains.Ethereum.ChainID)
+	}
+	if cfg.Hedge.PrivateKey == "" || cfg.Hedge.AccountAddress == "" {
+		t.Fatalf("expected hedge config to load, got %+v", cfg.Hedge)
 	}
 }
 
@@ -124,6 +133,35 @@ func TestLoadStaticConfigWithOptions_LoadsCommonAndEnvSpecificFiles(t *testing.T
 	}
 	if cfg.Chains.Ethereum.ChainID != 31337 || cfg.Chains.Ethereum.Confirmations != 1 {
 		t.Fatalf("expected chain config to load from local env file, got %+v", cfg.Chains.Ethereum)
+	}
+	if !cfg.API.WithdrawExecutorEnabled {
+		t.Fatal("expected env-file config to keep withdraw executor enabled by default")
+	}
+}
+
+func TestLoadStaticConfigFromEnv_DisablesWithdrawExecutorWhenConfigured(t *testing.T) {
+	env := map[string]string{
+		"APP_NAME":                  "rgperp",
+		"APP_ENV":                   "dev",
+		"LOG_LEVEL":                 "info",
+		"TZ":                        "UTC",
+		"RUNTIME_CONFIG_PATH":       "deploy/config/runtime/dev.yaml",
+		"MYSQL_DSN":                 "mysql",
+		"RABBITMQ_URL":              "amqp://guest:guest@localhost:5672/",
+		"AUTH_DOMAIN":               "localhost",
+		"JWT_ACCESS_SECRET":         "access",
+		"JWT_REFRESH_SECRET":        "refresh",
+		"WITHDRAW_EXECUTOR_ENABLED": "false",
+	}
+
+	cfg, err := LoadStaticConfigFromEnv(func(key string) string {
+		return env[key]
+	})
+	if err != nil {
+		t.Fatalf("expected success, got error: %v", err)
+	}
+	if cfg.API.WithdrawExecutorEnabled {
+		t.Fatal("expected withdraw executor to be disabled explicitly")
 	}
 }
 

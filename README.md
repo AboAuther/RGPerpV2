@@ -15,7 +15,15 @@
 - 链上托管、充值、提现、内部转账、统一账本、Explorer 基础事件链路
 - EVM 登录、access/refresh token、refresh/logout session management
 - 交易对种子、行情聚合、下单、成交、仓位、PnL、风险率、强平、资金费率
+- `risk-engine-worker -> hedger-worker -> Hyperliquid Testnet` 的真实对冲执行链路
 - 管理后台页面、用户侧 Explorer 页面、docker compose 本地联调环境、E2E 基础用例
+
+当前对冲账务边界：
+
+- 平台外部对冲账户当前作为独立风险域管理；
+- 外部 Venue 的仓位、保证金占用、未实现盈亏、已实现盈亏暂不进入核心统一账本；
+- 核心统一账本仍只承载用户资金、平台内部账务、链上充值提现、手续费、保险基金等已定义口径；
+- Admin 的 `外部仓位 / 外部漂移` 目前用于观测与对账，不参与新对冲单目标计算。
 
 ## 快速启动
 
@@ -98,7 +106,6 @@ bash deploy/scripts/mine-local-blocks.sh eth 12
 - [需求拆解与实施路线](/Users/xiaobao/RGPerp/docs/需求拆解与实施路线.md)
 - [Architecture Document](/Users/xiaobao/RGPerp/docs/Architecture%20Document.md)
 - [Architecture Appendix](/Users/xiaobao/RGPerp/docs/Architecture%20Appendix.md)
-- [任务清单](/Users/xiaobao/RGPerp/spec/TASKS.md)
 
 ## 当前阶段
 
@@ -106,4 +113,4 @@ bash deploy/scripts/mine-local-blocks.sh eth 12
 
 - 会话与权限治理继续补强
 - Explorer、后台和审计能力继续完善
-- 对账、对冲、可观测性、故障恢复与交付文档补齐
+- 对账、对冲账务镜像、可观测性、故障恢复与交付文档补齐

@@ -28,6 +28,7 @@ type Repository interface {
 	ListActiveSymbols(ctx context.Context) ([]HedgeState, error)
 	GetHedgeStateForUpdate(ctx context.Context, symbolID uint64) (HedgeState, error)
 	GetLatestOpenHedgeIntentForUpdate(ctx context.Context, symbolID uint64) (hedgedomain.Intent, error)
+	SupersedePendingHedgeIntentsForUpdate(ctx context.Context, symbolID uint64, updatedAt time.Time) error
 	CreateHedgeIntent(ctx context.Context, intent hedgedomain.Intent) error
 }
 

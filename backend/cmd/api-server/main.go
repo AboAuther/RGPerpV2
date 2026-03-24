@@ -282,11 +282,16 @@ func main() {
 			}
 			defer executor.Close()
 			walletService.SetWithdrawRiskEvaluator(chaininfra.NewWithdrawRiskEvaluator(runtimeCfg.Global, runtimeCfg.Wallet, executor, withdrawRepo))
-			withdrawExecService, err := withdrawexecdomain.NewService(withdrawRepo, walletService, executor, txManager)
-			if err != nil {
-				log.Fatalf("create withdraw executor service: %v", err)
+			if cfg.API.WithdrawExecutorEnabled {
+				withdrawExecService, err := withdrawexecdomain.NewService(withdrawRepo, walletService, executor, txManager)
+				if err != nil {
+					log.Fatalf("create withdraw executor service: %v", err)
+				}
+				log.Printf("withdraw executor loop enabled in api-server; keep enabled on only one api-server instance when scaling horizontally")
+				go startWithdrawExecutorLoop(withdrawExecService, enabledChains)
+			} else {
+				log.Printf("withdraw executor loop disabled for this api-server instance")
 			}
-			go startWithdrawExecutorLoop(withdrawExecService, enabledChains)
 		}
 	}
 
@@ -474,6 +479,8 @@ func startWithdrawExecutorLoop(service *withdrawexecdomain.Service, chains []con
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
+		// This loop must stay single-active across api-server replicas because
+		// nonce reservation and on-chain broadcast are serialized per signer.
 		for _, chain := range chains {
 			if err := service.ProcessChain(context.Background(), chain.ChainID, 50); err != nil {
 				log.Printf("withdraw executor sync failed: chain_id=%d err=%v", chain.ChainID, err)

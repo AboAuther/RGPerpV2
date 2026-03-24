@@ -244,6 +244,15 @@ func (r *RiskRepository) CreateHedgeIntent(ctx context.Context, intent hedgedoma
 	}).Error
 }
 
+func (r *RiskRepository) SupersedePendingHedgeIntentsForUpdate(ctx context.Context, symbolID uint64, updatedAt time.Time) error {
+	return DB(ctx, r.db).Model(&HedgeIntentModel{}).
+		Where("symbol_id = ? AND status = ?", symbolID, hedgedomain.IntentStatusPending).
+		Updates(map[string]any{
+			"status":     hedgedomain.IntentStatusSuperseded,
+			"updated_at": updatedAt,
+		}).Error
+}
+
 type HedgeRepository struct {
 	db *gorm.DB
 }
@@ -263,6 +272,27 @@ func (r *HedgeRepository) GetIntentForUpdate(ctx context.Context, intentID strin
 		Joins("JOIN symbols ON symbols.id = hedge_intents.symbol_id").
 		Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("hedge_intents.hedge_intent_id = ?", intentID).
+		Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return hedgedomain.Intent{}, errorsx.ErrNotFound
+		}
+		return hedgedomain.Intent{}, err
+	}
+	return toHedgeIntentDomain(row.HedgeIntentModel, row.Symbol), nil
+}
+
+func (r *HedgeRepository) GetLatestOpenIntentForSymbolForUpdate(ctx context.Context, symbolID uint64) (hedgedomain.Intent, error) {
+	var row struct {
+		HedgeIntentModel
+		Symbol string `gorm:"column:symbol"`
+	}
+	if err := DB(ctx, r.db).
+		Table("hedge_intents").
+		Select("hedge_intents.*, symbols.symbol").
+		Joins("JOIN symbols ON symbols.id = hedge_intents.symbol_id").
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("hedge_intents.symbol_id = ? AND hedge_intents.status IN ?", symbolID, []string{hedgedomain.IntentStatusPending, hedgedomain.IntentStatusExecuting}).
+		Order("hedge_intents.id DESC").
 		Take(&row).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return hedgedomain.Intent{}, errorsx.ErrNotFound

@@ -16,6 +16,10 @@ func uint64Ptr(value uint64) *uint64 {
 	return &value
 }
 
+func stringPtr(value string) *string {
+	return &value
+}
+
 type fakeDepositAddressAllocator struct {
 	address string
 	valid   bool
@@ -244,6 +248,123 @@ func TestExplorerQueryRepository_ListEventsScopesNonAdminUsers(t *testing.T) {
 	}
 	if fundingEvent.Amount == nil || *fundingEvent.Amount != "-4.12" {
 		t.Fatalf("expected funding event amount to be exposed, got %+v", fundingEvent)
+	}
+}
+
+func TestWalletQueryRepository_ListAdminHedgeViews(t *testing.T) {
+	db := setupTestDB(t)
+	repo := NewWalletQueryRepository(db, nil)
+	now := time.Now().UTC()
+
+	if err := db.Create(&SymbolModel{
+		ID:                 11,
+		Symbol:             "BTC-PERP",
+		AssetClass:         "CRYPTO",
+		BaseAsset:          "BTC",
+		QuoteAsset:         "USDC",
+		ContractMultiplier: "1",
+		TickSize:           "0.1",
+		StepSize:           "0.001",
+		MinNotional:        "10",
+		Status:             "TRADING",
+		SessionPolicy:      "ALWAYS_OPEN",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}).Error; err != nil {
+		t.Fatalf("seed symbol: %v", err)
+	}
+
+	if err := db.Create(&HedgeIntentModel{
+		HedgeIntentID:      "hint_1",
+		SymbolID:           11,
+		Side:               "SELL",
+		TargetQty:          "2.5",
+		CurrentNetExposure: "2.5",
+		Status:             "EXECUTING",
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}).Error; err != nil {
+		t.Fatalf("seed hedge intent: %v", err)
+	}
+	if err := db.Create(&[]HedgeOrderModel{
+		{
+			HedgeOrderID:  "hord_1",
+			HedgeIntentID: "hint_1",
+			Venue:         "simulated",
+			Symbol:        "BTC-PERP",
+			Side:          "SELL",
+			Qty:           "2.5",
+			Status:        "SENT",
+			CreatedAt:     now.Add(-time.Minute),
+			UpdatedAt:     now.Add(-time.Minute),
+		},
+		{
+			HedgeOrderID:  "hord_2",
+			HedgeIntentID: "hint_1",
+			Venue:         "simulated",
+			VenueOrderID:  stringPtr("venue_2"),
+			Symbol:        "BTC-PERP",
+			Side:          "SELL",
+			Qty:           "2.5",
+			Status:        "FILLED",
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+	}).Error; err != nil {
+		t.Fatalf("seed hedge orders: %v", err)
+	}
+	if err := db.Create(&[]SystemHedgeSnapshotModel{
+		{
+			SymbolID:         11,
+			Symbol:           "BTC-PERP",
+			InternalNetQty:   "2.5",
+			TargetHedgeQty:   "-2.5",
+			ManagedHedgeQty:  "-2.5",
+			ExternalHedgeQty: "-2.5",
+			ManagedDriftQty:  "0",
+			ExternalDriftQty: "0",
+			HedgeHealthy:     true,
+			CreatedAt:        now.Add(-time.Minute),
+		},
+		{
+			SymbolID:         11,
+			Symbol:           "BTC-PERP",
+			InternalNetQty:   "3.0",
+			TargetHedgeQty:   "-3.0",
+			ManagedHedgeQty:  "-2.5",
+			ExternalHedgeQty: "-2.0",
+			ManagedDriftQty:  "-0.5",
+			ExternalDriftQty: "-1.0",
+			HedgeHealthy:     false,
+			CreatedAt:        now,
+		},
+	}).Error; err != nil {
+		t.Fatalf("seed hedge snapshots: %v", err)
+	}
+
+	intents, err := repo.ListAdminHedgeIntents(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list admin hedge intents: %v", err)
+	}
+	if len(intents) != 1 {
+		t.Fatalf("expected 1 hedge intent, got %d", len(intents))
+	}
+	if intents[0].HedgeIntentID != "hint_1" || intents[0].LatestOrderStatus == nil || *intents[0].LatestOrderStatus != "FILLED" {
+		t.Fatalf("unexpected hedge intents: %+v", intents)
+	}
+	if intents[0].LatestVenueOrderID == nil || *intents[0].LatestVenueOrderID != "venue_2" {
+		t.Fatalf("expected latest venue order id, got %+v", intents[0])
+	}
+
+	snapshots, err := repo.ListLatestSystemHedgeSnapshots(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list latest hedge snapshots: %v", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("expected 1 latest hedge snapshot, got %d", len(snapshots))
+	}
+	if snapshots[0].Symbol != "BTC-PERP" || snapshots[0].ExternalHedgeQty != "-2" || snapshots[0].HedgeHealthy {
+		t.Fatalf("unexpected hedge snapshot: %+v", snapshots[0])
 	}
 }
 

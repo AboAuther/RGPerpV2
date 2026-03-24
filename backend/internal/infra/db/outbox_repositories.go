@@ -10,6 +10,7 @@ import (
 
 	"github.com/xiaobao/rgperp/backend/internal/pkg/errorsx"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type OutboxRepository struct {
@@ -84,6 +85,24 @@ func (r *OutboxRepository) ListPendingByEventType(ctx context.Context, eventType
 	return events, nil
 }
 
+func (r *OutboxRepository) ListPendingByEventTypeForConsumer(ctx context.Context, eventType string, consumerName string, limit int) ([]OutboxEventModel, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var events []OutboxEventModel
+	if err := DB(ctx, r.db).
+		Table("outbox_events").
+		Select("outbox_events.*").
+		Joins("LEFT JOIN message_consumptions ON message_consumptions.event_id = outbox_events.event_id AND message_consumptions.consumer_name = ?", consumerName).
+		Where("outbox_events.status = ? AND outbox_events.event_type = ? AND message_consumptions.event_id IS NULL", "PENDING", eventType).
+		Order("outbox_events.created_at ASC").
+		Limit(limit).
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID string, publishedAt time.Time) error {
 	result := DB(ctx, r.db).Model(&OutboxEventModel{}).
 		Where("event_id = ?", eventID).
@@ -109,21 +128,22 @@ func NewMessageConsumptionRepository(db *gorm.DB) *MessageConsumptionRepository 
 }
 
 func (r *MessageConsumptionRepository) TryBegin(ctx context.Context, consumerName string, eventID string, consumedAt time.Time) (bool, error) {
-	err := DB(ctx, r.db).Create(&MessageConsumptionModel{
+	result := DB(ctx, r.db).Clauses(clause.OnConflict{DoNothing: true}).Create(&MessageConsumptionModel{
 		ConsumerName: consumerName,
 		EventID:      eventID,
 		ConsumedAt:   consumedAt,
-	}).Error
-	if err == nil {
-		return true, nil
+	})
+	if result.Error != nil {
+		err := result.Error
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			return false, nil
+		}
+		if isUniqueConstraintError(err) {
+			return false, nil
+		}
+		return false, err
 	}
-	if errors.Is(err, gorm.ErrDuplicatedKey) {
-		return false, nil
-	}
-	if isUniqueConstraintError(err) {
-		return false, nil
-	}
-	return false, err
+	return result.RowsAffected > 0, nil
 }
 
 func (r *MessageConsumptionRepository) Delete(ctx context.Context, consumerName string, eventID string) error {

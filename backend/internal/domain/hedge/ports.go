@@ -19,6 +19,7 @@ type TxManager interface {
 
 type Repository interface {
 	GetIntentForUpdate(ctx context.Context, intentID string) (Intent, error)
+	GetLatestOpenIntentForSymbolForUpdate(ctx context.Context, symbolID uint64) (Intent, error)
 	GetLatestOrderByIntentForUpdate(ctx context.Context, intentID string) (Order, error)
 	CreateOrder(ctx context.Context, order Order) error
 	UpdateOrder(ctx context.Context, order Order) error

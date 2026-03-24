@@ -92,4 +92,12 @@ func TestOutboxAndConsumptionRepositories(t *testing.T) {
 	if ok {
 		t.Fatal("expected duplicate consume to be deduped")
 	}
+
+	filtered, err := outboxRepo.ListPendingByEventTypeForConsumer(context.Background(), "ledger.committed", "wallet-consumer", 10)
+	if err != nil {
+		t.Fatalf("list pending for consumer: %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("expected consumed event to be filtered out, got %d", len(filtered))
+	}
 }

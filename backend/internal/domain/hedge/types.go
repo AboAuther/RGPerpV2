@@ -7,6 +7,7 @@ const (
 	IntentStatusExecuting = "EXECUTING"
 	IntentStatusCompleted = "COMPLETED"
 	IntentStatusFailed    = "FAILED"
+	IntentStatusSuperseded = "SUPERSEDED"
 
 	OrderStatusPending = "PENDING"
 	OrderStatusSent    = "SENT"

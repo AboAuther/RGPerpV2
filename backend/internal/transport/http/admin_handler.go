@@ -26,6 +26,8 @@ type AdminWithdrawalReader interface {
 	ListAdminWithdrawals(ctx context.Context, limit int) ([]readmodel.AdminWithdrawReviewItem, error)
 	ListAdminLiquidations(ctx context.Context, limit int) ([]readmodel.AdminLiquidationItem, error)
 	ListFundingBatches(ctx context.Context, limit int) ([]readmodel.AdminFundingBatchItem, error)
+	ListAdminHedgeIntents(ctx context.Context, limit int) ([]readmodel.AdminHedgeIntentItem, error)
+	ListLatestSystemHedgeSnapshots(ctx context.Context, limit int) ([]readmodel.SystemHedgeSnapshotItem, error)
 	GetLedgerOverview(ctx context.Context, scopeAsset string) (readmodel.LedgerOverview, error)
 	GetLatestLedgerAuditReport(ctx context.Context, scopeAsset string) (readmodel.LedgerAuditReport, error)
 	RunLedgerAudit(ctx context.Context, executedBy string, scopeAsset string) (readmodel.LedgerAuditReport, error)
@@ -131,6 +133,8 @@ func (h *AdminHandler) SetLiquidationMutator(mutator AdminLiquidationMutator) {
 func (h *AdminHandler) Register(r gin.IRoutes) {
 	r.GET("/admin/withdrawals", h.listWithdrawals)
 	r.GET("/admin/liquidations", h.listLiquidations)
+	r.GET("/admin/hedges/intents", h.listHedgeIntents)
+	r.GET("/admin/hedges/snapshots", h.listHedgeSnapshots)
 	r.POST("/admin/liquidations/:liquidationId/retry", h.retryLiquidation)
 	r.POST("/admin/liquidations/:liquidationId/close", h.closeLiquidation)
 	r.POST("/admin/withdrawals/:withdrawId/approve", h.approveWithdrawal)
@@ -323,6 +327,32 @@ func (h *AdminHandler) listLiquidations(c *gin.Context) {
 		return
 	}
 	items, err := h.reader.ListAdminLiquidations(c.Request.Context(), 200)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeOK(c, items)
+}
+
+func (h *AdminHandler) listHedgeIntents(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
+	limit, _ := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "200")))
+	items, err := h.reader.ListAdminHedgeIntents(c.Request.Context(), limit)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeOK(c, items)
+}
+
+func (h *AdminHandler) listHedgeSnapshots(c *gin.Context) {
+	if !h.requireAdmin(c) {
+		return
+	}
+	limit, _ := strconv.Atoi(strings.TrimSpace(c.DefaultQuery("limit", "200")))
+	items, err := h.reader.ListLatestSystemHedgeSnapshots(c.Request.Context(), limit)
 	if err != nil {
 		writeError(c, err)
 		return

@@ -62,6 +62,32 @@ func (s *Service) ExecuteIntent(ctx context.Context, intentID string) (Intent, e
 		if loadedIntent.Status != IntentStatusPending && loadedIntent.Status != IntentStatusExecuting {
 			return fmt.Errorf("%w: hedge intent is not executable", errorsx.ErrConflict)
 		}
+		latestOpenIntent, err := s.repo.GetLatestOpenIntentForSymbolForUpdate(txCtx, loadedIntent.SymbolID)
+		if err != nil && err != errorsx.ErrNotFound {
+			return err
+		}
+		if err == nil && latestOpenIntent.ID != "" && latestOpenIntent.ID != loadedIntent.ID {
+			loadedIntent.Status = IntentStatusSuperseded
+			loadedIntent.UpdatedAt = now
+			if err := s.repo.UpdateIntent(txCtx, loadedIntent); err != nil {
+				return err
+			}
+			intent = loadedIntent
+			return s.outbox.Publish(txCtx, DomainEvent{
+				EventID:       s.idgen.NewID("evt"),
+				AggregateType: "hedge_intent",
+				AggregateID:   loadedIntent.ID,
+				EventType:     "hedge.superseded",
+				Payload: map[string]any{
+					"hedge_intent_id":          loadedIntent.ID,
+					"superseded_by_intent_id": latestOpenIntent.ID,
+					"symbol":                   loadedIntent.Symbol,
+					"side":                     loadedIntent.Side,
+					"status":                   loadedIntent.Status,
+				},
+				CreatedAt: now,
+			})
+		}
 
 		loadedIntent.Status = IntentStatusExecuting
 		loadedIntent.UpdatedAt = now
@@ -95,7 +121,7 @@ func (s *Service) ExecuteIntent(ctx context.Context, intentID string) (Intent, e
 	}); err != nil {
 		return Intent{}, err
 	}
-	if intent.Status == IntentStatusCompleted {
+	if intent.Status == IntentStatusCompleted || intent.Status == IntentStatusSuperseded {
 		return intent, nil
 	}
 

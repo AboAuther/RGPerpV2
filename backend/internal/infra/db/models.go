@@ -547,6 +547,22 @@ type HedgePositionModel struct {
 
 func (HedgePositionModel) TableName() string { return "hedge_positions" }
 
+type SystemHedgeSnapshotModel struct {
+	ID               uint64    `gorm:"primaryKey;autoIncrement"`
+	SymbolID         uint64    `gorm:"column:symbol_id;not null;index:idx_system_hedge_snapshots_symbol_created,priority:1"`
+	Symbol           string    `gorm:"column:symbol;size:64;not null"`
+	InternalNetQty   string    `gorm:"column:internal_net_qty;type:decimal(38,18);not null"`
+	TargetHedgeQty   string    `gorm:"column:target_hedge_qty;type:decimal(38,18);not null"`
+	ManagedHedgeQty  string    `gorm:"column:managed_hedge_qty;type:decimal(38,18);not null"`
+	ExternalHedgeQty string    `gorm:"column:external_hedge_qty;type:decimal(38,18);not null"`
+	ManagedDriftQty  string    `gorm:"column:managed_drift_qty;type:decimal(38,18);not null"`
+	ExternalDriftQty string    `gorm:"column:external_drift_qty;type:decimal(38,18);not null"`
+	HedgeHealthy     bool      `gorm:"column:hedge_healthy;not null"`
+	CreatedAt        time.Time `gorm:"column:created_at;not null;index:idx_system_hedge_snapshots_symbol_created,priority:2"`
+}
+
+func (SystemHedgeSnapshotModel) TableName() string { return "system_hedge_snapshots" }
+
 func Migrate(db *gorm.DB) error {
 	if err := db.AutoMigrate(
 		&UserModel{},
@@ -584,6 +600,7 @@ func Migrate(db *gorm.DB) error {
 		&HedgeOrderModel{},
 		&HedgeFillModel{},
 		&HedgePositionModel{},
+		&SystemHedgeSnapshotModel{},
 	); err != nil {
 		return err
 	}

@@ -18,6 +18,7 @@ type LoadOptions struct {
 // StaticConfig contains startup-time configuration shared by backend processes.
 type StaticConfig struct {
 	App        AppConfig
+	API        APIConfig
 	MySQL      MySQLConfig
 	Redis      RedisConfig
 	RabbitMQ   RabbitMQConfig
@@ -36,6 +37,13 @@ type AppConfig struct {
 	LogLevel          string
 	TimeZone          string
 	RuntimeConfigPath string
+}
+
+type APIConfig struct {
+	// WithdrawExecutorEnabled gates the in-process withdraw broadcast loop.
+	// Keep it enabled on at most one api-server instance when the service is
+	// scaled horizontally.
+	WithdrawExecutorEnabled bool
 }
 
 type MySQLConfig struct {
@@ -92,6 +100,7 @@ type HedgeConfig struct {
 	APIKey         string
 	APISecret      string
 	AccountAddress string
+	PrivateKey     string
 }
 
 type ReviewConfig struct {
@@ -107,6 +116,7 @@ var knownEnvKeys = []string{
 	"LOG_LEVEL",
 	"TZ",
 	"RUNTIME_CONFIG_PATH",
+	"WITHDRAW_EXECUTOR_ENABLED",
 	"MYSQL_DSN",
 	"MYSQL_MAX_OPEN_CONNS",
 	"MYSQL_MAX_IDLE_CONNS",
@@ -151,6 +161,7 @@ var knownEnvKeys = []string{
 	"HL_API_KEY",
 	"HL_API_SECRET",
 	"HL_ACCOUNT_ADDRESS",
+	"HL_PRIVATE_KEY",
 	"REVIEW_FAUCET_ENABLED",
 	"REVIEW_MOCK_MARKET_DATA_ENABLED",
 	"LOCAL_ANVIL_ADMIN_PRIVATE_KEY",
@@ -198,6 +209,9 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 			LogLevel:          strings.TrimSpace(getenv("LOG_LEVEL")),
 			TimeZone:          strings.TrimSpace(getenv("TZ")),
 			RuntimeConfigPath: strings.TrimSpace(getenv("RUNTIME_CONFIG_PATH")),
+		},
+		API: APIConfig{
+			WithdrawExecutorEnabled: getBool(getenv, "WITHDRAW_EXECUTOR_ENABLED", true),
 		},
 		MySQL: MySQLConfig{
 			DSN:                strings.TrimSpace(getenv("MYSQL_DSN")),
@@ -264,6 +278,7 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 			APIKey:         strings.TrimSpace(getenv("HL_API_KEY")),
 			APISecret:      strings.TrimSpace(getenv("HL_API_SECRET")),
 			AccountAddress: strings.TrimSpace(getenv("HL_ACCOUNT_ADDRESS")),
+			PrivateKey:     strings.TrimSpace(firstNonEmpty(getenv("HL_PRIVATE_KEY"), getenv("HL_API_SECRET"))),
 		},
 		Review: ReviewConfig{
 			FaucetEnabled:         getBool(getenv, "REVIEW_FAUCET_ENABLED", false),
@@ -420,7 +435,7 @@ func loadMergedStaticEnv(rootDir string, getenv func(string) string) (map[string
 		}
 	}
 
-	for _, key := range []string{"REDIS_PASSWORD", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "HL_API_SECRET"} {
+	for _, key := range []string{"REDIS_PASSWORD", "JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "HL_API_SECRET", "HL_PRIVATE_KEY"} {
 		if value := getenv(key); value != "" {
 			merged[key] = value
 		}

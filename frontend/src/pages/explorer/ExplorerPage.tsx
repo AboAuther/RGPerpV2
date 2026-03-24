@@ -283,8 +283,18 @@ function buildActionSummary(event: ExplorerEvent) {
   if (event.event_type.startsWith('risk.liquidation')) {
     return `清算${liquidationID ? ` ${formatAddress(liquidationID, 6)}` : ''}${status ? ` · ${status}` : ''}`;
   }
+  if (event.event_type === 'hedge.requested') {
+    const targetQty = readPayloadString(event.payload, 'target_qty');
+    return `对冲请求 ${symbol || ''} ${side || ''}${targetQty ? ` · ${formatValue(targetQty)}` : ''}${status ? ` · ${status}` : ''}`.trim();
+  }
   if (event.event_type === 'hedge.updated') {
     return `对冲 ${symbol || ''} ${side || ''}${qty ? ` · ${formatValue(qty)}` : ''}${status ? ` · ${status}` : ''}`.trim();
+  }
+  if (event.event_type === 'hedge.superseded') {
+    return `对冲作废 ${symbol || ''}${status ? ` · ${status}` : ''}`.trim();
+  }
+  if (event.event_type === 'hedge.failed') {
+    return `对冲失败 ${symbol || ''} ${side || ''}${status ? ` · ${status}` : ''}`.trim();
   }
   if (event.event_type === 'ledger.committed') {
     return `${readPayloadString(event.payload, 'biz_type') || '账本事件'}${event.amount ? ` · ${formatAssetAmount(event.amount, event.asset)}` : ''}`;

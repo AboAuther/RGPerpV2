@@ -193,6 +193,33 @@ type RiskMonitorDashboard struct {
 	Items                 []SymbolNetExposureItem `json:"items"`
 }
 
+type AdminHedgeIntentItem struct {
+	HedgeIntentID      string  `json:"hedge_intent_id"`
+	Symbol             string  `json:"symbol"`
+	Side               string  `json:"side"`
+	TargetQty          string  `json:"target_qty"`
+	CurrentNetExposure string  `json:"current_net_exposure"`
+	Status             string  `json:"status"`
+	LatestVenue        *string `json:"latest_venue,omitempty"`
+	LatestOrderStatus  *string `json:"latest_order_status,omitempty"`
+	LatestVenueOrderID *string `json:"latest_venue_order_id,omitempty"`
+	LatestErrorCode    *string `json:"latest_error_code,omitempty"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
+}
+
+type SystemHedgeSnapshotItem struct {
+	Symbol           string `json:"symbol"`
+	InternalNetQty   string `json:"internal_net_qty"`
+	TargetHedgeQty   string `json:"target_hedge_qty"`
+	ManagedHedgeQty  string `json:"managed_hedge_qty"`
+	ExternalHedgeQty string `json:"external_hedge_qty"`
+	ManagedDriftQty  string `json:"managed_drift_qty"`
+	ExternalDriftQty string `json:"external_drift_qty"`
+	HedgeHealthy     bool   `json:"hedge_healthy"`
+	CreatedAt        string `json:"created_at"`
+}
+
 type AdminRiskRecalculationResult struct {
 	UserID                 uint64  `json:"user_id"`
 	RiskSnapshotID         uint64  `json:"risk_snapshot_id"`

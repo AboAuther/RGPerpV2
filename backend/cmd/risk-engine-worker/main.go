@@ -104,6 +104,9 @@ func main() {
 		if err := processRequestedRecalculations(ctx, outboxRepo, consumptionRepo, riskService); err != nil {
 			log.Printf("requested risk recalculation failed: %v", err)
 		}
+		if err := evaluateHedges(ctx, riskService); err != nil {
+			log.Printf("hedge evaluation failed: %v", err)
+		}
 	}
 
 	runOnce()
@@ -141,7 +144,7 @@ func processRequestedRecalculations(
 	consumptionRepo *dbinfra.MessageConsumptionRepository,
 	riskService *riskdomain.Service,
 ) error {
-	events, err := outboxRepo.ListPendingByEventType(ctx, recalculateRequestedEventType, 100)
+	events, err := outboxRepo.ListPendingByEventTypeForConsumer(ctx, recalculateRequestedEventType, riskEngineConsumerName, 100)
 	if err != nil {
 		return err
 	}
@@ -183,12 +186,35 @@ func processRequestedEvent(ctx context.Context, event dbinfra.OutboxEventModel, 
 	return nil
 }
 
+func evaluateHedges(ctx context.Context, riskService *riskdomain.Service) error {
+	decisions, err := riskService.EvaluateAllHedges(ctx)
+	if err != nil {
+		return err
+	}
+	for _, decision := range decisions {
+		log.Printf(
+			"hedge decision created: symbol=%s hedge_intent_id=%s side=%s target_qty=%s drift=%s breach_level=%s trigger_ratio=%s",
+			decision.Intent.Symbol,
+			decision.Intent.ID,
+			decision.Intent.Side,
+			decision.Intent.TargetQty,
+			decision.Drift,
+			decision.BreachLevel,
+			decision.TriggerRatio,
+		)
+	}
+	return nil
+}
+
 func waitForRiskSchema(ctx context.Context, gormDB *gorm.DB, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	requiredTables := []string{
 		"accounts",
 		"account_balance_snapshots",
 		"positions",
+		"symbols",
+		"hedge_intents",
+		"hedge_positions",
 		"mark_price_snapshots",
 		"risk_snapshots",
 		"outbox_events",

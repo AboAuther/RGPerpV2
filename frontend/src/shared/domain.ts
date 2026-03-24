@@ -381,6 +381,33 @@ export interface RiskMonitorDashboard {
   items: SymbolNetExposureItem[];
 }
 
+export interface AdminHedgeIntentItem {
+  hedge_intent_id: string;
+  symbol: string;
+  side: 'BUY' | 'SELL' | string;
+  target_qty: string;
+  current_net_exposure: string;
+  status: string;
+  latest_venue?: string | null;
+  latest_order_status?: string | null;
+  latest_venue_order_id?: string | null;
+  latest_error_code?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SystemHedgeSnapshotItem {
+  symbol: string;
+  internal_net_qty: string;
+  target_hedge_qty: string;
+  managed_hedge_qty: string;
+  external_hedge_qty: string;
+  managed_drift_qty: string;
+  external_drift_qty: string;
+  hedge_healthy: boolean;
+  created_at: string;
+}
+
 export interface RuntimeConfigSnapshotView {
   system_mode: string;
   read_only: boolean;

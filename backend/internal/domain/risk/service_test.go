@@ -43,6 +43,7 @@ type riskStubRepo struct {
 	latestOpenHedge     hedgedomain.Intent
 	latestOpenHedgeErr  error
 	createdHedgeIntents []hedgedomain.Intent
+	supersededSymbols   []uint64
 }
 
 func (s *riskStubRepo) GetAccountStateForUpdate(context.Context, uint64) (AccountState, error) {
@@ -97,6 +98,14 @@ func (s *riskStubRepo) CreateHedgeIntent(_ context.Context, intent hedgedomain.I
 	s.createdHedgeIntents = append(s.createdHedgeIntents, intent)
 	s.latestOpenHedge = intent
 	s.latestOpenHedgeErr = nil
+	return nil
+}
+
+func (s *riskStubRepo) SupersedePendingHedgeIntentsForUpdate(_ context.Context, symbolID uint64, _ time.Time) error {
+	s.supersededSymbols = append(s.supersededSymbols, symbolID)
+	if s.latestOpenHedge.Status == hedgedomain.IntentStatusPending {
+		s.latestOpenHedge.Status = hedgedomain.IntentStatusSuperseded
+	}
 	return nil
 }
 
@@ -290,6 +299,97 @@ func TestRecalculateAccountRiskPublishesSnapshotEventOnlyWhenRiskLevelChanges(t 
 	}
 	if payload["previous_risk_level"] != RiskLevelSafe {
 		t.Fatalf("expected previous risk level SAFE, got %+v", payload["previous_risk_level"])
+	}
+}
+
+func TestEvaluateHedgeIntentSupersedesOldPendingIntentBeforeCreatingNewOne(t *testing.T) {
+	repo := &riskStubRepo{
+		hedgeState: HedgeState{
+			SymbolID:         7,
+			Symbol:           "BNB-USDC",
+			InternalLongQty:  "0.1",
+			InternalShortQty: "0",
+			ManagedLongQty:   "0",
+			ManagedShortQty:  "0",
+		},
+		latestOpenHedge: hedgedomain.Intent{
+			ID:        "hint_old",
+			SymbolID:  7,
+			Symbol:    "BNB-USDC",
+			Side:      hedgedomain.OrderSideBuy,
+			TargetQty: "0.02",
+			Status:    hedgedomain.IntentStatusPending,
+		},
+	}
+	outbox := &riskStubOutbox{}
+	service, err := NewService(ServiceConfig{
+		RiskBufferRatio:    "0",
+		HedgeEnabled:       true,
+		SoftThresholdRatio: "0.2",
+		HardThresholdRatio: "0.4",
+		TakerFeeRate:       "0.0006",
+	}, riskFakeClock{now: time.Date(2026, 3, 24, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"hint_new", "evt_new"}}, riskStubTxManager{}, repo, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	decision, err := service.EvaluateHedgeIntent(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("evaluate hedge: %v", err)
+	}
+	if decision == nil || decision.Intent.ID != "hint_new" {
+		t.Fatalf("expected new hedge intent, got %+v", decision)
+	}
+	if len(repo.supersededSymbols) != 1 || repo.supersededSymbols[0] != 7 {
+		t.Fatalf("expected pending hedge intents to be superseded, got %+v", repo.supersededSymbols)
+	}
+	if len(repo.createdHedgeIntents) != 1 || repo.createdHedgeIntents[0].Side != hedgedomain.OrderSideSell {
+		t.Fatalf("unexpected created intents: %+v", repo.createdHedgeIntents)
+	}
+}
+
+func TestEvaluateHedgeIntentDoesNotCreateNewIntentWhenExistingIntentExecuting(t *testing.T) {
+	repo := &riskStubRepo{
+		hedgeState: HedgeState{
+			SymbolID:         9,
+			Symbol:           "BTC-USDC",
+			InternalLongQty:  "0.002",
+			InternalShortQty: "0",
+			ManagedLongQty:   "0",
+			ManagedShortQty:  "0",
+		},
+		latestOpenHedge: hedgedomain.Intent{
+			ID:        "hint_exec",
+			SymbolID:  9,
+			Symbol:    "BTC-USDC",
+			Side:      hedgedomain.OrderSideSell,
+			TargetQty: "0.002",
+			Status:    hedgedomain.IntentStatusExecuting,
+		},
+	}
+	service, err := NewService(ServiceConfig{
+		RiskBufferRatio:    "0",
+		HedgeEnabled:       true,
+		SoftThresholdRatio: "0.2",
+		HardThresholdRatio: "0.4",
+		TakerFeeRate:       "0.0006",
+	}, riskFakeClock{now: time.Date(2026, 3, 24, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"unused"}}, riskStubTxManager{}, repo, &riskStubOutbox{})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	decision, err := service.EvaluateHedgeIntent(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("evaluate hedge: %v", err)
+	}
+	if decision == nil || decision.Intent.ID != "hint_exec" {
+		t.Fatalf("expected existing executing intent, got %+v", decision)
+	}
+	if len(repo.createdHedgeIntents) != 0 {
+		t.Fatalf("expected no new hedge intent, got %+v", repo.createdHedgeIntents)
+	}
+	if len(repo.supersededSymbols) != 0 {
+		t.Fatalf("expected no supersede call, got %+v", repo.supersededSymbols)
 	}
 }
 

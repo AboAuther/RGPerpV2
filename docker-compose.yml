@@ -173,5 +173,16 @@ services:
     volumes:
       - ./deploy/env:/shared-env:ro
 
+  hedger-worker:
+    <<: *backend-image
+    depends_on: *runtime-depends
+    environment:
+      <<: *backend-env
+      SERVICE_BIN: hedger-worker
+      APP_PORT: 8088
+    restart: unless-stopped
+    volumes:
+      - ./deploy/env:/shared-env:ro
+
 volumes:
   mysql_data:
