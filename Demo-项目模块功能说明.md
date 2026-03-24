@@ -31,10 +31,10 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 可导航至登录或交易相关路由
 
 <!-- 图1：Landing 首页 -->
-<img src="./demo_images/step-01-landing.png" alt="图1：Landing 首页" width="960" height="440" />
+<img src="./docs/demo_images/step-01-landing.png" alt="图1：Landing 首页" width="960" height="440" />
 
 <!-- 图2：进入登录或应用 -->
-<img src="./demo_images/step-01-enter-app.png" alt="图2：进入登录或应用" width="960" height="440" />
+<img src="./docs/demo_images/step-01-enter-app.png" alt="图2：进入登录或应用" width="960" height="440" />
 
 ---
 
@@ -59,7 +59,7 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 完成签名后进入已登录状态，顶部或账户区展示地址
 
 <!-- 图4：签名挑战与确认 -->
-<img src="./demo_images/step-02-sign-challenge.png" alt="图4：签名挑战与确认" width="960" height="540" />
+<img src="./docs/demo_images/step-02-sign-challenge.png" alt="图4：签名挑战与确认" width="960" height="540" />
 
 ---
 
@@ -83,13 +83,13 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 短时间内账户可用余额增加
 
 <!-- 图6：充值入口与金额 -->
-<img src="./demo_images/step-03-deposit.png" alt="图6：充值入口与金额" width="960" height="540" />
+<img src="./docs/demo_images/step-03-deposit.png" alt="图6：充值入口与金额" width="960" height="540" />
 
 <!-- 图7：钱包确认充值交易 -->
-<img src="./demo_images/step-03-metamask-deposit.png" alt="图7：钱包确认充值交易" width="960" height="140" />
+<img src="./docs/demo_images/step-03-metamask-deposit.png" alt="图7：钱包确认充值交易" width="960" height="140" />
 
 <!-- 图8：充值后余额更新 -->
-<img src="./demo_images/step-03-balance-updated.png" alt="图8：充值后余额更新" width="960" height="140" />
+<img src="./docs/demo_images/step-03-balance-updated.png" alt="图8：充值后余额更新" width="960" height="140" />
 
 ---
 
@@ -118,13 +118,13 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 若启用对冲，**hedger-worker** 侧可观察到净敞口相关处理（依配置而定）
 
 <!-- 图9：下单面板 -->
-<img src="./demo_images/step-04-order-panel.png" alt="图9：下单面板" width="960" height="540" />
+<img src="./docs/demo_images/step-04-order-panel.png" alt="图9：下单面板" width="960" height="540" />
 
 <!-- 图10：仓位创建 -->
-<img src="./demo_images/step-04-position-created.png" alt="图10：仓位创建" width="960" height="140" />
+<img src="./docs/demo_images/step-04-position-created.png" alt="图10：仓位创建" width="960" height="140" />
 
 <!-- 图12：对冲任务或管理端（可选） -->
-<img src="./demo_images/step-04-hedger.png" alt="图12：对冲相关视图（可选）" width="960" height="350" />
+<img src="./docs/demo_images/step-04-hedger.png" alt="图12：对冲相关视图（可选）" width="960" height="350" />
 
 ---
 
@@ -186,10 +186,10 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 
 
 <!-- 图17：提现授权或审核（视环境） -->
-<img src="./demo_images/step-07-withdraw-auth.png" alt="图17：提现授权或审核" width="960" height="540" />
+<img src="./docs/demo_images/step-07-withdraw-auth.png" alt="图17：提现授权或审核" width="960" height="540" />
 
 <!-- 图19：提现成功后余额 -->
-<img src="./demo_images/step-07-withdraw-success.png" alt="图19：提现成功后余额" width="960" height="100" />
+<img src="./docs/demo_images/step-07-withdraw-success.png" alt="图19：提现成功后余额" width="960" height="100" />
 
 ---
 
@@ -216,7 +216,7 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 
 
 <!-- 图21：清算记录 -->
-<img src="./demo_images/step-08-liquidation-record.png" alt="图21：清算记录" width="960" height="540" />
+<img src="./docs/demo_images/step-08-liquidation-record.png" alt="图21：清算记录" width="960" height="540" />
 
 ---
 
@@ -241,11 +241,11 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 触发单在条件满足后成交，仓位与余额随之变化
 
 <!-- 图24：限价/触发单创建 -->
-<img src="./demo_images/step-09-limit-order-create-01.png" alt="图24：限价/触发单创建" width="960" height="140" />
+<img src="./docs/demo_images/step-09-limit-order-create-01.png" alt="图24：限价/触发单创建" width="960" height="140" />
 
 
 <!-- 图26：触发或成交结果 -->
-<img src="./demo_images/step-09-limit-order-filled.png" alt="图26：触发或成交结果" width="960" height="100" />
+<img src="./docs/demo_images/step-09-limit-order-filled.png" alt="图26：触发或成交结果" width="960" height="100" />
 
 ---
 
@@ -268,15 +268,15 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - 管理员可查看并操作受权功能
 
 <!-- 图27：Admin 总览 -->
-<img src="./demo_images/step-10-admin-overview.png" alt="图27：Admin 总览" width="960" height="340" />
+<img src="./docs/demo_images/step-10-admin-overview.png" alt="图27：Admin 总览" width="960" height="340" />
 
-<img src="./demo_images/step-10-admin-overview-1.png" alt="图27：Admin 总览（续）" width="960" height="440" />
+<img src="./docs/demo_images/step-10-admin-overview-1.png" alt="图27：Admin 总览（续）" width="960" height="440" />
 
 <!-- 图28：对冲或任务列表（若启用） -->
-<img src="./demo_images/step-10-admin-hedge-tasks.png" alt="图28：对冲或任务列表" width="960" height="340" />
+<img src="./docs/demo_images/step-10-admin-hedge-tasks.png" alt="图28：对冲或任务列表" width="960" height="340" />
 
 <!-- 图29：风险与清算 -->
-<img src="./demo_images/step-08-liquidation-record.png" alt="图29：风险与清算" width="960" height="540" />
+<img src="./docs/demo_images/step-08-liquidation-record.png" alt="图29：风险与清算" width="960" height="540" />
 
 ---
 
@@ -301,16 +301,16 @@ RGPerp 采用**链上托管 + 链下 CFD 交易 + 统一账本 + 异步 Worker**
 - **OpenAPI / DDL / 事件 Schema** 契约化交付（`spec/`）
 
 <!-- 图30：资金费倒计时或提示 -->
-<img src="./demo_images/step-11-funding-countdown.png" alt="图30：资金费倒计时或提示" width="960" height="100" />
+<img src="./docs/demo_images/step-11-funding-countdown.png" alt="图30：资金费倒计时或提示" width="960" height="100" />
 
 <!-- 图31：资金费历史 -->
-<img src="./demo_images/step-11-funding-history.png" alt="图31：资金费历史" width="960" height="440" />
+<img src="./docs/demo_images/step-11-funding-history.png" alt="图31：资金费历史" width="960" height="440" />
 
 <!-- 图32：提现审核 -->
-<img src="./demo_images/step-12-withdraw-review.png" alt="图32：提现审核" width="960" height="340" />
+<img src="./docs/demo_images/step-12-withdraw-review.png" alt="图32：提现审核" width="960" height="340" />
 
 <!-- 图33：配置动态调整 -->
-<img src="./demo_images/step-13-configs.png" alt="图33：配置动态调整" width="960" height="340" />
+<img src="./docs/demo_images/step-13-configs.png" alt="图33：配置动态调整" width="960" height="340" />
 
 ---
 
