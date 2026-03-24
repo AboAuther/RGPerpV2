@@ -131,6 +131,17 @@ func (r *OrderExecutionRepository) GetByUserOrderIDForUpdate(ctx context.Context
 	return toOrderDomain(row, ""), nil
 }
 
+func (r *OrderExecutionRepository) CountActiveOrdersForUserSymbol(ctx context.Context, userID uint64, symbolID uint64) (int, error) {
+	var count int64
+	if err := DB(ctx, r.db).
+		Model(&OrderModel{}).
+		Where("user_id = ? AND symbol_id = ? AND status IN ?", userID, symbolID, []string{orderdomain.OrderStatusResting, orderdomain.OrderStatusTriggerWait}).
+		Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
 func (r *OrderExecutionRepository) ListRestingOpenLimitOrders(ctx context.Context, limit int) ([]orderdomain.Order, error) {
 	if limit <= 0 {
 		limit = 100

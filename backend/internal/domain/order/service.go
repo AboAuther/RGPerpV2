@@ -136,6 +136,15 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 	if orderType == "" {
 		return Order{}, fmt.Errorf("%w: unsupported order type", errorsx.ErrInvalidArgument)
 	}
+	if positionEffect == PositionEffectOpen && (orderType == OrderTypeLimit || isTriggerOrderType(orderType)) && runtimeCfg.MaxOpenOrdersPerUserPerSymbol > 0 {
+		activeOrders, err := s.repo.CountActiveOrdersForUserSymbol(ctx, input.UserID, market.SymbolID)
+		if err != nil {
+			return Order{}, err
+		}
+		if activeOrders >= runtimeCfg.MaxOpenOrdersPerUserPerSymbol {
+			return Order{}, fmt.Errorf("%w: too many active orders for symbol %s", errorsx.ErrForbidden, input.Symbol)
+		}
+	}
 
 	maxSlippageBps := input.MaxSlippageBps
 	if maxSlippageBps <= 0 {
@@ -1938,14 +1947,15 @@ func proportionalAmount(total decimalx.Decimal, part decimalx.Decimal, whole dec
 
 func (s *Service) currentRuntimeConfig(symbol string) RuntimeConfig {
 	current := RuntimeConfig{
-		MaxMarketDataAge:             s.cfg.MaxMarketDataAge,
-		NetExposureHardLimit:         s.cfg.NetExposureHardLimit,
-		MaxExposureSlippageBps:       s.cfg.MaxExposureSlippageBps,
-		TakerFeeRate:                 s.cfg.TakerFeeRate,
-		MakerFeeRate:                 s.cfg.MakerFeeRate,
-		DefaultMaxSlippageBps:        s.cfg.DefaultMaxSlippageBps,
-		LiquidationExtraSlippageBps:  0,
-		MaintenanceMarginUpliftRatio: "",
+		MaxMarketDataAge:              s.cfg.MaxMarketDataAge,
+		MaxOpenOrdersPerUserPerSymbol: 0,
+		NetExposureHardLimit:          s.cfg.NetExposureHardLimit,
+		MaxExposureSlippageBps:        s.cfg.MaxExposureSlippageBps,
+		TakerFeeRate:                  s.cfg.TakerFeeRate,
+		MakerFeeRate:                  s.cfg.MakerFeeRate,
+		DefaultMaxSlippageBps:         s.cfg.DefaultMaxSlippageBps,
+		LiquidationExtraSlippageBps:   0,
+		MaintenanceMarginUpliftRatio:  "",
 	}
 	if s.runtime == nil {
 		return current
@@ -1953,6 +1963,9 @@ func (s *Service) currentRuntimeConfig(symbol string) RuntimeConfig {
 	override := s.runtime.CurrentOrderRuntimeConfig(symbol)
 	if override.MaxMarketDataAge > 0 {
 		current.MaxMarketDataAge = override.MaxMarketDataAge
+	}
+	if override.MaxOpenOrdersPerUserPerSymbol > 0 {
+		current.MaxOpenOrdersPerUserPerSymbol = override.MaxOpenOrdersPerUserPerSymbol
 	}
 	if strings.TrimSpace(override.NetExposureHardLimit) != "" {
 		current.NetExposureHardLimit = override.NetExposureHardLimit

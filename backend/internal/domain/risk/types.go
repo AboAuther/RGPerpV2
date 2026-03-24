@@ -108,6 +108,8 @@ type HedgeState struct {
 }
 
 type HedgeDecision struct {
-	Intent hedgedomain.Intent
-	Drift  string
+	Intent       hedgedomain.Intent
+	Drift        string
+	BreachLevel  string
+	TriggerRatio string
 }

@@ -131,6 +131,7 @@ export interface SymbolItem {
   min_notional: string;
   max_leverage: string;
   session_policy: string;
+  default_max_slippage_bps: number;
   status: string;
 }
 

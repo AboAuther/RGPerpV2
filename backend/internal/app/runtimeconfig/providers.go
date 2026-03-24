@@ -27,19 +27,20 @@ func (p *ServiceRuntimeProvider) CurrentOrderRuntimeConfig(symbol string) orderd
 	current := p.store.Current()
 	pair := pairOverride(current, symbol)
 	return orderdomain.RuntimeConfig{
-		GlobalReadOnly:               current.Global.ReadOnly,
-		GlobalReduceOnly:             current.Global.ReduceOnly,
-		MaxMarketDataAge:             time.Duration(current.Market.MaxSourceAgeSec) * time.Second,
-		NetExposureHardLimit:         current.Risk.NetExposureHardLimit,
-		MaxExposureSlippageBps:       current.Risk.MaxExposureSlippageBps,
-		TakerFeeRate:                 pairString(pair.TakerFeeRate, current.Market.TakerFeeRate),
-		MakerFeeRate:                 pairString(pair.MakerFeeRate, current.Market.MakerFeeRate),
-		DefaultMaxSlippageBps:        pairInt(pair.DefaultMaxSlippageBps, current.Market.DefaultMaxSlippageBps),
-		MaxLeverage:                  pairString(pair.MaxLeverage, ""),
-		SessionPolicy:                pairString(pair.SessionPolicy, ""),
-		LiquidationPenaltyRate:       pairString(pair.LiquidationPenaltyRate, current.Risk.LiquidationPenaltyRate),
-		LiquidationExtraSlippageBps:  current.Risk.LiquidationExtraSlippageBps,
-		MaintenanceMarginUpliftRatio: pairString(pair.MaintenanceMarginUpliftRatio, current.Risk.MaintenanceMarginUpliftRatio),
+		GlobalReadOnly:                current.Global.ReadOnly,
+		GlobalReduceOnly:              current.Global.ReduceOnly,
+		MaxMarketDataAge:              time.Duration(current.Market.MaxSourceAgeSec) * time.Second,
+		MaxOpenOrdersPerUserPerSymbol: current.Risk.MaxOpenOrdersPerUserPerSymbol,
+		NetExposureHardLimit:          current.Risk.NetExposureHardLimit,
+		MaxExposureSlippageBps:        current.Risk.MaxExposureSlippageBps,
+		TakerFeeRate:                  pairString(pair.TakerFeeRate, current.Market.TakerFeeRate),
+		MakerFeeRate:                  pairString(pair.MakerFeeRate, current.Market.MakerFeeRate),
+		DefaultMaxSlippageBps:         pairInt(pair.DefaultMaxSlippageBps, current.Market.DefaultMaxSlippageBps),
+		MaxLeverage:                   pairString(pair.MaxLeverage, ""),
+		SessionPolicy:                 pairString(pair.SessionPolicy, ""),
+		LiquidationPenaltyRate:        pairString(pair.LiquidationPenaltyRate, current.Risk.LiquidationPenaltyRate),
+		LiquidationExtraSlippageBps:   current.Risk.LiquidationExtraSlippageBps,
+		MaintenanceMarginUpliftRatio:  pairString(pair.MaintenanceMarginUpliftRatio, current.Risk.MaintenanceMarginUpliftRatio),
 	}
 }
 

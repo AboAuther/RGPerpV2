@@ -445,6 +445,14 @@ export function TradePage() {
   );
   const accountLiquidating = state?.risk?.risk_state === 'LIQUIDATING';
   const noTicker = !selectedMarket?.ticker;
+
+  useEffect(() => {
+    if (!selectedMarket) {
+      return;
+    }
+    const nextDefault = Number(selectedMarket.default_max_slippage_bps || 100);
+    setEntryMaxSlippageBps(Number.isFinite(nextDefault) && nextDefault > 0 ? nextDefault : 100);
+  }, [selectedSymbol, selectedMarket?.default_max_slippage_bps]);
   const tickerStale = selectedMarket?.ticker?.stale ?? false;
   const marketPaused = selectedMarket?.status === 'PAUSED';
   const marketReduceOnly = selectedMarket?.status === 'REDUCE_ONLY';

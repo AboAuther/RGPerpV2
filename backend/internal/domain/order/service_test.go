@@ -229,6 +229,19 @@ func (s *stubOrderRepo) GetByUserOrderIDForUpdate(_ context.Context, _ uint64, o
 	return order, nil
 }
 
+func (s *stubOrderRepo) CountActiveOrdersForUserSymbol(_ context.Context, userID uint64, symbolID uint64) (int, error) {
+	count := 0
+	for _, order := range s.byOrderID {
+		if order.UserID != userID || order.SymbolID != symbolID {
+			continue
+		}
+		if order.Status == OrderStatusResting || order.Status == OrderStatusTriggerWait {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (s *stubOrderRepo) ListRestingOpenLimitOrders(_ context.Context, limit int) ([]Order, error) {
 	out := make([]Order, 0, len(s.byOrderID))
 	for _, order := range s.byOrderID {
@@ -376,6 +389,57 @@ func TestCreateOrder_MarketOpenFillsAndAllocatesMargin(t *testing.T) {
 	}
 	if len(postTradeRisk.userIDs) != 1 || postTradeRisk.userIDs[0] != 7 {
 		t.Fatalf("expected post-trade risk recalc for user 7, got %+v", postTradeRisk.userIDs)
+	}
+}
+
+func TestCreateOrder_RejectsWhenActiveOrderLimitReached(t *testing.T) {
+	repo := newStubOrderRepo()
+	repo.byOrderID["ord_existing"] = Order{
+		OrderID:        "ord_existing",
+		ClientOrderID:  "cli_existing",
+		UserID:         42,
+		SymbolID:       1,
+		Symbol:         "BTC-PERP",
+		PositionEffect: PositionEffectOpen,
+		Type:           OrderTypeLimit,
+		Status:         OrderStatusResting,
+	}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		&stubLedger{},
+		stubMarketRepo{symbol: testTradableSymbol(time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC))},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetRuntimeConfigProvider(stubOrderRuntimeProvider{bySymbol: map[string]RuntimeConfig{
+		"BTC-PERP": {
+			MaxOpenOrdersPerUserPerSymbol: 1,
+		},
+	}})
+
+	_, err = svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         42,
+		ClientOrderID:  "cli_new",
+		Symbol:         "BTC-PERP",
+		Side:           "BUY",
+		PositionEffect: "OPEN",
+		Type:           "LIMIT",
+		TimeInForce:    "GTC",
+		Qty:            "0.1",
+		Price:          stringPtr("99"),
+		MarginMode:     "ISOLATED",
+		Leverage:       stringPtr("5"),
+		TraceID:        "trace_limit",
+	})
+	if !errors.Is(err, errorsx.ErrForbidden) {
+		t.Fatalf("expected forbidden error, got %v", err)
 	}
 }
 

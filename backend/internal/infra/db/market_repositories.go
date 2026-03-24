@@ -425,26 +425,28 @@ func (r *MarketReadRepository) ListSymbols(ctx context.Context) ([]readmodel.Sym
 				sessionPolicy = model.SessionPolicy
 			}
 			out = append(out, readmodel.SymbolItem{
-				Symbol:        model.Symbol,
-				AssetClass:    model.AssetClass,
-				TickSize:      model.TickSize,
-				StepSize:      model.StepSize,
-				MinNotional:   model.MinNotional,
-				MaxLeverage:   maxLeverage,
-				SessionPolicy: sessionPolicy,
-				Status:        model.Status,
+				Symbol:                model.Symbol,
+				AssetClass:            model.AssetClass,
+				TickSize:              model.TickSize,
+				StepSize:              model.StepSize,
+				MinNotional:           model.MinNotional,
+				MaxLeverage:           maxLeverage,
+				SessionPolicy:         sessionPolicy,
+				DefaultMaxSlippageBps: runtimeCfg.DefaultMaxSlippageBps,
+				Status:                model.Status,
 			})
 			continue
 		}
 		out = append(out, readmodel.SymbolItem{
-			Symbol:        model.Symbol,
-			AssetClass:    model.AssetClass,
-			TickSize:      model.TickSize,
-			StepSize:      model.StepSize,
-			MinNotional:   model.MinNotional,
-			MaxLeverage:   maxLeverage,
-			SessionPolicy: model.SessionPolicy,
-			Status:        model.Status,
+			Symbol:                model.Symbol,
+			AssetClass:            model.AssetClass,
+			TickSize:              model.TickSize,
+			StepSize:              model.StepSize,
+			MinNotional:           model.MinNotional,
+			MaxLeverage:           maxLeverage,
+			SessionPolicy:         model.SessionPolicy,
+			DefaultMaxSlippageBps: 100,
+			Status:                model.Status,
 		})
 	}
 	return out, nil

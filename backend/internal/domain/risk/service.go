@@ -297,8 +297,14 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 			return nil
 		}
 		deltaRatio := drift.Abs().Div(basis)
-		if deltaRatio.LessThan(decimalx.MustFromString(cfg.HardThresholdRatio)) {
+		softThreshold := decimalx.MustFromString(cfg.SoftThresholdRatio)
+		hardThreshold := decimalx.MustFromString(cfg.HardThresholdRatio)
+		if deltaRatio.LessThan(softThreshold) {
 			return nil
+		}
+		breachLevel := "SOFT"
+		if !deltaRatio.LessThan(hardThreshold) {
+			breachLevel = "HARD"
 		}
 
 		existing, err := s.repo.GetLatestOpenHedgeIntentForUpdate(txCtx, symbolID)
@@ -306,7 +312,7 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 			return err
 		}
 		if err == nil && existing.Side == hedgeSideFromSigned(drift) && existing.TargetQty == drift.Abs().String() {
-			decision = &HedgeDecision{Intent: existing, Drift: drift.String()}
+			decision = &HedgeDecision{Intent: existing, Drift: drift.String(), BreachLevel: breachLevel, TriggerRatio: deltaRatio.String()}
 			return nil
 		}
 
@@ -326,8 +332,10 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 		}
 
 		decision = &HedgeDecision{
-			Intent: intent,
-			Drift:  drift.String(),
+			Intent:       intent,
+			Drift:        drift.String(),
+			BreachLevel:  breachLevel,
+			TriggerRatio: deltaRatio.String(),
 		}
 		return s.outbox.Publish(txCtx, DomainEvent{
 			EventID:       s.idgen.NewID("evt"),
@@ -340,6 +348,8 @@ func (s *Service) EvaluateHedgeIntent(ctx context.Context, symbolID uint64) (*He
 				"side":                 intent.Side,
 				"target_qty":           intent.TargetQty,
 				"current_net_exposure": intent.CurrentNetExposure,
+				"trigger_ratio":        deltaRatio.String(),
+				"breach_level":         breachLevel,
 				"soft_threshold_ratio": cfg.SoftThresholdRatio,
 				"hard_threshold_ratio": cfg.HardThresholdRatio,
 				"status":               intent.Status,

@@ -404,11 +404,53 @@ func TestEvaluateHedgeIntentCreatesSellIntentFromDrift(t *testing.T) {
 	if decision.Intent.Side != hedgedomain.OrderSideSell || decision.Intent.TargetQty != "8" {
 		t.Fatalf("unexpected intent: %+v", decision.Intent)
 	}
+	if decision.BreachLevel != "HARD" {
+		t.Fatalf("expected HARD breach level, got %+v", decision)
+	}
 	if len(repo.createdHedgeIntents) != 1 {
 		t.Fatalf("expected 1 hedge intent, got %d", len(repo.createdHedgeIntents))
 	}
 	if len(outbox.events) != 1 || outbox.events[0].EventType != "hedge.requested" {
 		t.Fatalf("unexpected outbox events: %+v", outbox.events)
+	}
+}
+
+func TestEvaluateHedgeIntentCreatesIntentOnSoftThreshold(t *testing.T) {
+	repo := &riskStubRepo{
+		hedgeState: HedgeState{
+			SymbolID:         1,
+			Symbol:           "BTC-PERP",
+			InternalLongQty:  "10",
+			InternalShortQty: "0",
+			ManagedLongQty:   "0",
+			ManagedShortQty:  "8",
+		},
+		latestOpenHedgeErr: errorsx.ErrNotFound,
+	}
+	outbox := &riskStubOutbox{}
+	service, err := NewService(ServiceConfig{
+		RiskBufferRatio:    "0",
+		HedgeEnabled:       true,
+		SoftThresholdRatio: "0.2",
+		HardThresholdRatio: "0.4",
+		TakerFeeRate:       "0.0006",
+	}, riskFakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)}, &riskFakeIDGen{values: []string{"hint_1", "evt_1"}}, riskStubTxManager{}, repo, outbox)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	decision, err := service.EvaluateHedgeIntent(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("evaluate hedge: %v", err)
+	}
+	if decision == nil {
+		t.Fatal("expected hedge decision")
+	}
+	if decision.BreachLevel != "SOFT" {
+		t.Fatalf("expected SOFT breach level, got %+v", decision)
+	}
+	if decision.Intent.TargetQty != "2" {
+		t.Fatalf("unexpected intent: %+v", decision.Intent)
 	}
 }
 

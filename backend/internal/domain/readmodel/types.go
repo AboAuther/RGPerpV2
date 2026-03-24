@@ -277,14 +277,15 @@ type TransferItem struct {
 }
 
 type SymbolItem struct {
-	Symbol        string `json:"symbol"`
-	AssetClass    string `json:"asset_class"`
-	TickSize      string `json:"tick_size"`
-	StepSize      string `json:"step_size"`
-	MinNotional   string `json:"min_notional"`
-	MaxLeverage   string `json:"max_leverage"`
-	SessionPolicy string `json:"session_policy"`
-	Status        string `json:"status"`
+	Symbol                string `json:"symbol"`
+	AssetClass            string `json:"asset_class"`
+	TickSize              string `json:"tick_size"`
+	StepSize              string `json:"step_size"`
+	MinNotional           string `json:"min_notional"`
+	MaxLeverage           string `json:"max_leverage"`
+	SessionPolicy         string `json:"session_policy"`
+	DefaultMaxSlippageBps int    `json:"default_max_slippage_bps"`
+	Status                string `json:"status"`
 }
 
 type TickerItem struct {

@@ -49,19 +49,20 @@ type PostTradeRiskProcessor interface {
 }
 
 type RuntimeConfig struct {
-	GlobalReadOnly               bool
-	GlobalReduceOnly             bool
-	MaxMarketDataAge             time.Duration
-	NetExposureHardLimit         string
-	MaxExposureSlippageBps       int
-	TakerFeeRate                 string
-	MakerFeeRate                 string
-	DefaultMaxSlippageBps        int
-	MaxLeverage                  string
-	SessionPolicy                string
-	LiquidationPenaltyRate       string
-	LiquidationExtraSlippageBps  int
-	MaintenanceMarginUpliftRatio string
+	GlobalReadOnly                bool
+	GlobalReduceOnly              bool
+	MaxMarketDataAge              time.Duration
+	MaxOpenOrdersPerUserPerSymbol int
+	NetExposureHardLimit          string
+	MaxExposureSlippageBps        int
+	TakerFeeRate                  string
+	MakerFeeRate                  string
+	DefaultMaxSlippageBps         int
+	MaxLeverage                   string
+	SessionPolicy                 string
+	LiquidationPenaltyRate        string
+	LiquidationExtraSlippageBps   int
+	MaintenanceMarginUpliftRatio  string
 }
 
 type RuntimeConfigProvider interface {
@@ -71,6 +72,7 @@ type RuntimeConfigProvider interface {
 type OrderRepository interface {
 	GetByUserClientOrderID(ctx context.Context, userID uint64, clientOrderID string) (Order, error)
 	GetByUserOrderIDForUpdate(ctx context.Context, userID uint64, orderID string) (Order, error)
+	CountActiveOrdersForUserSymbol(ctx context.Context, userID uint64, symbolID uint64) (int, error)
 	ListRestingOpenLimitOrders(ctx context.Context, limit int) ([]Order, error)
 	ListTriggerWaitingOrders(ctx context.Context, limit int) ([]Order, error)
 	LockSymbolForUpdate(ctx context.Context, symbolID uint64) error
