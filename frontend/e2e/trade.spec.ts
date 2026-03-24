@@ -18,6 +18,13 @@ type DepositAddress = {
   address: string;
 };
 
+type LocalDepositChain = {
+  chainId: number;
+  rpcUrl: string;
+  usdcAddress: string;
+  confirmations: number;
+};
+
 type PositionItem = {
   position_id: string;
   symbol: string;
@@ -140,12 +147,46 @@ async function waitForWalletBalance(token: string, minimum: number): Promise<voi
   throw new Error(`wallet balance did not reach ${minimum}`);
 }
 
-async function generateDepositAddress(token: string): Promise<DepositAddress> {
-  return api(`/api/v1/wallet/deposit-addresses/31337/generate`, { method: 'POST' }, token);
+function parseRequiredInt(value: string | undefined, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} missing or invalid`);
+  }
+  return parsed;
+}
+
+function localDepositChain(): LocalDepositChain {
+  const env = envMap();
+  const chainId = parseRequiredInt(env.get('BASE_CHAIN_ID'), 'BASE_CHAIN_ID');
+  const confirmations = parseRequiredInt(env.get('BASE_CONFIRMATIONS'), 'BASE_CONFIRMATIONS');
+  const rpcUrl = env.get('BASE_RPC_URL_HOST') || env.get('BASE_RPC_URL');
+  const usdcAddress = env.get('BASE_USDC_ADDRESS');
+  if (!rpcUrl) {
+    throw new Error('BASE_RPC_URL missing');
+  }
+  if (!usdcAddress) {
+    throw new Error('BASE_USDC_ADDRESS missing');
+  }
+  return {
+    chainId,
+    rpcUrl,
+    usdcAddress,
+    confirmations,
+  };
+}
+
+async function generateDepositAddress(token: string, chainId: number): Promise<DepositAddress> {
+  return api(`/api/v1/wallet/deposit-addresses/${chainId}/generate`, { method: 'POST' }, token);
 }
 
 function castSend(args: string[]) {
   execFileSync('cast', args, { encoding: 'utf8' });
+}
+
+function mineBlocks(rpcUrl: string, blocks: number) {
+  for (let index = 0; index < blocks; index += 1) {
+    execFileSync('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_mine'], { encoding: 'utf8' });
+  }
 }
 
 async function listPositions(token: string): Promise<PositionItem[]> {
@@ -235,18 +276,14 @@ function alignDownToStep(value: string, step: string): string {
 }
 
 test('trade page submits open, resting limit, cancel and close against real backend', async ({ page }) => {
-  const env = envMap();
-  const rpcUrl = env.get('BASE_RPC_URL_HOST') || env.get('BASE_RPC_URL') || 'http://127.0.0.1:8545';
-  const usdcAddress = env.get('BASE_USDC_ADDRESS');
-  if (!usdcAddress) {
-    throw new Error('BASE_USDC_ADDRESS missing');
-  }
+  const depositChain = localDepositChain();
 
   const session = await login(userAddress, userPrivateKey, 'pw-trade-user');
   const initialWallet = await getWalletBalance(session.access_token);
-  const depositAddress = await generateDepositAddress(session.access_token);
-  castSend(['send', usdcAddress, 'mint(address,uint256)', depositAddress.address, '3000000000', '--rpc-url', rpcUrl, '--private-key', adminPrivateKey]);
-  castSend(['send', depositAddress.address, 'forward()', '--rpc-url', rpcUrl, '--private-key', adminPrivateKey]);
+  const depositAddress = await generateDepositAddress(session.access_token, depositChain.chainId);
+  castSend(['send', depositChain.usdcAddress, 'mint(address,uint256)', depositAddress.address, '3000000000', '--rpc-url', depositChain.rpcUrl, '--private-key', adminPrivateKey]);
+  castSend(['send', depositAddress.address, 'forward()', '--rpc-url', depositChain.rpcUrl, '--private-key', adminPrivateKey]);
+  mineBlocks(depositChain.rpcUrl, depositChain.confirmations + 1);
   await waitForWalletBalance(session.access_token, initialWallet + 3000);
 
   for (const order of await listOrders(session.access_token)) {

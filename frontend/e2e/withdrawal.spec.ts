@@ -26,6 +26,13 @@ type DepositAddress = {
   address: string;
 };
 
+type LocalDepositChain = {
+  chainId: number;
+  rpcUrl: string;
+  usdcAddress: string;
+  confirmations: number;
+};
+
 const apiBaseUrl = 'http://127.0.0.1:8080';
 const contractsEnvPath = existsSync(join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env'))
   ? join(process.cwd(), '..', 'deploy', 'env', 'local-chains.env')
@@ -112,12 +119,46 @@ async function waitForWalletBalance(token: string, minimum: number): Promise<voi
   throw new Error(`wallet balance did not reach ${minimum}`);
 }
 
-async function generateDepositAddress(token: string): Promise<DepositAddress> {
-  return api(`/api/v1/wallet/deposit-addresses/31337/generate`, { method: 'POST' }, token);
+function parseRequiredInt(value: string | undefined, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} missing or invalid`);
+  }
+  return parsed;
+}
+
+function localDepositChain(): LocalDepositChain {
+  const env = envMap();
+  const chainId = parseRequiredInt(env.get('BASE_CHAIN_ID'), 'BASE_CHAIN_ID');
+  const confirmations = parseRequiredInt(env.get('BASE_CONFIRMATIONS'), 'BASE_CONFIRMATIONS');
+  const rpcUrl = env.get('BASE_RPC_URL_HOST') || env.get('BASE_RPC_URL');
+  const usdcAddress = env.get('BASE_USDC_ADDRESS');
+  if (!rpcUrl) {
+    throw new Error('BASE_RPC_URL missing');
+  }
+  if (!usdcAddress) {
+    throw new Error('BASE_USDC_ADDRESS missing');
+  }
+  return {
+    chainId,
+    rpcUrl,
+    usdcAddress,
+    confirmations,
+  };
+}
+
+async function generateDepositAddress(token: string, chainId: number): Promise<DepositAddress> {
+  return api(`/api/v1/wallet/deposit-addresses/${chainId}/generate`, { method: 'POST' }, token);
 }
 
 function castSend(args: string[]) {
   execFileSync('cast', args, { encoding: 'utf8' });
+}
+
+function mineBlocks(rpcUrl: string, blocks: number) {
+  for (let index = 0; index < blocks; index += 1) {
+    execFileSync('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_mine'], { encoding: 'utf8' });
+  }
 }
 
 function usdcBalanceOf(rpcUrl: string, tokenAddress: string, holder: string): bigint {
@@ -160,22 +201,18 @@ async function explorerHasTx(token: string, txHash: string): Promise<void> {
 }
 
 test('withdrawal page completes auto and review paths against real backend', async ({ page }) => {
-  const env = envMap();
-  const rpcUrl = env.get('BASE_RPC_URL_HOST') || env.get('BASE_RPC_URL') || 'http://127.0.0.1:8545';
-  const usdcAddress = env.get('BASE_USDC_ADDRESS');
-  if (!usdcAddress) {
-    throw new Error('BASE_USDC_ADDRESS missing');
-  }
+  const depositChain = localDepositChain();
 
   const userSession = await login(userAddress, userPrivateKey, 'pw-user');
   const adminSession = await login(adminAddress, adminPrivateKey, 'pw-admin');
   const initialBalance = await getWalletBalance(userSession.access_token);
-  const recipientBefore = usdcBalanceOf(rpcUrl, usdcAddress, recipientAddress);
+  const recipientBefore = usdcBalanceOf(depositChain.rpcUrl, depositChain.usdcAddress, recipientAddress);
   const existingWithdrawalIds = new Set((await listWithdrawals(userSession.access_token)).map((item) => item.withdraw_id));
 
-  const depositAddress = await generateDepositAddress(userSession.access_token);
-  castSend(['send', usdcAddress, 'mint(address,uint256)', depositAddress.address, '15000000000', '--rpc-url', rpcUrl, '--private-key', adminPrivateKey]);
-  castSend(['send', depositAddress.address, 'forward()', '--rpc-url', rpcUrl, '--private-key', adminPrivateKey]);
+  const depositAddress = await generateDepositAddress(userSession.access_token, depositChain.chainId);
+  castSend(['send', depositChain.usdcAddress, 'mint(address,uint256)', depositAddress.address, '15000000000', '--rpc-url', depositChain.rpcUrl, '--private-key', adminPrivateKey]);
+  castSend(['send', depositAddress.address, 'forward()', '--rpc-url', depositChain.rpcUrl, '--private-key', adminPrivateKey]);
+  mineBlocks(depositChain.rpcUrl, depositChain.confirmations + 1);
   await waitForWalletBalance(userSession.access_token, initialBalance + 15000);
 
   await page.addInitScript((session) => {
@@ -253,7 +290,7 @@ test('withdrawal page completes auto and review paths against real backend', asy
   }
   await explorerHasTx(userSession.access_token, reviewWithdraw.tx_hash);
 
-  const recipientAfter = usdcBalanceOf(rpcUrl, usdcAddress, recipientAddress);
+  const recipientAfter = usdcBalanceOf(depositChain.rpcUrl, depositChain.usdcAddress, recipientAddress);
   expect(recipientAfter - recipientBefore).toBe(10_009_000_000n);
 
   await page.goto('/explorer');

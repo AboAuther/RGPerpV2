@@ -12,6 +12,18 @@
 - `deploy/env/common.env` + `deploy/env/<APP_ENV>.env`
 - `deploy/config/runtime/<APP_ENV>.yaml`
 
+本地联调时，大部分 env 已由仓库默认值和脚本生成。
+
+通常只需要额外配置真实对冲参数。建议直接写入 `deploy/env/local-chains.env`：
+
+```bash
+export HL_API_URL=https://api.hyperliquid-testnet.xyz
+export HL_ACCOUNT_ADDRESS=0x...
+export HL_PRIVATE_KEY=0x...
+```
+
+如果 `HL_API_URL` 或 `HL_PRIVATE_KEY` 缺失，`hedger-worker` 会自动退回 `simulated` 模式。
+
 ## Docker Compose
 
 本地链节点与后端服务现在已经解耦。推荐先单独启动三条本地链并部署或复用合约：
@@ -28,6 +40,8 @@ bash deploy/scripts/bootstrap-local-multichain.sh
 - 写出 `deploy/env/local-chains.env` 与前端 `.env.local`
 - 本地充值确认数要求默认写为：`ETH=12 / ARB=20 / BASE=20`
 
+脚本会生成链配置，但不会替你生成 Hyperliquid 测试账户。要启用真实对冲，请先补上上面的 `HL_*` 配置。
+
 然后再启动后端和依赖：
 
 ```bash
@@ -36,7 +50,7 @@ docker compose up -d --build
 
 这会启动：
 
-- MySQL、Redis、RabbitMQ
+- MySQL、Redis
 - `migrator`、`api-server`、`indexer`、`market-data`、`order-executor-worker`、`risk-engine-worker`、`funding-worker`、`liquidator-worker`、`hedger-worker`
 
 如果需要启动前端，再执行：
@@ -57,7 +71,7 @@ sh deploy/scripts/start-frontend-local.sh
 如果只想拉基础依赖，也可以使用：
 
 ```bash
-docker compose up -d mysql mysql-init redis rabbitmq
+docker compose up -d mysql mysql-init redis
 ```
 
 ## 手动挖块

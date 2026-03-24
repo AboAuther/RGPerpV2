@@ -97,6 +97,7 @@ SYSTEM_POOL 只表示“负债”，不是链上资产。
 USER_MARGIN   -fee
 FEE_ACCOUNT    +fee
 
+
 ---
 
 ### Q9：提现手续费与交易手续费区别？
@@ -114,6 +115,7 @@ FEE_ACCOUNT    +fee
 
 可以有，但不强制要求
 
+
 ---
 
 ## 四、强平机制
@@ -130,6 +132,7 @@ margin = loss + penalty + remain
 - loss → SYSTEM_POOL
 - penalty → PENALTY_ACCOUNT
 - remain → USER_BALANCE
+  
   由于收取了更高的罚金，一般不收取手续费
 
 ---
@@ -149,6 +152,7 @@ USER_MARGIN 去往 SYSTEM_POOL & PENALTY & USER_BALANCE
 ### Q13：会不会存在穿仓情况
 
 可能会。因为实际的成交价格是通过外部聚合流动性之后算出来的价格，外加一部份的滑点，而不是用户预估的爆仓价格。价格差过大就会导致穿仓。所以允许用户余额为负。
+
 
 ---
 
@@ -222,7 +226,6 @@ USER_MARGIN 去往 SYSTEM_POOL & PENALTY & USER_BALANCE
 链上资产 = 用户资产 + 平台资产
 
 ---
-
 ### Q21：如何发现资金异常？
 
 通过对账：
@@ -230,7 +233,6 @@ USER_MARGIN 去往 SYSTEM_POOL & PENALTY & USER_BALANCE
 - 链上余额 vs 用户总资产
 - 平台账户汇总
 - ledger 全量校验
-
 ---
 
 ### Q22：充值为什么需要确认数？
@@ -266,6 +268,7 @@ asset 字段
 
 ---
 
+
 ## 九、关键检查项（评分重点）
 
 ---
@@ -279,4 +282,5 @@ asset 字段
 - 强平资金拆分正确
 - 幂等性实现
 - 并发安全处理
+
 

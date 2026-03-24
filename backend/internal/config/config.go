@@ -21,7 +21,6 @@ type StaticConfig struct {
 	API        APIConfig
 	MySQL      MySQLConfig
 	Redis      RedisConfig
-	RabbitMQ   RabbitMQConfig
 	Auth       AuthConfig
 	Admin      AdminConfig
 	Chains     ChainConfigs
@@ -57,10 +56,6 @@ type RedisConfig struct {
 	Addr     string
 	Password string
 	DB       int
-}
-
-type RabbitMQConfig struct {
-	URL string
 }
 
 type AuthConfig struct {
@@ -124,7 +119,6 @@ var knownEnvKeys = []string{
 	"REDIS_ADDR",
 	"REDIS_PASSWORD",
 	"REDIS_DB",
-	"RABBITMQ_URL",
 	"AUTH_DOMAIN",
 	"JWT_ACCESS_SECRET",
 	"JWT_REFRESH_SECRET",
@@ -224,9 +218,6 @@ func loadStaticConfigFromLookup(getenv func(string) string) StaticConfig {
 			Password: getenv("REDIS_PASSWORD"),
 			DB:       getInt(getenv, "REDIS_DB", 0),
 		},
-		RabbitMQ: RabbitMQConfig{
-			URL: strings.TrimSpace(getenv("RABBITMQ_URL")),
-		},
 		Auth: AuthConfig{
 			Domain:        strings.TrimSpace(getenv("AUTH_DOMAIN")),
 			AccessSecret:  getenv("JWT_ACCESS_SECRET"),
@@ -318,9 +309,6 @@ func (c StaticConfig) Validate() error {
 	}
 	if c.MySQL.ConnMaxLifetimeSec <= 0 {
 		errs = append(errs, fmt.Errorf("%w: MYSQL_CONN_MAX_LIFETIME_SEC must be positive", errorsx.ErrInvalidArgument))
-	}
-	if c.RabbitMQ.URL == "" {
-		errs = append(errs, fmt.Errorf("%w: RABBITMQ_URL is required", errorsx.ErrInvalidArgument))
 	}
 	if c.Auth.Domain == "" {
 		errs = append(errs, fmt.Errorf("%w: AUTH_DOMAIN is required", errorsx.ErrInvalidArgument))

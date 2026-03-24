@@ -42,7 +42,6 @@ export MYSQL_DSN="${MYSQL_DSN:-root:root@tcp(127.0.0.1:3306)/rgperp?charset=utf8
 export REDIS_ADDR="${REDIS_ADDR:-127.0.0.1:6379}"
 export REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 export REDIS_DB="${REDIS_DB:-0}"
-export RABBITMQ_URL="${RABBITMQ_URL:-amqp://guest:guest@127.0.0.1:5672/}"
 
 case "$SERVICE_BIN" in
   api-server)

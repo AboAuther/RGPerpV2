@@ -1,0 +1,202 @@
+# Page snapshot
+
+```yaml
+- generic [ref=e4]:
+  - banner [ref=e5]:
+    - button "前往首页" [ref=e6] [cursor=pointer]:
+      - img [ref=e7]
+      - generic [ref=e11]:
+        - heading "RGPerp" [level=4] [ref=e12]
+        - generic [ref=e13]: Production console
+    - menu [ref=e14]:
+      - menuitem "fund Trade" [ref=e15] [cursor=pointer]:
+        - img "fund" [ref=e16]:
+          - img [ref=e17]
+        - text: Trade
+      - menuitem "dashboard Portfolio" [ref=e19] [cursor=pointer]:
+        - img "dashboard" [ref=e20]:
+          - img [ref=e21]
+        - text: Portfolio
+      - menuitem "wallet Wallet" [ref=e23] [cursor=pointer]:
+        - img "wallet" [ref=e24]:
+          - img [ref=e25]
+        - text: Wallet
+      - menuitem "history History" [ref=e27] [cursor=pointer]:
+        - img "history" [ref=e28]:
+          - img [ref=e29]
+        - text: History
+      - menuitem "radar-chart Explorer" [ref=e31] [cursor=pointer]:
+        - img "radar-chart" [ref=e32]:
+          - img [ref=e33]
+        - text: Explorer
+      - menuitem [disabled]:
+        - img:
+          - img
+    - generic [ref=e35]:
+      - generic [ref=e37]:
+        - generic [ref=e39]: DEV
+        - generic [ref=e41]: API HTTP
+      - generic [ref=e42]: 0x3c44...4293bc / ACTIVE
+      - button "退 出" [ref=e44] [cursor=pointer]:
+        - generic [ref=e45]: 退 出
+  - generic [ref=e46]:
+    - main [ref=e47]:
+      - generic [ref=e49]:
+        - generic [ref=e51]:
+          - generic [ref=e52]:
+            - generic [ref=e54]: Wallet
+            - heading "Withdraw" [level=2] [ref=e55]:
+              - generic [ref=e56]: Withdraw
+            - generic [ref=e58]:
+              - generic [ref=e59]: 提
+              - generic [ref=e60]: 交
+              - generic [ref=e61]: 成
+              - generic [ref=e62]: 功
+              - generic [ref=e63]: 仅
+              - generic [ref=e64]: 代
+              - generic [ref=e65]: 表
+              - generic [ref=e66]: 已
+              - generic [ref=e67]: 申
+              - generic [ref=e68]: 请
+              - generic [ref=e69]: ，
+              - generic [ref=e70]: 不
+              - generic [ref=e71]: 代
+              - generic [ref=e72]: 表
+              - generic [ref=e73]: 提
+              - generic [ref=e74]: 现
+              - generic [ref=e75]: 完
+              - generic [ref=e76]: 成
+              - generic [ref=e77]: 。
+              - generic [ref=e78]: 冻
+              - generic [ref=e79]: 结
+              - generic [ref=e80]: 、
+              - generic [ref=e81]: 审
+              - generic [ref=e82]: 核
+              - generic [ref=e83]: 、
+              - generic [ref=e84]: 待
+              - generic [ref=e85]: 签
+              - generic [ref=e86]: 名
+              - generic [ref=e87]: 、
+              - generic [ref=e88]: 链
+              - generic [ref=e89]: 上
+              - generic [ref=e90]: 确
+              - generic [ref=e91]: 认
+              - generic [ref=e92]: 和
+              - generic [ref=e93]: 失
+              - generic [ref=e94]: 败
+              - generic [ref=e95]: 退
+              - generic [ref=e96]: 款
+              - generic [ref=e97]: 必
+              - generic [ref=e98]: 须
+              - generic [ref=e99]: 逐
+              - generic [ref=e100]: 态
+              - generic [ref=e101]: 展
+              - generic [ref=e102]: 示
+              - generic [ref=e103]: 。
+          - button "loading 刷新状态" [active] [ref=e105] [cursor=pointer]:
+            - generic:
+              - img "loading"
+            - generic [ref=e106]: 刷新状态
+        - alert [ref=e108]:
+          - img "exclamation-circle" [ref=e110]:
+            - img [ref=e111]
+          - generic [ref=e113]:
+            - generic [ref=e114]: 提现状态说明
+            - generic [ref=e115]: HOLD 表示申请已提交并等待处理；APPROVED 表示审核通过；BROADCASTED / CONFIRMING / COMPLETED 表示提现已进入链上处理阶段。
+        - generic [ref=e117]:
+          - generic [ref=e119]:
+            - generic [ref=e122]: Create Withdrawal
+            - generic [ref=e124]:
+              - strong [ref=e127]: "USDC 可提现余额: US$25,989.00"
+              - generic [ref=e129]: "已冻结待处理: US$10,001.00"
+              - generic [ref=e131]:
+                - generic [ref=e133]:
+                  - generic "链" [ref=e135]: "* 链"
+                  - generic [ref=e139] [cursor=pointer]:
+                    - generic "Local Ethereum (31337)" [ref=e140]:
+                      - text: Local Ethereum (31337)
+                      - combobox "* 链" [ref=e141]
+                    - img "down" [ref=e143]:
+                      - img [ref=e144]
+                - text: 仅支持当前可用的提现链，暂不可用的链会显示为禁用。
+                - generic [ref=e147]:
+                  - generic "资产" [ref=e149]: "* 资产"
+                  - generic [ref=e153] [cursor=pointer]:
+                    - generic "USDC" [ref=e154]:
+                      - text: USDC
+                      - combobox "* 资产" [ref=e155]
+                    - img "down" [ref=e157]:
+                      - img [ref=e158]
+                - generic [ref=e161]:
+                  - generic "数量" [ref=e163]: "* 数量"
+                  - textbox "* 数量" [ref=e167]:
+                    - /placeholder: "100.00"
+                - generic [ref=e169]:
+                  - generic "目标地址" [ref=e171]: "* 目标地址"
+                  - generic [ref=e172]:
+                    - textbox "* 目标地址" [ref=e175]:
+                      - /placeholder: 0x...
+                      - text: "0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+                    - generic [ref=e177]: 默认使用当前登录钱包地址，可手动修改。
+                - button "使用当前钱包地址" [ref=e178] [cursor=pointer]:
+                  - generic [ref=e179]: 使用当前钱包地址
+                - button "提交提现申请" [ref=e180] [cursor=pointer]:
+                  - generic [ref=e181]: 提交提现申请
+          - generic [ref=e183]:
+            - generic [ref=e186]: Rules
+            - generic [ref=e188]:
+              - generic [ref=e190]: 提现会根据链路状态、金额和风控规则进入自动处理或人工审核流程。
+              - generic [ref=e192]: 提交前请确认链、资产、金额和目标地址正确无误。
+              - generic [ref=e194]: 审核通过后，提现会继续进入广播与确认阶段。
+              - generic [ref=e196]: 如遇链路拥堵或异常，到账时间可能延长。
+        - generic [ref=e198]:
+          - generic [ref=e201]: Withdrawal History
+          - table [ref=e209]:
+            - rowgroup [ref=e217]:
+              - row "Time Chain Asset Amount Fee Status To Address Tx Hash" [ref=e218]:
+                - columnheader "Time" [ref=e219]
+                - columnheader "Chain" [ref=e220]
+                - columnheader "Asset" [ref=e221]
+                - columnheader "Amount" [ref=e222]
+                - columnheader "Fee" [ref=e223]
+                - columnheader "Status" [ref=e224]
+                - columnheader "To Address" [ref=e225]
+                - columnheader "Tx Hash" [ref=e226]
+            - rowgroup [ref=e227]:
+              - row "2026/03/25 00:57:57 Local Ethereum USDC US$10,001.00 US$1.00 RISK_REVIEW 0x90F79b...1E93b906 copy --" [ref=e228]:
+                - cell "2026/03/25 00:57:57" [ref=e229]
+                - cell "Local Ethereum" [ref=e230]
+                - cell "USDC" [ref=e231]
+                - cell "US$10,001.00" [ref=e232]
+                - cell "US$1.00" [ref=e233]
+                - cell "RISK_REVIEW" [ref=e234]:
+                  - generic [ref=e235]: RISK_REVIEW
+                - cell "0x90F79b...1E93b906 copy" [ref=e236]:
+                  - generic [ref=e237]:
+                    - generic [ref=e238]: 0x90F79b...1E93b906
+                    - button "copy" [ref=e240] [cursor=pointer]:
+                      - img "copy" [ref=e242]:
+                        - img [ref=e243]
+                - cell "--" [ref=e245]
+              - row "2026/03/25 00:57:55 Local Ethereum USDC US$10.00 US$1.00 COMPLETED 0x90F79b...1E93b906 copy 0xbbb48b...e873440d copy" [ref=e246]:
+                - cell "2026/03/25 00:57:55" [ref=e247]
+                - cell "Local Ethereum" [ref=e248]
+                - cell "USDC" [ref=e249]
+                - cell "US$10.00" [ref=e250]
+                - cell "US$1.00" [ref=e251]
+                - cell "COMPLETED" [ref=e252]:
+                  - generic [ref=e253]: COMPLETED
+                - cell "0x90F79b...1E93b906 copy" [ref=e254]:
+                  - generic [ref=e255]:
+                    - generic [ref=e256]: 0x90F79b...1E93b906
+                    - button "copy" [ref=e258] [cursor=pointer]:
+                      - img "copy" [ref=e260]:
+                        - img [ref=e261]
+                - cell "0xbbb48b...e873440d copy" [ref=e263]:
+                  - generic [ref=e264]:
+                    - generic [ref=e265]: 0xbbb48b...e873440d
+                    - button "copy" [ref=e267] [cursor=pointer]:
+                      - img "copy" [ref=e269]:
+                        - img [ref=e270]
+    - contentinfo [ref=e272]: RGPerp console
+```

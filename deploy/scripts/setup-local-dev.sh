@@ -30,7 +30,7 @@ else
 fi
 
 sh "$ROOT_DIR/deploy/scripts/bootstrap-local-chain.sh"
-docker compose up -d mysql mysql-init redis rabbitmq
+docker compose up -d mysql mysql-init redis
 
 echo
 echo "local dev stack is ready"
