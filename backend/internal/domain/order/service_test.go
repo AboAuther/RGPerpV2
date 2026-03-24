@@ -886,6 +886,70 @@ func TestCreateOrder_MarketableLimitOpenFillsImmediately(t *testing.T) {
 	}
 }
 
+func TestCreateOrder_MarketableLimitSellOpenUsesExecutionPriceForHold(t *testing.T) {
+	repo := newStubOrderRepo()
+	ledger := &stubLedger{}
+	postTradeRisk := &stubPostTradeRisk{}
+	svc, err := NewService(
+		testServiceConfig(),
+		fakeClock{now: time.Date(2026, 3, 22, 0, 0, 0, 0, time.UTC)},
+		&fakeIDGen{values: []string{"ord_1", "ldg_hold", "evt_hold", "ldg_fill", "evt_fill", "fill_1", "pos_1"}},
+		stubTxManager{},
+		stubAccounts{},
+		stubBalances{balance: "1000"},
+		ledger,
+		stubMarketRepo{symbol: TradableSymbol{
+			SymbolID:              1,
+			Symbol:                "BTC-PERP",
+			ContractMultiplier:    "1",
+			TickSize:              "0.1",
+			StepSize:              "0.001",
+			MinNotional:           "10",
+			Status:                "TRADING",
+			IndexPrice:            "100",
+			MarkPrice:             "100",
+			BestBid:               "101",
+			BestAsk:               "103",
+			InitialMarginRate:     "0.1",
+			MaintenanceMarginRate: "0.05",
+		}},
+		repo,
+	)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	svc.SetPostTradeRiskProcessor(postTradeRisk)
+	price := "100"
+
+	order, err := svc.CreateOrder(context.Background(), CreateOrderInput{
+		UserID:         7,
+		ClientOrderID:  "cli_marketable_limit_sell",
+		Symbol:         "BTC-PERP",
+		Side:           "SELL",
+		PositionEffect: "OPEN",
+		Type:           "LIMIT",
+		Qty:            "1",
+		Price:          &price,
+		IdempotencyKey: "idem_marketable_limit_sell",
+		TraceID:        "trace_marketable_limit_sell",
+	})
+	if err != nil {
+		t.Fatalf("create order: %v", err)
+	}
+	if order.Status != OrderStatusFilled {
+		t.Fatalf("expected filled order, got %s", order.Status)
+	}
+	if order.AvgFillPrice != "101" {
+		t.Fatalf("expected immediate fill at best bid 101, got %s", order.AvgFillPrice)
+	}
+	if len(repo.fills) != 1 {
+		t.Fatalf("expected 1 fill, got %d", len(repo.fills))
+	}
+	if len(postTradeRisk.userIDs) != 1 || postTradeRisk.userIDs[0] != 7 {
+		t.Fatalf("expected post-trade risk recalc for user 7, got %+v", postTradeRisk.userIDs)
+	}
+}
+
 func TestCreateOrder_OpenRejectedWhenSymbolExposureHardLimitWouldWorsen(t *testing.T) {
 	repo := newStubOrderRepo()
 	repo.exposure = SymbolExposure{

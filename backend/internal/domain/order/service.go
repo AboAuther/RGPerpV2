@@ -45,6 +45,9 @@ type Service struct {
 	runtime  RuntimeConfigProvider
 }
 
+// NewService wires the trading write path around explicit collaborators. This
+// keeps validation, ledger posting, and market access composable while
+// preserving a single transaction boundary for monetary effects.
 func NewService(
 	cfg ServiceConfig,
 	clock Clock,
@@ -83,6 +86,9 @@ func (s *Service) SetRuntimeConfigProvider(provider RuntimeConfigProvider) {
 	s.runtime = provider
 }
 
+// CreateOrder is the main policy gate for user orders. Runtime config, symbol
+// status, sizing rules, and risk-oriented limits are all resolved before the
+// order can enter persistent state.
 func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Order, error) {
 	if input.UserID == 0 || input.ClientOrderID == "" || input.Symbol == "" || input.Side == "" || input.PositionEffect == "" || input.Type == "" || input.Qty == "" {
 		return Order{}, fmt.Errorf("%w: missing order fields", errorsx.ErrInvalidArgument)
@@ -137,6 +143,8 @@ func (s *Service) CreateOrder(ctx context.Context, input CreateOrderInput) (Orde
 		return Order{}, fmt.Errorf("%w: unsupported order type", errorsx.ErrInvalidArgument)
 	}
 	if positionEffect == PositionEffectOpen && (orderType == OrderTypeLimit || isTriggerOrderType(orderType)) && runtimeCfg.MaxOpenOrdersPerUserPerSymbol > 0 {
+		// Resting and trigger orders can queue future risk, so the cap is enforced
+		// before the order reaches the book.
 		activeOrders, err := s.repo.CountActiveOrdersForUserSymbol(ctx, input.UserID, market.SymbolID)
 		if err != nil {
 			return Order{}, err
@@ -853,6 +861,17 @@ func (s *Service) resolveOpenRiskPricing(market TradableSymbol, exposure SymbolE
 	referencePrice, executionPrice, err = s.resolvePrices(market, side, orderType, limitPrice, triggerPrice, maxSlippageBps, adjustmentBps)
 	if err != nil {
 		return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
+	}
+	if orderType == OrderTypeLimit && limitPrice != nil {
+		// A marketable limit order should reserve funds against the same price
+		// that will be used for immediate execution, not just the posted limit.
+		fillPrice, executable, err := s.resolveOpenLimitFillPrice(market, exposure, side, qty.String(), *limitPrice, runtimeCfg)
+		if err != nil {
+			return decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, decimalx.Decimal{}, err
+		}
+		if executable {
+			referencePrice = fillPrice
+		}
 	}
 	notional := qty.Mul(referencePrice).Mul(decimalx.MustFromString(market.ContractMultiplier))
 	if notional.LessThan(decimalx.MustFromString(market.MinNotional)) {
